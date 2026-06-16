@@ -29,11 +29,7 @@ def validar_usuario_sheets(usuario_ingresado, password_ingresado):
     client = gspread.authorize(creds)
     sheet = client.open("Usuarios_FDA").sheet1
     datos = sheet.get_all_records()
-    for fila in datos:
-        if str(fila.get('usuario', '')).strip() == usuario_ingresado.strip() and \
-           str(fila.get('password', '')).strip() == password_ingresado.strip():
-            return True
-    return False
+    
 
 # --- ESTADO DE SESIÓN ---
 if "autenticado" not in st.session_state:
