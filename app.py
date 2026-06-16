@@ -22,7 +22,7 @@ except Exception as e:
 def validar_usuario(usuario, password):
     try:
         # Abre la hoja de usuarios. ¡Asegúrate de que la pestaña se llame "Usuarios"!
-        sheet_users = client.open("NOMBRE_DE_TU_HOJA").worksheet("Usuarios")
+        sheet_users = client.open("Usuarios_FDA").worksheet("Logs")
         datos_usuarios = sheet_users.get_all_records()
         
         for fila in datos_usuarios:
