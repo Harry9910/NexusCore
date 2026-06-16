@@ -3,41 +3,12 @@ import pandas as pd
 import requests
 import urllib.parse
 from bs4 import BeautifulSoup
-import datetime
-import os
+import datetime # <--- NUEVO
+import os       # <--- NUEVO
 import time
 import io
 import os
 import base64
-import streamlit as st
-import gspread
-import json
-from google.oauth2.service_account import Credentials
-
-def validar_usuario_sheets(usuario_ingresado, password_ingresado):
-    scope = ['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/auth/drive']
-    
-    # --- LÓGICA HÍBRIDA ---
-    if "GCP_CREDENTIALS" in st.secrets:
-        # Modo Nube: Carga desde secretos
-        creds_dict = json.loads(st.secrets["GCP_CREDENTIALS"])
-        creds = Credentials.from_service_account_info(creds_dict, scopes=scope)
-    else:
-        # Modo Local: Carga desde archivo JSON
-        creds = Credentials.from_service_account_file('nube/credenciales.json', scopes=scope)
-    
-    client = gspread.authorize(creds)
-    
-    # Abre tu hoja de cálculo
-    sheet = client.open("Usuarios_FDA").sheet1
-    datos = sheet.get_all_records()
-    
-    # Verifica usuario y contraseña
-    for fila in datos:
-        if str(fila['usuario']).strip() == usuario_ingresado.strip() and \
-           str(fila['password']).strip() == password_ingresado.strip():
-            return True
-    return False
 
 # --- NUEVAS FUNCIONES ---
 
@@ -70,14 +41,20 @@ st.set_page_config(page_title="Extractor AccessGUDID FDA", page_icon="🔬", lay
 # CONFIGURACIÓN DE CREDENCIALES Y MEMORIA DE USUARIO
 # ==========================================================
 USUARIO_CORRECTO = "admin"
-# Dentro de tu formulario de login
-if st.form_submit_button("Entrar"):
-    if validar_usuario_sheets(usuario_input, password_input):
-        st.session_state["autenticado"] = True
-        st.session_state["usuario_activo_real"] = usuario_input
-        st.rerun() # Esto recarga la app para mostrar el buscador
-    else:
-        st.error("Usuario o contraseña incorrectos.")
+CONTRASEÑA_CORRECTA = "fda2026"
+
+if "autenticado" not in st.session_state:
+    st.session_state["autenticado"] = False
+
+if "usuario_guardado" not in st.session_state:
+    st.session_state["usuario_guardado"] = ""
+
+if "usuario_activo_real" not in st.session_state:
+    st.session_state["usuario_activo_real"] = ""
+
+if "seccion_activa" not in st.session_state:
+    st.session_state["seccion_activa"] = "Inicio"
+
 # ==========================================================
 # FUNCIÓN TRUCO: CARGAR IMÁGENES LOCALES EN HTML (BASE64)
 # ==========================================================
