@@ -96,8 +96,7 @@ st.set_page_config(page_title="Extractor AccessGUDID FDA", page_icon="🔬", lay
 # ==========================================================
 # CONFIGURACIÓN DE CREDENCIALES Y MEMORIA DE USUARIO
 # ==========================================================
-USUARIO_CORRECTO = "admin"
-CONTRASEÑA_CORRECTA = "fda2026"
+
 
 if "autenticado" not in st.session_state:
     st.session_state["autenticado"] = False
