@@ -1,49 +1,58 @@
 import streamlit as st
 import pandas as pd
 import requests
-import urllib.parse
 from bs4 import BeautifulSoup
-import datetime
-import os
-import time
-import io
 import os
 import base64
+import json
 import gspread
-from oauth2client.service_account import ServiceAccountCredentials
+from google.oauth2.service_account import Credentials
 
-# Configuración inicial
-st.set_page_config(page_title="Extractor FDA", page_icon="🔬", layout="wide")
+# Configuración de página
+st.set_page_config(page_title="Extractor AccessGUDID FDA", page_icon="🔬", layout="wide")
 
-# Estado de la sesión
+# Función de validación con google-auth (la moderna)
+def validar_usuario_sheets(usuario_ingresado, password_ingresado):
+    scope = ['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/auth/drive']
+    
+    if "GCP_CREDENTIALS" in st.secrets:
+        creds_dict = json.loads(st.secrets["GCP_CREDENTIALS"])
+        creds = Credentials.from_service_account_info(creds_dict, scopes=scope)
+    else:
+        # Solo para modo local
+        creds = Credentials.from_service_account_file('nube/credenciales.json', scopes=scope)
+    
+    client = gspread.authorize(creds)
+    sheet = client.open("Usuarios_FDA").sheet1
+    datos = sheet.get_all_records()
+    
+    for fila in datos:
+        if str(fila['usuario']).strip() == usuario_ingresado.strip() and \
+           str(fila['password']).strip() == password_ingresado.strip():
+            return True
+    return False
+
+# Inicializar sesión
 if "autenticado" not in st.session_state:
     st.session_state["autenticado"] = False
 
-# Función simple de autenticación
-def login():
+# Interfaz de Login
+if not st.session_state["autenticado"]:
     st.title("Acceso al Sistema")
     user = st.text_input("Usuario")
     password = st.text_input("Contraseña", type="password")
     if st.button("Ingresar"):
-        if user == "admin" and password == "fda2026":
+        if validar_usuario_sheets(user, password):
             st.session_state["autenticado"] = True
             st.rerun()
         else:
             st.error("Credenciales incorrectas")
-
-# Lógica principal de la App
-def main():
+else:
     st.title("🔬 Extractor AccessGUDID FDA")
-    st.write("Bienvenido al sistema automatizado.")
-    # Aquí iría tu lógica de extracción...
+    st.write("Bienvenido al sistema.")
     if st.button("Cerrar Sesión"):
         st.session_state["autenticado"] = False
         st.rerun()
-
-if st.session_state["autenticado"]:
-    main()
-else:
-    login()
 
 # Configuración de la página web con layout expandido
 st.set_page_config(page_title="Extractor AccessGUDID FDA", page_icon="🔬", layout="wide")
