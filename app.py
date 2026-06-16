@@ -11,6 +11,21 @@ import base64
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 
+# 1. ESTO DEBE IR AL PRINCIPIO
+@st.cache_resource
+def conectar_google():
+    creds = Credentials.from_service_account_info(st.secrets["gcp"])
+    return gspread.authorize(creds)
+
+# 2. Creamos el cliente una sola vez
+client = conectar_google()
+
+# 3. AHORA TU FUNCIÓN PUEDE USAR 'client' SIN ERROR
+def validar_usuario(usuario, password):
+    try:
+        sheet_users = client.open("Usuarios_FDA").worksheet("Usuarios")
+        # ... resto de tu lógica ...
+
 # --- DIAGNÓSTICO DE SECRETS ---
 try:
     st.write("Contenido de st.secrets detectado:")
