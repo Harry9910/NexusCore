@@ -11,7 +11,20 @@ import base64
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 
-
+# Asegúrate de que esta función esté definida antes del formulario de login
+def validar_usuario(usuario, password):
+    try:
+        # Abre la hoja de usuarios. ¡Asegúrate de que la pestaña se llame "Usuarios"!
+        sheet_users = client.open("NOMBRE_DE_TU_HOJA").worksheet("Usuarios")
+        datos_usuarios = sheet_users.get_all_records()
+        
+        for fila in datos_usuarios:
+            if str(fila['usuario']).strip() == usuario.strip() and str(fila['contrasena']).strip() == password.strip():
+                return True
+        return False
+    except Exception as e:
+        st.error(f"Error al validar usuario: {e}")
+        return False
 
 # --- CONFIGURACIÓN DE CONEXIÓN A GOOGLE SHEETS ---
 try:
