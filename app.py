@@ -13,23 +13,38 @@ from oauth2client.service_account import ServiceAccountCredentials
 
 # Asegúrate de que esta función esté definida antes del formulario de login
 def validar_usuario(usuario, password):
-    try:
-        # Asegúrate de poner el nombre exacto de tu archivo en Drive
-        sheet_users = client.open("Usuarios_FDA").worksheet("Usuarios")
-        datos_usuarios = sheet_users.get_all_records()
-        
-        for fila in datos_usuarios:
-            # Convertimos ambos valores a string y quitamos espacios
-            usuario_db = str(fila.get('usuario', '')).strip()
-            pass_db = str(fila.get('contraseña', '')).strip()
-            
-            # Comparamos
-            if usuario_db == usuario.strip() and pass_db == password.strip():
-                return True
-        return False
-    except Exception as e:
-        st.error(f"Error técnico: {e}")
-        return False
+    # Asegúrate de tener los imports necesarios al principio de tu archivo:
+# import streamlit as st
+# from oauth2client.service_account import ServiceAccountCredentials
+# import gspread
+
+# --- BLOQUE DE DEPURACIÓN (Pégalo donde tenías la conexión) ---
+try:
+    creds_dict = dict(st.secrets["gcp"])
+    creds_dict["private_key"] = creds_dict["private_key"].replace("\\n", "\n")
+    
+    creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, SCOPE)
+    client = gspread.authorize(creds)
+    
+    st.write("--- DEPURACIÓN ---")
+    st.write("Autenticación exitosa. Buscando archivos...")
+    
+    # Listar todos los archivos visibles para el robot
+    archivos = client.openall()
+    nombres = [a.title for a in archivos]
+    st.write("El robot puede ver estos archivos:", nombres)
+    
+    # Intentar abrir el archivo específico
+    SHEET_ID = "1SSAS4NLafr3p8K3nllBoHp0AKklO5JNfWwQbSfNdbGU"
+    doc = client.open_by_key(SHEET_ID)
+    st.write("¡Acceso exitoso! El archivo encontrado es:", doc.title)
+    
+    # Si llega hasta aquí, esta es la conexión correcta:
+    st.session_state.sheet = doc.sheet1
+    st.success("Conexión finalizada correctamente.")
+
+except Exception as e:
+    st.error(f"Error detallado: {e}")
 
 
 # --- CONFIGURACIÓN DE CONEXIÓN ---
