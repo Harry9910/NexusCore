@@ -21,17 +21,13 @@ except Exception as e:
 # Asegúrate de que esta función esté definida antes del formulario de login
 def validar_usuario(usuario, password):
     try:
-        # Asegúrate de poner el nombre exacto de tu archivo en Drive
+        # Abrir la hoja y la pestaña
         sheet_users = client.open("Usuarios_FDA").worksheet("Usuarios")
         
-        def validar_usuario(usuario, password):
-    try:
-        # 1. ESTA ES LA LÍNEA QUE ABRE LA HOJA
-        sheet_users = client.open("Usuarios_FDA").worksheet("Usuarios")
-        
-        # 2. AQUÍ AGREGAS TODO EL BLOQUE QUE ME MOSTRASTE
+        # Obtener los datos
         datos_usuarios = sheet_users.get_all_records()
         
+        # Verificar credenciales
         for fila in datos_usuarios:
             usuario_db = str(fila.get('usuario', '')).strip()
             pass_db = str(fila.get('contraseña', '')).strip()
@@ -44,12 +40,6 @@ def validar_usuario(usuario, password):
         st.error(f"Error técnico: {e}")
         return False
         
-        datos_usuarios = sheet_users.get_all_records()
-        
-        for fila in datos_usuarios:
-            # Convertimos ambos valores a string y quitamos espacios
-            usuario_db = str(fila.get('usuario', '')).strip()
-            pass_db = str(fila.get('contraseña', '')).strip()
             
             # Comparamos
             if usuario_db == usuario.strip() and pass_db == password.strip():
