@@ -23,6 +23,27 @@ def validar_usuario(usuario, password):
     try:
         # Asegúrate de poner el nombre exacto de tu archivo en Drive
         sheet_users = client.open("Usuarios_FDA").worksheet("Usuarios")
+        
+        def validar_usuario(usuario, password):
+    try:
+        # 1. ESTA ES LA LÍNEA QUE ABRE LA HOJA
+        sheet_users = client.open("Usuarios_FDA").worksheet("Usuarios")
+        
+        # 2. AQUÍ AGREGAS TODO EL BLOQUE QUE ME MOSTRASTE
+        datos_usuarios = sheet_users.get_all_records()
+        
+        for fila in datos_usuarios:
+            usuario_db = str(fila.get('usuario', '')).strip()
+            pass_db = str(fila.get('contraseña', '')).strip()
+            
+            if usuario_db == usuario.strip() and pass_db == password.strip():
+                return True
+        return False
+        
+    except Exception as e:
+        st.error(f"Error técnico: {e}")
+        return False
+        
         datos_usuarios = sheet_users.get_all_records()
         
         for fila in datos_usuarios:
