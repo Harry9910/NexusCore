@@ -45,12 +45,6 @@ def realizar_busqueda_fda(query):
     # ... tu código actual de request y beautifulsoup ...
     return data_frame_resultados
 
-# Importa la clase necesaria
-from streamlit_gsheets import GSheetsConnection
-
-# Inicializa la conexión
-conn = st.connection("gsheets", type=GSheetsConnection)
-
 def registrar_log(usuario, busqueda, resultados_obtenidos):
     timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     nueva_entrada = pd.DataFrame([{
