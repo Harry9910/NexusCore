@@ -10,6 +10,12 @@ import io
 import os
 import base64
 
+# Configuración de credenciales desde Secrets de Streamlit (para la nube)
+creds_dict = dict(st.secrets["gcp"])
+scope = ['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/auth/drive']
+creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
+client = gspread.authorize(creds)
+
 def registrar_log(usuario, busqueda, resultados_obtenidos):
     timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     
