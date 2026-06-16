@@ -18,11 +18,6 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-import streamlit as st
-import json
-import gspread
-from google.oauth2.service_account import Credentials
-
 # --- CONFIGURACIÓN DE PÁGINA (SOLO UNA VEZ) ---
 st.set_page_config(page_title="Plataforma de Extracción", page_icon="🔬", layout="centered")
 
@@ -49,11 +44,6 @@ if not st.session_state["autenticado"]:
     st.markdown("<h2 style='text-align: center;'>Plataforma de Extracción</h2>", unsafe_allow_html=True)
     st.markdown("<p style='text-align: center;'>Gestión Automatizada de Dispositivos Médicos</p>", unsafe_allow_html=True)
     
-    with st.form("login_form"):
-        user = st.text_input("Nombre de usuario")
-        password = st.text_input("Contraseña", type="password")
-        submit = st.form_submit_button("Acceder")
-        
         if submit:
             if validar_usuario_sheets(user, password):
                 st.session_state["autenticado"] = True
