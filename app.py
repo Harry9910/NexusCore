@@ -10,27 +10,24 @@ import io
 import base64
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
+from google.oauth2.service_account import Credentials
 
-# 1. ESTO DEBE IR AL PRINCIPIO
+# 1. Conexión única a Google Sheets
 @st.cache_resource
 def conectar_google():
-    creds = Credentials.from_service_account_info(st.secrets["gcp"])
-    return gspread.authorize(creds)
-
-# 2. Creamos el cliente una sola vez
-client = conectar_google()
-
-# 1. Configuración de conexión (una sola vez)
-@st.cache_resource
-def conectar_google():
-    creds = Credentials.from_service_account_info(st.secrets["gcp"])
-    return gspread.authorize(creds)
+    try:
+        # Intentamos obtener las credenciales de los secretos
+        return gspread.authorize(Credentials.from_service_account_info(st.secrets["gcp"]))
+    except Exception as e:
+        st.error(f"Error crítico de conexión: {e}")
+        return None
 
 client = conectar_google()
 
-# 2. ÚNICA DEFINICIÓN DE LA FUNCIÓN (Sin duplicados, sin diagnóstico)
+# 2. ÚNICA DEFINICIÓN DE LA FUNCIÓN DE VALIDACIÓN
 def validar_usuario(usuario, password):
     try:
+        if client is None: return False
         sheet_users = client.open("Usuarios_FDA").worksheet("Usuarios")
         datos_usuarios = sheet_users.get_all_records()
         
@@ -42,14 +39,11 @@ def validar_usuario(usuario, password):
                 return True
         return False
     except Exception as e:
-        st.error(f"Error al conectar con la hoja: {e}")
+        st.error(f"Error al validar usuario: {e}")
         return False
 
 # 3. AQUÍ VA EL RESTO DE TU LÓGICA (Formulario, botones, etc.)
-# Ejemplo de donde llamas a la función:
-# if st.button("Ingresar"):
-#     if validar_usuario(usuario, contraseña):
-#         ...
+# ... tu código del formulario empieza aquí ...
 
 # --- CONFIGURACIÓN DE CONEXIÓN A GOOGLE SHEETS ---
 try:
