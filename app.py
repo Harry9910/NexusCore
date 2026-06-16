@@ -3,8 +3,8 @@ import pandas as pd
 import requests
 import urllib.parse
 from bs4 import BeautifulSoup
-import datetime # <--- NUEVO
-import os       # <--- NUEVO
+import datetime
+import os
 import time
 import io
 import os
@@ -12,29 +12,38 @@ import base64
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 
-# --- NUEVAS FUNCIONES ---
+# Configuración inicial
+st.set_page_config(page_title="Extractor FDA", page_icon="🔬", layout="wide")
 
-@st.cache_data(ttl=3600)
-def realizar_busqueda_fda(query):
-    # Aquí mueves la lógica que ya tienes para hacer el request y el parsing
-    url = f"https://accessgudid.nlm.nih.gov/results?query={urllib.parse.quote(query)}"
-    # ... tu código actual de request y beautifulsoup ...
-    return data_frame_resultados
+# Estado de la sesión
+if "autenticado" not in st.session_state:
+    st.session_state["autenticado"] = False
 
-def registrar_log(usuario, busqueda, resultados_obtenidos):
-    nombre_archivo = "historial_busquedas.csv"
-    timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    nueva_entrada = {
-        "Fecha/Hora": [timestamp],
-        "Usuario": [usuario],
-        "Consulta": [busqueda],
-        "Registros Encontrados": [len(resultados_obtenidos)]
-    }
-    df_log = pd.DataFrame(nueva_entrada)
-    if not os.path.isfile(nombre_archivo):
-        df_log.to_csv(nombre_archivo, index=False)
-    else:
-        df_log.to_csv(nombre_archivo, mode='a', header=False, index=False)
+# Función simple de autenticación
+def login():
+    st.title("Acceso al Sistema")
+    user = st.text_input("Usuario")
+    password = st.text_input("Contraseña", type="password")
+    if st.button("Ingresar"):
+        if user == "admin" and password == "fda2026":
+            st.session_state["autenticado"] = True
+            st.rerun()
+        else:
+            st.error("Credenciales incorrectas")
+
+# Lógica principal de la App
+def main():
+    st.title("🔬 Extractor AccessGUDID FDA")
+    st.write("Bienvenido al sistema automatizado.")
+    # Aquí iría tu lógica de extracción...
+    if st.button("Cerrar Sesión"):
+        st.session_state["autenticado"] = False
+        st.rerun()
+
+if st.session_state["autenticado"]:
+    main()
+else:
+    login()
 
 # Configuración de la página web con layout expandido
 st.set_page_config(page_title="Extractor AccessGUDID FDA", page_icon="🔬", layout="wide")
