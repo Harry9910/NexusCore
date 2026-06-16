@@ -29,7 +29,11 @@ def validar_usuario_sheets(usuario_ingresado, password_ingresado):
     client = gspread.authorize(creds)
     sheet = client.open("Usuarios_FDA").sheet1
     datos = sheet.get_all_records()
-    
+    for fila in datos:
+        if str(fila.get('usuario', '')).strip() == usuario_ingresado.strip() and \
+           str(fila.get('password', '')).strip() == password_ingresado.strip():
+            return True
+    return False
 
 # --- ESTADO DE SESIÓN ---
 if "autenticado" not in st.session_state:
@@ -40,6 +44,11 @@ if not st.session_state["autenticado"]:
     st.markdown("<h2 style='text-align: center;'>Plataforma de Extracción</h2>", unsafe_allow_html=True)
     st.markdown("<p style='text-align: center;'>Gestión Automatizada de Dispositivos Médicos</p>", unsafe_allow_html=True)
     
+    with st.form("login_form"):
+        user = st.text_input("Nombre de usuario")
+        password = st.text_input("Contraseña", type="password")
+        submit = st.form_submit_button("Acceder")
+        
         if submit:
             if validar_usuario_sheets(user, password):
                 st.session_state["autenticado"] = True
