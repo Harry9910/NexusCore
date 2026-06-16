@@ -43,6 +43,8 @@ if 'sheet' not in st.session_state:
         
         creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, SCOPE)
         client = gspread.authorize(creds)
+
+        st.write("Autenticación exitosa") # Si esto aparece, el problema es 100% el ID o el acceso
         
         # Usamos ID por seguridad (cambia este ID por el tuyo real de la URL)
         SHEET_ID = "1SSAS4NLafr3p8K3nllBoHp0AKklO5JNfWwQbSfNdbGU"
