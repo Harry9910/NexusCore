@@ -19,20 +19,31 @@ def realizar_busqueda_fda(query):
     # ... tu código actual de request y beautifulsoup ...
     return data_frame_resultados
 
+from streamlit_gsheets import GSheetsConnection
+
+# 1. Conexión al inicio de tu app
+conn = st.connection("gsheets", type=GSheetsConnection)
+
 def registrar_log(usuario, busqueda, resultados_obtenidos):
-    nombre_archivo = "historial_busquedas.csv"
     timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    nueva_entrada = {
-        "Fecha/Hora": [timestamp],
-        "Usuario": [usuario],
-        "Consulta": [busqueda],
-        "Registros Encontrados": [len(resultados_obtenidos)]
-    }
-    df_log = pd.DataFrame(nueva_entrada)
-    if not os.path.isfile(nombre_archivo):
-        df_log.to_csv(nombre_archivo, index=False)
-    else:
-        df_log.to_csv(nombre_archivo, mode='a', header=False, index=False)
+    nueva_entrada = pd.DataFrame([{
+        "Fecha/Hora": timestamp,
+        "Usuario": usuario,
+        "Consulta": busqueda,
+        "Registros Encontrados": len(resultados_obtenidos)
+    }])
+    
+    # Obtener los datos existentes y añadir la fila nueva
+    try:
+        df_existente = conn.read(worksheet="Logs")
+        df_actualizado = pd.concat([df_existente, nueva_entrada], ignore_index=True)
+        conn.update(worksheet="Logs", data=df_actualizado)
+    except Exception as e:
+        st.error(f"Error al guardar log en Google Sheets: {e}")
+
+
+
+
 
 # Configuración de la página web con layout expandido
 st.set_page_config(page_title="Extractor AccessGUDID FDA", page_icon="🔬", layout="wide")
