@@ -3,4 +3,5 @@ pandas
 requests
 beautifulsoup4
 openpyxl
-streamlit-gsheets
+gspread
+oauth2client
