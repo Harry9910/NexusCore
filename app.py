@@ -3,9 +3,10 @@ import json
 import gspread
 from google.oauth2.service_account import Credentials
 
+# Configuración única
 st.set_page_config(page_title="Plataforma de Extracción", layout="centered")
 
-# --- LÓGICA DE CONEXIÓN ---
+# Lógica de validación
 def validar_usuario_sheets(usuario_ingresado, password_ingresado):
     creds_dict = json.loads(st.secrets["GCP_CREDENTIALS"])
     creds = Credentials.from_service_account_info(creds_dict, scopes=['https://www.googleapis.com/auth/spreadsheets.readonly'])
@@ -17,12 +18,13 @@ def validar_usuario_sheets(usuario_ingresado, password_ingresado):
             return True
     return False
 
-# --- INTERFAZ ÚNICA ---
+# Estado de sesión
 if "autenticado" not in st.session_state: st.session_state["autenticado"] = False
 
+# Interfaz única
 if not st.session_state["autenticado"]:
     st.markdown("<h2 style='text-align: center;'>Plataforma de Extracción</h2>", unsafe_allow_html=True)
-    with st.form("unico_login"):
+    with st.form("login_unico"):
         user = st.text_input("Nombre de usuario")
         pwd = st.text_input("Contraseña", type="password")
         if st.form_submit_button("Acceder"):
