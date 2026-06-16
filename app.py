@@ -20,39 +20,36 @@ def conectar_google():
 # 2. Creamos el cliente una sola vez
 client = conectar_google()
 
-# 3. AHORA TU FUNCIÓN PUEDE USAR 'client' SIN ERROR
+# 1. Configuración de conexión (una sola vez)
+@st.cache_resource
+def conectar_google():
+    creds = Credentials.from_service_account_info(st.secrets["gcp"])
+    return gspread.authorize(creds)
+
+client = conectar_google()
+
+# 2. ÚNICA DEFINICIÓN DE LA FUNCIÓN (Sin duplicados, sin diagnóstico)
 def validar_usuario(usuario, password):
     try:
-        sheet_users = client.open("Usuarios_FDA").worksheet("Usuarios")
-        # ... resto de tu lógica ...
-
-# --- DIAGNÓSTICO DE SECRETS ---
-try:
-    st.write("Contenido de st.secrets detectado:")
-    st.write(st.secrets)
-except Exception as e:
-    st.error(f"No se pudieron leer los secretos: {e}")
-
-# Asegúrate de que esta función esté definida antes del formulario de login
-def validar_usuario(usuario, password):
-    try:
-        # Asegúrate de poner el nombre exacto de tu archivo en Drive
         sheet_users = client.open("Usuarios_FDA").worksheet("Usuarios")
         datos_usuarios = sheet_users.get_all_records()
         
         for fila in datos_usuarios:
-            # Convertimos ambos valores a string y quitamos espacios
             usuario_db = str(fila.get('usuario', '')).strip()
             pass_db = str(fila.get('contraseña', '')).strip()
             
-            # Comparamos
             if usuario_db == usuario.strip() and pass_db == password.strip():
                 return True
         return False
     except Exception as e:
-        st.error(f"Error técnico: {e}")
+        st.error(f"Error al conectar con la hoja: {e}")
         return False
 
+# 3. AQUÍ VA EL RESTO DE TU LÓGICA (Formulario, botones, etc.)
+# Ejemplo de donde llamas a la función:
+# if st.button("Ingresar"):
+#     if validar_usuario(usuario, contraseña):
+#         ...
 
 # --- CONFIGURACIÓN DE CONEXIÓN A GOOGLE SHEETS ---
 try:
