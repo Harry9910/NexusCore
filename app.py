@@ -3,12 +3,14 @@ import pandas as pd
 import requests
 import urllib.parse
 from bs4 import BeautifulSoup
-import datetime # <--- NUEVO
-import os       # <--- NUEVO
+import datetime
+import os
 import time
 import io
 import os
 import base64
+import gspread
+from oauth2client.service_account import ServiceAccountCredentials # ESTA LÍNEA ES LA QUE FALTA
 
 # Configuración de credenciales desde Secrets de Streamlit (para la nube)
 creds_dict = dict(st.secrets["gcp"])
