@@ -33,36 +33,38 @@ def validar_usuario(usuario, password):
 
 
 # --- CONFIGURACIÓN DE CONEXIÓN A GOOGLE SHEETS ---
+# --- CONFIGURACIÓN DE CONEXIÓN ---
+# Se recomienda definir el scope fuera del bloque try para reutilizarlo
+SCOPE = ['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/auth/drive']
+
 try:
+    # 1. Traer los secretos
     creds_dict = dict(st.secrets["gcp"])
+    
+    # 2. IMPORTANTE: Ajustar el salto de línea que TOML a veces altera
+    # Esto es vital para que la clave privada sea reconocida correctamente
     creds_dict["private_key"] = creds_dict["private_key"].replace("\\n", "\n")
-    scope = ['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/auth/drive']
-    creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
+    
+    # 3. Autenticar
+    creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, SCOPE)
     client = gspread.authorize(creds)
-    # Abre tu hoja por nombre
+    
+    # 4. Conectar a la hoja
     sheet = client.open("Usuarios_FDA").worksheet("Logs")
+    
 except Exception as e:
     st.error(f"Error en la conexión con Google: {e}")
+    st.stop() # Detiene la app si no hay conexión, evitando errores posteriores
 
-
-from oauth2client.service_account import ServiceAccountCredentials # ESTA LÍNEA ES LA QUE FALTA
-
-# Configuración de credenciales desde Secrets de Streamlit (para la nube)
-creds_dict = dict(st.secrets["gcp"])
-scope = ['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/auth/drive']
-creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
-client = gspread.authorize(creds)
-
+# --- FUNCIÓN DE REGISTRO ---
 def registrar_log(usuario, busqueda, resultados_obtenidos):
     timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     
-    # Crear un DataFrame con la nueva fila
-    nueva_entrada = pd.DataFrame([{
-        "Fecha/Hora": timestamp,
-        "Usuario": usuario,
-        "Consulta": busqueda,
-        "Registros Encontrados": len(resultados_obtenidos)
-    }])
+    # Preparar datos (usamos lista simple para gspread)
+    nueva_fila = [timestamp, usuario, busqueda, len(resultados_obtenidos)]
+    
+    # Agregar la fila a la hoja de cálculo
+    sheet.append_row(nueva_fila)
     
     try:
         # Usamos 'append' si tu versión de la librería lo permite, 
