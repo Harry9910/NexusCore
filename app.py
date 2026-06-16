@@ -10,6 +10,16 @@ import io
 import os
 import base64
 import gspread
+
+creds_dict = dict(st.secrets["gcp"])
+creds_dict["private_key"] = creds_dict["private_key"].replace("\\n", "\n")
+scope = ['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/auth/drive']
+creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
+client = gspread.authorize(creds)
+# Abre tu hoja por nombre
+sheet = client.open("NOMBRE_DE_TU_HOJA").worksheet("Logs")
+
+
 from oauth2client.service_account import ServiceAccountCredentials # ESTA LÍNEA ES LA QUE FALTA
 
 # Configuración de credenciales desde Secrets de Streamlit (para la nube)
