@@ -11,67 +11,57 @@ import urllib.parse
 from bs4 import BeautifulSoup
 from google.oauth2.service_account import Credentials
 
-# 1. Configuración Única
-st.set_page_config(page_title="Extractor AccessGUDID FDA", page_icon="🔬", layout="wide")
+# --- CONFIGURACIÓN ---
+st.set_page_config(page_title="Plataforma de Extracción", layout="wide")
 
-# 2. Función de Validación
+# --- FUNCIONES DE APOYO ---
+def obtener_base64_imagen(ruta_archivo):
+    if os.path.exists(ruta_archivo):
+        with open(ruta_archivo, "rb") as image_file:
+            return base64.b64encode(image_file.read()).decode()
+    return ""
+
 def validar_usuario_sheets(usuario_ingresado, password_ingresado):
-    scope = ['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/auth/drive']
     creds_dict = json.loads(st.secrets["GCP_CREDENTIALS"])
-    creds = Credentials.from_service_account_info(creds_dict, scopes=scope)
+    creds = Credentials.from_service_account_info(creds_dict, scopes=['https://www.googleapis.com/auth/spreadsheets.readonly'])
     client = gspread.authorize(creds)
-    sheet = client.open("Usuarios_FDA").sheet1
-    datos = sheet.get_all_records()
+    datos = client.open("Usuarios_FDA").sheet1.get_all_records()
     for fila in datos:
         if str(fila.get('usuario', '')).strip() == usuario_ingresado.strip() and \
            str(fila.get('password', '')).strip() == password_ingresado.strip():
             return True
     return False
 
-# 3. Inicialización
-if "autenticado" not in st.session_state: st.session_state["autenticado"] = False
-if "usuario_activo_real" not in st.session_state: st.session_state["usuario_activo_real"] = ""
-if "seccion_activa" not in st.session_state: st.session_state["seccion_activa"] = "Inicio"
+# --- CSS Y ESTILOS (El corazón del diseño) ---
+st.markdown("""
+    <style>
+    .stApp { background-image: linear-gradient(rgba(15, 32, 67, 0.65), rgba(15, 32, 67, 0.85)), url('https://images.unsplash.com/photo-1576091160399-112ba8d25d1d?q=80&w=2070'); background-size: cover; }
+    div[data-testid="stForm"] { background-color: rgba(255, 255, 255, 0.98); border-radius: 16px; padding: 40px; box-shadow: 0px 12px 40px rgba(0,0,0,0.35); max-width: 500px; margin: 0 auto; }
+    .login-title { color: #0f2043; font-size: 24px; font-weight: bold; text-align: center; }
+    .login-desc { color: #555555; font-size: 14px; text-align: center; margin-bottom: 20px; }
+    </style>
+""", unsafe_allow_html=True)
 
-# 4. Login (Si no está autenticado)
+# --- LÓGICA DE SESIÓN ---
+if "autenticado" not in st.session_state: st.session_state["autenticado"] = False
+
+# --- INTERFAZ ---
 if not st.session_state["autenticado"]:
-    st.markdown("<h2 style='text-align: center;'>Plataforma de Extracción</h2>", unsafe_allow_html=True)
-    with st.form("login_unico"):
+    # Espaciado para centrar
+    st.markdown("<br><br><br>", unsafe_allow_html=True)
+    with st.form("login_estilo"):
+        st.markdown("<div class='login-title'>Plataforma de Extracción</div>", unsafe_allow_html=True)
+        st.markdown("<div class='login-desc'>Gestión Automatizada de Dispositivos Médicos</div>", unsafe_allow_html=True)
         user = st.text_input("Nombre de usuario")
         pwd = st.text_input("Contraseña", type="password")
-        if st.form_submit_button("Acceder"):
+        if st.form_submit_button("Acceder", use_container_width=True):
             if validar_usuario_sheets(user, pwd):
                 st.session_state["autenticado"] = True
-                st.session_state["usuario_activo_real"] = user
                 st.rerun()
             else:
                 st.error("Credenciales incorrectas")
-    st.stop() # Detenemos aquí si no hay login
-
-# 5. Interfaz Interna (Solo visible si autenticado)
-st.markdown("""<style>
-    .header-oficina-virtual { background-color: #ffffff; padding: 15px 30px; border-radius: 10px; box-shadow: 0px 2px 8px rgba(0,0,0,0.05); margin-bottom: 25px; display: flex; justify-content: space-between; align-items: center; }
-    .header-title { color: #0b1d3a; font-size: 22px; font-weight: bold; }
-    .user-tag { font-size: 13.5px; color: #0b1d3a; background-color: #eff6ff; padding: 8px 16px; border-radius: 20px; border: 1px solid #bfdbfe; }
-</style>""", unsafe_allow_html=True)
-
-st.markdown(f"""
-    <div class="header-oficina-virtual">
-        <div class="header-title">Oficina Virtual de Dispositivos Médicos</div>
-        <div class="user-tag">👤 <b>Usuario:</b> {st.session_state["usuario_activo_real"]}</div>
-    </div>
-""", unsafe_allow_html=True)
-
-# Barra Lateral
-with st.sidebar:
-    if st.button("🏠 Menú Principal"): st.session_state["seccion_activa"] = "Inicio"; st.rerun()
-    if st.button("🚀 Panel de Extracción"): st.session_state["seccion_activa"] = "Extraccion"; st.rerun()
-    if st.button("🚪 Cerrar Sesión"): st.session_state["autenticado"] = False; st.rerun()
-
-# Vistas
-if st.session_state["seccion_activa"] == "Inicio":
-    st.title("Menú Principal")
-    st.write("Seleccione una opción de la barra lateral.")
-elif st.session_state["seccion_activa"] == "Extraccion":
-    st.title("Panel de Extracción")
-    st.write("Lógica de extracción aquí...")
+else:
+    st.title("Bienvenido al Sistema")
+    if st.button("Cerrar Sesión"):
+        st.session_state["autenticado"] = False
+        st.rerun()
