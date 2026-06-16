@@ -19,9 +19,10 @@ def realizar_busqueda_fda(query):
     # ... tu código actual de request y beautifulsoup ...
     return data_frame_resultados
 
+# Importa la clase necesaria
 from streamlit_gsheets import GSheetsConnection
 
-# 1. Conexión al inicio de tu app
+# Inicializa la conexión
 conn = st.connection("gsheets", type=GSheetsConnection)
 
 def registrar_log(usuario, busqueda, resultados_obtenidos):
