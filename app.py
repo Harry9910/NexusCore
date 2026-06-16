@@ -19,33 +19,40 @@ def validar_usuario(usuario, password):
 # import gspread
 
 # --- BLOQUE DE DEPURACIÓN (Pégalo donde tenías la conexión) ---
-try:
-    creds_dict = dict(st.secrets["gcp"])
-    creds_dict["private_key"] = creds_dict["private_key"].replace("\\n", "\n")
-    
-    creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, SCOPE)
-    client = gspread.authorize(creds)
-    
-    st.write("--- DEPURACIÓN ---")
-    st.write("Autenticación exitosa. Buscando archivos...")
-    
-    # Listar todos los archivos visibles para el robot
-    archivos = client.openall()
-    nombres = [a.title for a in archivos]
-    st.write("El robot puede ver estos archivos:", nombres)
-    
-    # Intentar abrir el archivo específico
-    SHEET_ID = "1SSAS4NLafr3p8K3nllBoHp0AKklO5JNfWwQbSfNdbGU"
-    doc = client.open_by_key(SHEET_ID)
-    st.write("¡Acceso exitoso! El archivo encontrado es:", doc.title)
-    
-    # Si llega hasta aquí, esta es la conexión correcta:
-    st.session_state.sheet = doc.sheet1
-    st.success("Conexión finalizada correctamente.")
-
-except Exception as e:
-    st.error(f"Error detallado: {e}")
-
+def validar_usuario(usuario, password):
+    # Todo lo de abajo debe tener un espacio de tabulación (o 4 espacios) a la derecha
+    try:
+        # --- CONFIGURACIÓN DE CONEXIÓN ---
+        creds_dict = dict(st.secrets["gcp"])
+        creds_dict["private_key"] = creds_dict["private_key"].replace("\\n", "\n")
+        creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, SCOPE)
+        client = gspread.authorize(creds)
+        
+        # Intentamos abrir el archivo
+        SHEET_ID = "1SSAS4NLafr3p8K3nllBoHp0AKklO5JNfWwQbSfNdbGU"
+        doc = client.open_by_key(SHEET_ID)
+        
+        # Accedemos a la hoja "Usuarios"
+        sheet_users = doc.worksheet("Usuarios") 
+        datos_usuarios = sheet_users.get_all_records()
+        
+        # --- LÓGICA DE VALIDACIÓN ---
+        for fila in datos_usuarios:
+            usuario_db = str(fila.get('usuario', '')).strip()
+            pass_db = str(fila.get('contraseña', '')).strip()
+            
+            if usuario_db == usuario.strip() and pass_db == password.strip():
+                return True
+        return False
+        
+    except Exception as e:
+        st.error(f"Error técnico de conexión: {e}")
+        # Aquí imprimimos los archivos para ver si el robot "ve" algo
+        try:
+            st.write("Archivos visibles para el robot:", [a.title for a in client.openall()])
+        except:
+            st.write("No se pudo obtener la lista de archivos.")
+        return False
 
 # --- CONFIGURACIÓN DE CONEXIÓN ---
 SCOPE = ['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/auth/drive']
