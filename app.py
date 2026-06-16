@@ -40,8 +40,6 @@ def validar_usuario(usuario, password):
     except Exception as e:
         st.error(f"Error técnico: {e}")
         return False
-
-
 # --- CONFIGURACIÓN DE CONEXIÓN A GOOGLE SHEETS ---
 try:
     creds_dict = dict(st.secrets["gcp"])
