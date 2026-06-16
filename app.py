@@ -15,7 +15,7 @@ from oauth2client.service_account import ServiceAccountCredentials
 # CONFIGURACIÓN GLOBAL
 # ==========================================================
 SCOPE = ['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/auth/drive']
-SHEET_ID = "1SSAS4NLafr3p8K3nllBoHp0AKklO5JNfWwQbSfNdbGU"
+SHEET_ID = "1SSAS4NLafR3p8K3nIlBoHp0AKklO5JNfWwQbSfNdbGU"
 
 # ==========================================================
 # FUNCIONES DE CONEXIÓN Y AUTENTICACIÓN
