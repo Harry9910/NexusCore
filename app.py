@@ -10,9 +10,6 @@ import io
 import os
 import base64
 
-[connections.gsheets]
-spreadsheet = "https://docs.google.com/spreadsheets/d/TU_ID_DE_HOJA/edit"
-
 def registrar_log(usuario, busqueda, resultados_obtenidos):
     timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     
