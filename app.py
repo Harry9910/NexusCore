@@ -270,10 +270,7 @@ if not st.session_state["autenticado"]:
                 # --- ESTO ES LO QUE DEBES CAMBIAR ---
                 # ESTA ERA TU LÓGICA ANTIGUA (BORRA LA COMPARACIÓN VIEJA)
                 # if usuario == USUARIO_CORRECTO and contraseña == CONTRASEÑA_CORRECTA:
-                
-
-                
-    st.stop()
+    
 
 # ==========================================================
 # INTERFAZ INTERNA: MONITOR CON CONTENEDOR SEGMENTADO CUSTOM
