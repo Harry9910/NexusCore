@@ -21,7 +21,7 @@ try:
     creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
     client = gspread.authorize(creds)
     # Abre tu hoja por nombre
-    sheet = client.open("NOMBRE_DE_TU_HOJA").worksheet("Logs")
+    sheet = client.open("Usuarios_FDA").worksheet("Logs")
 except Exception as e:
     st.error(f"Error en la conexión con Google: {e}")
 
