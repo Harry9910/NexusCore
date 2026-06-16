@@ -7,9 +7,11 @@ import datetime
 import os
 import time
 import io
-import os
 import base64
 import gspread
+from oauth2client.service_account import ServiceAccountCredentials
+
+
 
 # --- CONFIGURACIÓN DE CONEXIÓN A GOOGLE SHEETS ---
 try:
