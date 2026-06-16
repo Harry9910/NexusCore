@@ -27,25 +27,6 @@ def validar_usuario_sheets(usuario_ingresado, password_ingresado):
             return True
     return False
 
-# --- INTERFAZ ÚNICA ---
-if "autenticado" not in st.session_state: st.session_state["autenticado"] = False
-
-if not st.session_state["autenticado"]:
-    st.markdown("<h2 style='text-align: center;'>Plataforma de Extracción</h2>", unsafe_allow_html=True)
-    with st.form("unico_login"):
-        user = st.text_input("Nombre de usuario")
-        pwd = st.text_input("Contraseña", type="password")
-        if st.form_submit_button("Acceder"):
-            if validar_usuario_sheets(user, pwd):
-                st.session_state["autenticado"] = True
-                st.rerun()
-            else:
-                st.error("Credenciales incorrectas")
-else:
-    st.success("¡Bienvenido al sistema!")
-    if st.button("Cerrar Sesión"):
-        st.session_state["autenticado"] = False
-        st.rerun()
 
 
 
@@ -71,28 +52,6 @@ if not st.session_state["autenticado"]:
                 st.error("Usuario o contraseña incorrectos")
 else:
     st.title("Bienvenido al Sistema")
-    if st.button("Cerrar Sesión"):
-        st.session_state["autenticado"] = False
-        st.rerun()
-
-# Lógica de estados
-if "autenticado" not in st.session_state: st.session_state["autenticado"] = False
-
-# --- INTERFAZ ---
-if not st.session_state["autenticado"]:
-    st.title("🔬 Acceso al Sistema")
-    with st.form("login"):
-        user = st.text_input("Usuario")
-        password = st.text_input("Contraseña", type="password")
-        if st.form_submit_button("Ingresar"):
-            if validar_usuario_sheets(user, password):
-                st.session_state["autenticado"] = True
-                st.rerun()
-            else:
-                st.error("Credenciales incorrectas")
-else:
-    st.title("🔬 Extractor AccessGUDID FDA")
-    st.write("Bienvenido, sistema listo para operar.")
     if st.button("Cerrar Sesión"):
         st.session_state["autenticado"] = False
         st.rerun()
