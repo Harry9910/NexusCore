@@ -18,8 +18,16 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-# Función de validación (la que funciona en la nube)
-def validar_usuario_sheets(user, password):
+import streamlit as st
+import json
+import gspread
+from google.oauth2.service_account import Credentials
+
+# --- CONFIGURACIÓN DE PÁGINA (SOLO UNA VEZ) ---
+st.set_page_config(page_title="Plataforma de Extracción", page_icon="🔬", layout="centered")
+
+# --- FUNCIÓN DE VALIDACIÓN ---
+def validar_usuario_sheets(usuario_ingresado, password_ingresado):
     scope = ['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/auth/drive']
     creds_dict = json.loads(st.secrets["GCP_CREDENTIALS"])
     creds = Credentials.from_service_account_info(creds_dict, scopes=scope)
@@ -27,9 +35,36 @@ def validar_usuario_sheets(user, password):
     sheet = client.open("Usuarios_FDA").sheet1
     datos = sheet.get_all_records()
     for fila in datos:
-        if str(fila['usuario']).strip() == user.strip() and str(fila['password']).strip() == password.strip():
+        if str(fila.get('usuario', '')).strip() == usuario_ingresado.strip() and \
+           str(fila.get('password', '')).strip() == password_ingresado.strip():
             return True
     return False
+
+# --- ESTADO DE SESIÓN ---
+if "autenticado" not in st.session_state:
+    st.session_state["autenticado"] = False
+
+# --- INTERFAZ PROFESIONAL (ÚNICA) ---
+if not st.session_state["autenticado"]:
+    st.markdown("<h2 style='text-align: center;'>Plataforma de Extracción</h2>", unsafe_allow_html=True)
+    st.markdown("<p style='text-align: center;'>Gestión Automatizada de Dispositivos Médicos</p>", unsafe_allow_html=True)
+    
+    with st.form("login_form"):
+        user = st.text_input("Nombre de usuario")
+        password = st.text_input("Contraseña", type="password")
+        submit = st.form_submit_button("Acceder")
+        
+        if submit:
+            if validar_usuario_sheets(user, password):
+                st.session_state["autenticado"] = True
+                st.rerun()
+            else:
+                st.error("Usuario o contraseña incorrectos")
+else:
+    st.title("Bienvenido al Sistema")
+    if st.button("Cerrar Sesión"):
+        st.session_state["autenticado"] = False
+        st.rerun()
 
 # Lógica de estados
 if "autenticado" not in st.session_state: st.session_state["autenticado"] = False
