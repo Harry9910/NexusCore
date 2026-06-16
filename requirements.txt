@@ -1,7 +1,7 @@
 streamlit
-supabase
 pandas
 requests
-openpyxl
 beautifulsoup4
+openpyxl
 gspread
+google-auth
