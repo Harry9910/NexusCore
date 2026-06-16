@@ -278,11 +278,18 @@ if not st.session_state["autenticado"]:
             html_soporte += '</div>'
             st.markdown(html_soporte, unsafe_allow_html=True)
             
-            if boton_ingresar:
-                # --- ESTO ES LO QUE DEBES CAMBIAR ---
-                # ESTA ERA TU LÓGICA ANTIGUA (BORRA LA COMPARACIÓN VIEJA)
-                # if usuario == USUARIO_CORRECTO and contraseña == CONTRASEÑA_CORRECTA:
-    
+          # ... arriba está todo lo anterior ...
+
+if st.button("Ingresar"):
+    # ESTO TIENE QUE ESTAR MÁS A LA DERECHA (con TAB)
+    if validar_usuario(usuario, contraseña):
+        st.session_state["autenticado"] = True
+        st.success("¡Bienvenido!")
+        st.rerun()
+    else:
+        # ESTE 'else' DEBE ESTAR ALINEADO EXACTAMENTE CON EL 'if' DE ARRIBA
+        st.error("Credenciales incorrectas")
+        
 
 # ==========================================================
 # INTERFAZ INTERNA: MONITOR CON CONTENEDOR SEGMENTADO CUSTOM
