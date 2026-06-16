@@ -10,40 +10,34 @@ import io
 import base64
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
-from google.oauth2.service_account import Credentials
 
-# 1. Conexión única a Google Sheets
-@st.cache_resource
-def conectar_google():
-    try:
-        # Intentamos obtener las credenciales de los secretos
-        return gspread.authorize(Credentials.from_service_account_info(st.secrets["gcp"]))
-    except Exception as e:
-        st.error(f"Error crítico de conexión: {e}")
-        return None
+# --- DIAGNÓSTICO DE SECRETS ---
+try:
+    st.write("Contenido de st.secrets detectado:")
+    st.write(st.secrets)
+except Exception as e:
+    st.error(f"No se pudieron leer los secretos: {e}")
 
-client = conectar_google()
-
-# 2. ÚNICA DEFINICIÓN DE LA FUNCIÓN DE VALIDACIÓN
+# Asegúrate de que esta función esté definida antes del formulario de login
 def validar_usuario(usuario, password):
     try:
-        if client is None: return False
+        # Asegúrate de poner el nombre exacto de tu archivo en Drive
         sheet_users = client.open("Usuarios_FDA").worksheet("Usuarios")
         datos_usuarios = sheet_users.get_all_records()
         
         for fila in datos_usuarios:
+            # Convertimos ambos valores a string y quitamos espacios
             usuario_db = str(fila.get('usuario', '')).strip()
             pass_db = str(fila.get('contraseña', '')).strip()
             
+            # Comparamos
             if usuario_db == usuario.strip() and pass_db == password.strip():
                 return True
         return False
     except Exception as e:
-        st.error(f"Error al validar usuario: {e}")
+        st.error(f"Error técnico: {e}")
         return False
 
-# 3. AQUÍ VA EL RESTO DE TU LÓGICA (Formulario, botones, etc.)
-# ... tu código del formulario empieza aquí ...
 
 # --- CONFIGURACIÓN DE CONEXIÓN A GOOGLE SHEETS ---
 try:
@@ -272,18 +266,22 @@ if not st.session_state["autenticado"]:
             html_soporte += '</div>'
             st.markdown(html_soporte, unsafe_allow_html=True)
             
-          # ... arriba está todo lo anterior ...
-
-if st.button("Ingresar"):
-    # ESTO TIENE QUE ESTAR MÁS A LA DERECHA (con TAB)
-    if validar_usuario(usuario, contraseña):
-        st.session_state["autenticado"] = True
-        st.success("¡Bienvenido!")
-        st.rerun()
-    else:
-        # ESTE 'else' DEBE ESTAR ALINEADO EXACTAMENTE CON EL 'if' DE ARRIBA
-        st.error("Credenciales incorrectas")
-        
+            if boton_ingresar:
+                # --- ESTO ES LO QUE DEBES CAMBIAR ---
+                # ESTA ERA TU LÓGICA ANTIGUA (BORRA LA COMPARACIÓN VIEJA)
+                # if usuario == USUARIO_CORRECTO and contraseña == CONTRASEÑA_CORRECTA:
+                
+                # --- ESTA ES LA NUEVA LÓGICA (USA LA FUNCIÓN QUE CONFIGURAMOS) ---
+                if validar_usuario(usuario, contraseña):
+                    st.session_state["autenticado"] = True
+                    st.session_state["usuario_activo_real"] = usuario
+                    st.session_state["usuario_guardado"] = usuario if recordar else ""
+                    st.success("✔ Credenciales válidas. Accediendo...")
+                    time.sleep(0.5)
+                    st.rerun()
+                else:
+                    st.error("❌ Usuario o contraseña incorrectos.")
+    st.stop()
 
 # ==========================================================
 # INTERFAZ INTERNA: MONITOR CON CONTENEDOR SEGMENTADO CUSTOM
