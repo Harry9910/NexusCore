@@ -11,8 +11,6 @@ import base64
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 
-
-
 # Asegúrate de que esta función esté definida antes del formulario de login
 def validar_usuario(usuario, password):
     try:
