@@ -21,17 +21,23 @@ except Exception as e:
 # Asegúrate de que esta función esté definida antes del formulario de login
 def validar_usuario(usuario, password):
     try:
-        # Abre la hoja de usuarios. ¡Asegúrate de que la pestaña se llame "Usuarios"!
-        sheet_users = client.open("Usuarios_FDA").worksheet("Logs")
+        # Asegúrate de poner el nombre exacto de tu archivo en Drive
+        sheet_users = client.open("Usuarios_FDA").worksheet("Usuarios")
         datos_usuarios = sheet_users.get_all_records()
         
         for fila in datos_usuarios:
-            if str(fila['usuario']).strip() == usuario.strip() and str(fila['contrasena']).strip() == password.strip():
+            # Convertimos ambos valores a string y quitamos espacios
+            usuario_db = str(fila.get('usuario', '')).strip()
+            pass_db = str(fila.get('contraseña', '')).strip()
+            
+            # Comparamos
+            if usuario_db == usuario.strip() and pass_db == password.strip():
                 return True
         return False
     except Exception as e:
-        st.error(f"Error al validar usuario: {e}")
+        st.error(f"Error técnico: {e}")
         return False
+
 
 # --- CONFIGURACIÓN DE CONEXIÓN A GOOGLE SHEETS ---
 try:
