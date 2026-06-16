@@ -241,11 +241,16 @@ if not st.session_state["autenticado"]:
             st.markdown(html_soporte, unsafe_allow_html=True)
             
             if boton_ingresar:
-                if usuario == USUARIO_CORRECTO and contraseña == CONTRASEÑA_CORRECTA:
+                # --- ESTO ES LO QUE DEBES CAMBIAR ---
+                # ESTA ERA TU LÓGICA ANTIGUA (BORRA LA COMPARACIÓN VIEJA)
+                # if usuario == USUARIO_CORRECTO and contraseña == CONTRASEÑA_CORRECTA:
+                
+                # --- ESTA ES LA NUEVA LÓGICA (USA LA FUNCIÓN QUE CONFIGURAMOS) ---
+                if validar_usuario(usuario, contraseña):
                     st.session_state["autenticado"] = True
                     st.session_state["usuario_activo_real"] = usuario
                     st.session_state["usuario_guardado"] = usuario if recordar else ""
-                    st.success("✔ Credenciales válidas. Acceding...")
+                    st.success("✔ Credenciales válidas. Accediendo...")
                     time.sleep(0.5)
                     st.rerun()
                 else:
