@@ -47,6 +47,23 @@ def validar_usuario(usuario, password):
         st.error(f"Error técnico de conexión: {e}")
         return False
 
+def obtener_logs():
+    """Obtiene todos los logs desde la hoja 'Logs' de Google Sheets."""
+    try:
+        client = get_gspread_client()
+        doc = client.open_by_key(SHEET_ID)
+        sheet_logs = doc.worksheet("Logs")
+        datos = sheet_logs.get_all_values()
+        if len(datos) <= 1:
+            return pd.DataFrame(columns=["Fecha", "Usuario", "Búsqueda", "Resultados"])
+        df = pd.DataFrame(datos[1:], columns=["Fecha", "Usuario", "Búsqueda", "Resultados"])
+        df["Fecha"] = pd.to_datetime(df["Fecha"], errors="coerce")
+        df = df.sort_values("Fecha", ascending=False).reset_index(drop=True)
+        return df
+    except Exception as e:
+        st.error(f"Error al obtener historiales: {e}")
+        return pd.DataFrame(columns=["Fecha", "Usuario", "Búsqueda", "Resultados"])
+
 def registrar_log(usuario, busqueda, cantidad_resultados):
     """Registra una búsqueda en la hoja 'Logs' de Google Sheets."""
     try:
@@ -323,6 +340,9 @@ else:
         st.sidebar.markdown("<div style='margin-top:10px;'></div>", unsafe_allow_html=True)
         if st.sidebar.button("🚀 Panel de Extracción Masiva", use_container_width=True):
             st.session_state["seccion_activa"] = "Extraccion"; st.rerun()
+        st.sidebar.markdown("<div style='margin-top:10px;'></div>", unsafe_allow_html=True)
+        if st.sidebar.button("📋 Historiales y Reportes", use_container_width=True):
+            st.session_state["seccion_activa"] = "Historiales"; st.rerun()
         st.sidebar.markdown("<br><br><br>", unsafe_allow_html=True)
         if st.sidebar.button("🚪 Cerrar Sesión Segura", use_container_width=True):
             st.session_state["autenticado"] = False; st.rerun()
@@ -352,10 +372,13 @@ else:
             st.session_state["seccion_activa"] = "Extraccion"; st.rerun()
 
         st.markdown("""
-            <div class="card-menu-secundaria">
+            <div class="card-menu-principal" style="border-left-color:#0369a1;">
                 <h4>2. Consulta de Historiales y Reportes</h4>
-                <p>Módulo de auditoría — Próximamente disponible.</p>
+                <p>Consulta el historial de referencias buscadas por usuario, con fecha y cantidad de resultados obtenidos.</p>
             </div>""", unsafe_allow_html=True)
+
+        if st.button("📋 Ver Historiales y Reportes", key="btn_ir_hist", use_container_width=True):
+            st.session_state["seccion_activa"] = "Historiales"; st.rerun()
 
     # ==========================================================
     # VISTA 2: PANEL DE EXTRACCIÓN MASIVA
@@ -550,6 +573,71 @@ else:
 
             elif not archivo_cargado:
                 st.info("👈 Cargue un archivo en el panel izquierdo para activar la monitorización.")
+
+    # ==========================================================
+    # VISTA 3: HISTORIALES Y REPORTES
+    # ==========================================================
+    elif st.session_state["seccion_activa"] == "Historiales":
+        st.markdown("<h3 style='color:#0b1d3a;'>📋 Historiales y Reportes</h3>", unsafe_allow_html=True)
+        st.markdown("<p style='color:#374151;'>Consulta el registro de búsquedas realizadas en la plataforma.</p>", unsafe_allow_html=True)
+
+        with st.spinner("Cargando historial..."):
+            df_logs = obtener_logs()
+
+        if df_logs.empty:
+            st.info("No hay registros de búsquedas aún.")
+        else:
+            # --- FILTROS ---
+            col_f1, col_f2, col_f3 = st.columns([1, 1, 1])
+
+            with col_f1:
+                usuarios_disponibles = ["Todos"] + sorted(df_logs["Usuario"].dropna().unique().tolist())
+                filtro_usuario = st.selectbox("👤 Filtrar por usuario", usuarios_disponibles)
+
+            with col_f2:
+                fecha_min = df_logs["Fecha"].min().date() if not df_logs["Fecha"].isna().all() else datetime.date.today()
+                fecha_max = df_logs["Fecha"].max().date() if not df_logs["Fecha"].isna().all() else datetime.date.today()
+                filtro_fecha_ini = st.date_input("📅 Desde", value=fecha_min)
+
+            with col_f3:
+                filtro_fecha_fin = st.date_input("📅 Hasta", value=fecha_max)
+
+            # --- APLICAR FILTROS ---
+            df_filtrado = df_logs.copy()
+            if filtro_usuario != "Todos":
+                df_filtrado = df_filtrado[df_filtrado["Usuario"] == filtro_usuario]
+            df_filtrado = df_filtrado[
+                (df_filtrado["Fecha"].dt.date >= filtro_fecha_ini) &
+                (df_filtrado["Fecha"].dt.date <= filtro_fecha_fin)
+            ]
+
+            # --- MÉTRICAS RESUMEN ---
+            st.markdown("<br>", unsafe_allow_html=True)
+            m1, m2, m3 = st.columns(3)
+            m1.metric("📊 Total de búsquedas", len(df_filtrado))
+            m2.metric("👥 Usuarios activos", df_filtrado["Usuario"].nunique())
+            total_resultados = pd.to_numeric(df_filtrado["Resultados"], errors="coerce").sum()
+            m3.metric("🔬 Referencias procesadas", int(total_resultados) if not pd.isna(total_resultados) else 0)
+
+            st.markdown("<br>", unsafe_allow_html=True)
+
+            # --- TABLA ---
+            df_mostrar = df_filtrado.copy()
+            df_mostrar["Fecha"] = df_mostrar["Fecha"].dt.strftime("%Y-%m-%d %H:%M")
+            st.dataframe(df_mostrar, use_container_width=True, hide_index=True)
+
+            # --- DESCARGA ---
+            output_logs = io.BytesIO()
+            with pd.ExcelWriter(output_logs, engine='openpyxl') as writer:
+                df_mostrar.to_excel(writer, index=False)
+
+            st.download_button(
+                label="📥 Descargar Historial en Excel",
+                data=output_logs.getvalue(),
+                file_name=f"historial_busquedas_{datetime.datetime.now().strftime('%Y%m%d')}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                use_container_width=True
+            )
 
     # ==========================================================
     # PIE DE PÁGINA
