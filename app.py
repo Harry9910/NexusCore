@@ -3,212 +3,71 @@ import pandas as pd
 import requests
 import json
 import gspread
-from google.oauth2.service_account import Credentials
 import base64
 import os
-
-# Configuración inicial
-st.set_page_config(page_title="Extractor AccessGUDID FDA", page_icon="🔬", layout="wide")
-
-# --- CSS PERSONALIZADO ---
-st.markdown("""
-    <style>
-    .login-desc { color: #555555; font-size: 14px; text-align: center; margin-bottom: 25px; }
-    div[data-testid="stForm"] button { background-color: #000c66 !important; color: white !important; width: 120px; border-radius: 6px; }
-    </style>
-""", unsafe_allow_html=True)
-
-import streamlit as st
-import json
-import gspread
+import time
+from bs4 import BeautifulSoup
 from google.oauth2.service_account import Credentials
 
-# --- CONFIGURACIÓN DE PÁGINA (SOLO UNA VEZ) ---
-st.set_page_config(page_title="Plataforma de Extracción", page_icon="🔬", layout="centered")
+# --- 1. CONFIGURACIÓN ÚNICA ---
+st.set_page_config(page_title="Extractor AccessGUDID FDA", page_icon="🔬", layout="wide")
 
-# --- FUNCIÓN DE VALIDACIÓN ---
-def validar_usuario_sheets(usuario_ingresado, password_ingresado):
-    scope = ['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/auth/drive']
+# --- 2. FUNCIONES BASE ---
+def obtener_base64_logo(nombre_archivo):
+    if os.path.exists(nombre_archivo):
+        with open(nombre_archivo, "rb") as f:
+            return base64.b64encode(f.read()).decode()
+    return None
+
+def validar_usuario_sheets(usuario, password):
+    # Asegúrate de que esta lógica coincida con tu estructura de Google Sheet
     creds_dict = json.loads(st.secrets["GCP_CREDENTIALS"])
-    creds = Credentials.from_service_account_info(creds_dict, scopes=scope)
+    creds = Credentials.from_service_account_info(creds_dict, scopes=['https://www.googleapis.com/auth/spreadsheets.readonly'])
     client = gspread.authorize(creds)
-    sheet = client.open("Usuarios_FDA").sheet1
-    datos = sheet.get_all_records()
+    datos = client.open("Usuarios_FDA").sheet1.get_all_records()
     for fila in datos:
-        if str(fila.get('usuario', '')).strip() == usuario_ingresado.strip() and \
-           str(fila.get('password', '')).strip() == password_ingresado.strip():
+        if str(fila.get('usuario', '')).strip() == usuario.strip() and \
+           str(fila.get('password', '')).strip() == password.strip():
             return True
     return False
 
-# --- ESTADO DE SESIÓN ---
-if "autenticado" not in st.session_state:
-    st.session_state["autenticado"] = False
-
-# --- INTERFAZ PROFESIONAL (ÚNICA) ---
-if not st.session_state["autenticado"]:
-    st.markdown("<h2 style='text-align: center;'>Plataforma de Extracción</h2>", unsafe_allow_html=True)
-    st.markdown("<p style='text-align: center;'>Gestión Automatizada de Dispositivos Médicos</p>", unsafe_allow_html=True)
-    
-    with st.form("login_form"):
-        user = st.text_input("Nombre de usuario")
-        password = st.text_input("Contraseña", type="password")
-        submit = st.form_submit_button("Acceder")
-        
-        if submit:
-            if validar_usuario_sheets(user, password):
-                st.session_state["autenticado"] = True
-                st.rerun()
-            else:
-                st.error("Usuario o contraseña incorrectos")
-else:
-    st.title("Bienvenido al Sistema")
-    if st.button("Cerrar Sesión"):
-        st.session_state["autenticado"] = False
-        st.rerun()
-
-# Lógica de estados
+# --- 3. ESTADOS DE SESIÓN ---
 if "autenticado" not in st.session_state: st.session_state["autenticado"] = False
+if "usuario_activo" not in st.session_state: st.session_state["usuario_activo"] = ""
 
-# --- INTERFAZ ---
+# --- 4. CSS GLOBAL ---
+st.markdown("""
+    <style>
+    .stApp { background-image: linear-gradient(rgba(15, 32, 67, 0.65), rgba(15, 32, 67, 0.85)), url('https://images.unsplash.com/photo-1576091160399-112ba8d25d1d?q=80&w=2070'); background-size: cover; }
+    div[data-testid="stForm"] { background-color: rgba(255, 255, 255, 0.98); border-radius: 16px; padding: 40px; box-shadow: 0px 12px 40px rgba(0,0,0,0.35); max-width: 500px; margin: 0 auto; }
+    .login-title { color: #0f2043; font-size: 24px; font-weight: bold; text-align: center; }
+    </style>
+""", unsafe_allow_html=True)
+
+# --- 5. FLUJO DE APLICACIÓN ---
 if not st.session_state["autenticado"]:
-    st.title("🔬 Acceso al Sistema")
-    with st.form("login"):
+    # PANTALLA DE LOGIN ÚNICA
+    st.markdown("<br><br>", unsafe_allow_html=True)
+    with st.form("login_unico"):
+        st.markdown("<div class='login-title'>Plataforma de Extracción</div>", unsafe_allow_html=True)
         user = st.text_input("Usuario")
-        password = st.text_input("Contraseña", type="password")
-        if st.form_submit_button("Ingresar"):
-            if validar_usuario_sheets(user, password):
+        pwd = st.text_input("Contraseña", type="password")
+        if st.form_submit_button("Acceder", use_container_width=True):
+            if validar_usuario_sheets(user, pwd):
                 st.session_state["autenticado"] = True
+                st.session_state["usuario_activo"] = user
                 st.rerun()
             else:
                 st.error("Credenciales incorrectas")
 else:
-    st.title("🔬 Extractor AccessGUDID FDA")
-    st.write("Bienvenido, sistema listo para operar.")
+    # --- PANTALLA INTERNA (AQUÍ PONES TU LÓGICA DE EXTRACCIÓN) ---
+    st.title(f"Bienvenido, {st.session_state['usuario_activo']}")
     if st.button("Cerrar Sesión"):
         st.session_state["autenticado"] = False
         st.rerun()
-
-# Configuración de la página web con layout expandido
-st.set_page_config(page_title="Extractor AccessGUDID FDA", page_icon="🔬", layout="wide")
-
-# ==========================================================
-# CONFIGURACIÓN DE CREDENCIALES Y MEMORIA DE USUARIO
-# ==========================================================
-USUARIO_CORRECTO = "admin"
-CONTRASEÑA_CORRECTA = "fda2026"
-
-if "autenticado" not in st.session_state:
-    st.session_state["autenticado"] = False
-
-if "usuario_guardado" not in st.session_state:
-    st.session_state["usuario_guardado"] = ""
-
-if "usuario_activo_real" not in st.session_state:
-    st.session_state["usuario_activo_real"] = ""
-
-if "seccion_activa" not in st.session_state:
-    st.session_state["seccion_activa"] = "Inicio"
-
-# ==========================================================
-# FUNCIÓN TRUCO: CARGAR IMÁGENES LOCALES EN HTML (BASE64)
-# ==========================================================
-
-# --- Lógica de Login ---
-if not st.session_state["autenticado"]:
-    # Aquí está tu código actual del formulario de login
-    # Asegúrate de que al hacer clic en el botón, hagas: st.session_state["autenticado"] = True
-    pass 
-else:
-    # --- AQUÍ VA TU NUEVA LÓGICA DE BÚSQUEDA ---
-    # Al estar dentro del 'else', solo se mostrará si el login fue exitoso
     
-    st.title("Bienvenido al Extractor FDA")
-    busqueda_input = st.text_input("Ingrese su criterio de búsqueda:")
-    
-    if st.button("Buscar"):
-        with st.spinner("Consultando AccessGUDID..."):
-            try:
-                # 1. Llamada a la función con caché
-                resultados = realizar_busqueda_fda(busqueda_input)
-                
-                # 2. Mostrar los resultados
-                st.dataframe(resultados)
-                
-                # 3. Registrar el log de auditoría
-                registrar_log(st.session_state["usuario_activo_real"], busqueda_input, resultados)
-            
-            except Exception as e:
-                st.error(f"Error al conectar con la FDA: {e}")
-
-
-def obtener_base64_imagen(ruta_archivo):
-    if os.path.exists(ruta_archivo):
-        with open(ruta_archivo, "rb") as image_file:
-            return base64.b64encode(image_file.read()).decode()
-    return ""
-
-def buscar_logo(nombre_base):
-    for ext in [".png", ".jpg", ".jpeg"]:
-        ruta = nombre_base + ext
-        if os.path.exists(ruta):
-            return obtener_base64_imagen(ruta)
-    return ""
-
-# Cargar los logos locales procesados
-b64_gudid = buscar_logo("logo_gudid")
-b64_invima = buscar_logo("logo_invima")
-b64_eudamed = buscar_logo("logo_eudamed")
-b64_gmdn = buscar_logo("logo_gmdn")
-b64_fda = buscar_logo("logo_fda")
-
-# ==========================================================
-# PANTALLA DE LOGIN REPLICADA LITERAL
-# ==========================================================
-if not st.session_state["autenticado"]:
-    st.markdown(
-        """
-        <style>
-            .stApp {
-                background-image: linear-gradient(rgba(15, 32, 67, 0.65), rgba(15, 32, 67, 0.85)), 
-                                  url('https://images.unsplash.com/photo-1576091160399-112ba8d25d1d?q=80&w=2070');
-                background-size: cover;
-                background-position: center;
-                background-attachment: fixed;
-            }
-            header, footer, [data-testid="stSidebar"], #MainMenu { 
-                visibility: hidden !important; 
-                display: none !important;
-            }
-            [data-testid="stTextInput"] json, 
-            [data-testid="stTextInput"] div[data-testid="stWidgetInstructions"] p { display: none !important; visibility: hidden !important; height: 0px !important; }
-            .st-emotion-cache-1wivp7d, [data-testid="InputInstructions"] { display: none !important; visibility: hidden !important; }
-            div[data-testid="stForm"] {
-                background-color: rgba(255, 255, 255, 0.98) !important;
-                border: none !important;
-                border-radius: 16px !important;
-                padding: 45px 40px !important;
-                box-shadow: 0px 12px 40px rgba(0, 0, 0, 0.35) !important;
-                max-width: 540px; margin: 0 auto;
-            }
-            .contenedor-logos-principales { display: flex; flex-direction: row; justify-content: center; align-items: center; width: 100%; gap: 25px; margin-bottom: 30px; height: 75px; overflow: hidden; }
-            .logo-header-invima { height: 65px !important; width: auto !important; object-fit: contain; }
-            .logo-header-fda { height: 50px !important; width: auto !important; object-fit: contain; }
-            .barra-separadora-vertical-azul { width: 3px; height: 60px; background-color: #00b4d8; margin: 0 10px; }
-            .login-title { color: #0f2043 !important; font-size: 24px; font-weight: bold; text-align: center; margin-bottom: 6px; font-family: 'Segoe UI', sans-serif; }
-            .login-desc { color: #555555 !important; font-size: 14px; text-align: center; margin-bottom: 25px; }
-            div[data-testid="stForm"] button { background-color: #000c66 !important; color: white !important; width: 120px; border-radius: 6px; border: none; padding: 10px 20px; font-size: 16px; font-weight: 500; margin-top: 5px; transition: 0.3s ease; }
-            div[data-testid="stForm"] button:hover { background-color: #000533 !important; box-shadow: 0px 4px 10px rgba(0,0,0,0.2); }
-            .contenedor-soporte-inferior { border-top: 1px solid #eef0f4; margin-top: 35px; padding-top: 25px; width: 100%; }
-            .titulo-soporte { font-size: 12.5px; font-weight: 600; color: #6c757d !important; margin-bottom: 20px; text-transform: uppercase; letter-spacing: 0.5px; }
-            .fila-logos-soporte { display: flex; flex-direction: row; justify-content: space-between; align-items: center; width: 100%; }
-            .logo-gudid-libre { width: 130px !important; height: auto !important; object-fit: contain; }
-            .logo-eudamed-libre { width: 120px !important; height: auto !important; object-fit: contain; }
-            .logo-gmdn-libre { width: 135px !important; height: auto !important; object-fit: contain; }
-        </style>
-        """,
-        unsafe_allow_html=True
-    )
-
+    # PEGA AQUÍ TODO TU CÓDIGO DE EXTRACCIÓN QUE IBA EN EL 'else'
+    st.write("Funcionalidad de extracción aquí.")
     st.markdown("<br><br>", unsafe_allow_html=True)
     _, col_centro, _ = st.columns([1, 1.2, 1]) 
 
