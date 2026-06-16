@@ -1,55 +1,54 @@
 import streamlit as st
 import pandas as pd
 import requests
-from bs4 import BeautifulSoup
-import os
-import base64
 import json
 import gspread
 from google.oauth2.service_account import Credentials
+import base64
+import os
 
-# Configuración de página
+# Configuración inicial
 st.set_page_config(page_title="Extractor AccessGUDID FDA", page_icon="🔬", layout="wide")
 
-# Función de validación con google-auth (la moderna)
-def validar_usuario_sheets(usuario_ingresado, password_ingresado):
+# --- CSS PERSONALIZADO ---
+st.markdown("""
+    <style>
+    .login-desc { color: #555555; font-size: 14px; text-align: center; margin-bottom: 25px; }
+    div[data-testid="stForm"] button { background-color: #000c66 !important; color: white !important; width: 120px; border-radius: 6px; }
+    </style>
+""", unsafe_allow_html=True)
+
+# Función de validación (la que funciona en la nube)
+def validar_usuario_sheets(user, password):
     scope = ['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/auth/drive']
-    
-    if "GCP_CREDENTIALS" in st.secrets:
-        creds_dict = json.loads(st.secrets["GCP_CREDENTIALS"])
-        creds = Credentials.from_service_account_info(creds_dict, scopes=scope)
-    else:
-        # Solo para modo local
-        creds = Credentials.from_service_account_file('nube/credenciales.json', scopes=scope)
-    
+    creds_dict = json.loads(st.secrets["GCP_CREDENTIALS"])
+    creds = Credentials.from_service_account_info(creds_dict, scopes=scope)
     client = gspread.authorize(creds)
     sheet = client.open("Usuarios_FDA").sheet1
     datos = sheet.get_all_records()
-    
     for fila in datos:
-        if str(fila['usuario']).strip() == usuario_ingresado.strip() and \
-           str(fila['password']).strip() == password_ingresado.strip():
+        if str(fila['usuario']).strip() == user.strip() and str(fila['password']).strip() == password.strip():
             return True
     return False
 
-# Inicializar sesión
-if "autenticado" not in st.session_state:
-    st.session_state["autenticado"] = False
+# Lógica de estados
+if "autenticado" not in st.session_state: st.session_state["autenticado"] = False
 
-# Interfaz de Login
+# --- INTERFAZ ---
 if not st.session_state["autenticado"]:
-    st.title("Acceso al Sistema")
-    user = st.text_input("Usuario")
-    password = st.text_input("Contraseña", type="password")
-    if st.button("Ingresar"):
-        if validar_usuario_sheets(user, password):
-            st.session_state["autenticado"] = True
-            st.rerun()
-        else:
-            st.error("Credenciales incorrectas")
+    st.title("🔬 Acceso al Sistema")
+    with st.form("login"):
+        user = st.text_input("Usuario")
+        password = st.text_input("Contraseña", type="password")
+        if st.form_submit_button("Ingresar"):
+            if validar_usuario_sheets(user, password):
+                st.session_state["autenticado"] = True
+                st.rerun()
+            else:
+                st.error("Credenciales incorrectas")
 else:
     st.title("🔬 Extractor AccessGUDID FDA")
-    st.write("Bienvenido al sistema.")
+    st.write("Bienvenido, sistema listo para operar.")
     if st.button("Cerrar Sesión"):
         st.session_state["autenticado"] = False
         st.rerun()
