@@ -46,7 +46,7 @@ if 'sheet' not in st.session_state:
         
         # Usamos ID por seguridad (cambia este ID por el tuyo real de la URL)
         SHEET_ID = "1SSAS4NLafr3p8K3nllBoHp0AKklO5JNfWwQbSfNdbGU"
-        st.session_state.sheet = client.open_by_key(SHEET_ID).worksheet("Logs")
+        st.session_state.sheet = client.open_by_key(SHEET_ID).sheet1
         
     except Exception as e:
         st.error(f"Error en la conexión con Google: {e}")
