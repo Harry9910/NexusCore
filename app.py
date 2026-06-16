@@ -21,25 +21,17 @@ except Exception as e:
 # Asegúrate de que esta función esté definida antes del formulario de login
 def validar_usuario(usuario, password):
     try:
-        # Abrir la hoja y la pestaña
         sheet_users = client.open("Usuarios_FDA").worksheet("Usuarios")
-        
-        # Obtener los datos
         datos_usuarios = sheet_users.get_all_records()
-        
-        # Verificar credenciales
         for fila in datos_usuarios:
             usuario_db = str(fila.get('usuario', '')).strip()
             pass_db = str(fila.get('contraseña', '')).strip()
-            
             if usuario_db == usuario.strip() and pass_db == password.strip():
                 return True
         return False
-        
     except Exception as e:
         st.error(f"Error técnico: {e}")
         return False
-        
             
             # Comparamos
             if usuario_db == usuario.strip() and pass_db == password.strip():
@@ -282,17 +274,7 @@ if not st.session_state["autenticado"]:
                 # ESTA ERA TU LÓGICA ANTIGUA (BORRA LA COMPARACIÓN VIEJA)
                 # if usuario == USUARIO_CORRECTO and contraseña == CONTRASEÑA_CORRECTA:
                 
-                # --- ESTA ES LA NUEVA LÓGICA (USA LA FUNCIÓN QUE CONFIGURAMOS) ---
-                if validar_usuario(usuario, contraseña):
-                    st.session_state["autenticado"] = True
-                    st.session_state["usuario_activo_real"] = usuario
-                    st.session_state["usuario_guardado"] = usuario if recordar else ""
-                    st.success("✔ Credenciales válidas. Accediendo...")
-                    time.sleep(0.5)
-                    st.rerun()
-                else:
-                    st.error("❌ Usuario o contraseña incorrectos.")
-    st.stop()
+               
 
 # ==========================================================
 # INTERFAZ INTERNA: MONITOR CON CONTENEDOR SEGMENTADO CUSTOM
