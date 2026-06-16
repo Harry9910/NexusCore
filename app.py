@@ -10,6 +10,32 @@ import io
 import os
 import base64
 
+def registrar_log(usuario, busqueda, resultados_obtenidos):
+    timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    
+    # Crear un DataFrame con la nueva fila
+    nueva_entrada = pd.DataFrame([{
+        "Fecha/Hora": timestamp,
+        "Usuario": usuario,
+        "Consulta": busqueda,
+        "Registros Encontrados": len(resultados_obtenidos)
+    }])
+    
+    try:
+        # Usamos 'append' si tu versión de la librería lo permite, 
+        # o leemos y concatenamos como estabas haciendo, 
+        # pero asegurándonos de que la conexión esté bien instanciada.
+        
+        # FORMA SEGURA (Leer, Concat, Sobreescribir)
+        df_existente = conn.read(worksheet="Logs", usecols=[0,1,2,3]) # Ajusta las columnas
+        df_actualizado = pd.concat([df_existente, nueva_entrada], ignore_index=True)
+        
+        # Si .update() falla, usa el método write:
+        conn.write(worksheet="Logs", data=df_actualizado) 
+        
+    except Exception as e:
+        st.error(f"Error al guardar log: {e}")
+
 # --- NUEVAS FUNCIONES ---
 
 @st.cache_data(ttl=3600)
