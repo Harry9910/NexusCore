@@ -11,12 +11,7 @@ import base64
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 
-# --- DIAGNÓSTICO DE SECRETS ---
-try:
-    st.write("Contenido de st.secrets detectado:")
-    st.write(st.secrets)
-except Exception as e:
-    st.error(f"No se pudieron leer los secretos: {e}")
+
 
 # Asegúrate de que esta función esté definida antes del formulario de login
 def validar_usuario(usuario, password):
