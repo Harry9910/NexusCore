@@ -15,7 +15,7 @@ from oauth2client.service_account import ServiceAccountCredentials
 # CONFIGURACIÓN GLOBAL
 # ==========================================================
 SCOPE = ['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/auth/drive']
-SHEET_ID = "1SSAS4NLafR3p8K3nIlBoHp0AKklO5JNfWwQbSfNdbGU"
+SHEET_ID = "1SSAS4NLafr3p8K3nllBoHp0AKklO5JNfWwQbSfNdbGU"
 
 # ==========================================================
 # FUNCIONES DE CONEXIÓN Y AUTENTICACIÓN
@@ -89,10 +89,10 @@ b64_fda     = buscar_logo("logo_fda")
 # ==========================================================
 # INICIALIZACIÓN DE SESSION STATE
 # ==========================================================
-if "autenticado"        not in st.session_state: st.session_state["autenticado"]        = False
-if "usuario_guardado"   not in st.session_state: st.session_state["usuario_guardado"]   = ""
+if "autenticado"         not in st.session_state: st.session_state["autenticado"]         = False
+if "usuario_guardado"    not in st.session_state: st.session_state["usuario_guardado"]    = ""
 if "usuario_activo_real" not in st.session_state: st.session_state["usuario_activo_real"] = ""
-if "seccion_activa"     not in st.session_state: st.session_state["seccion_activa"]     = "Inicio"
+if "seccion_activa"      not in st.session_state: st.session_state["seccion_activa"]      = "Inicio"
 
 # ==========================================================
 # PANTALLA DE LOGIN
@@ -108,23 +108,52 @@ if not st.session_state["autenticado"]:
             header, footer, [data-testid="stSidebar"], #MainMenu { visibility: hidden !important; display: none !important; }
             div[data-testid="stForm"] {
                 background-color: rgba(255,255,255,0.98) !important;
-                border-radius: 16px !important; padding: 45px 40px !important;
+                border-radius: 16px !important;
+                padding: 45px 40px !important;
                 box-shadow: 0px 12px 40px rgba(0,0,0,0.35) !important;
-                max-width: 540px; margin: 0 auto;
+                max-width: 540px;
+                margin: 0 auto;
             }
-            .contenedor-logos-principales { display:flex; justify-content:center; align-items:center; gap:25px; margin-bottom:30px; height:75px; }
-            .logo-header-invima { height:65px !important; width:auto !important; object-fit:contain; }
-            .logo-header-fda    { height:50px !important; width:auto !important; object-fit:contain; }
-            .barra-separadora-vertical-azul { width:3px; height:60px; background-color:#00b4d8; margin:0 10px; }
-            .login-title { color:#0f2043 !important; font-size:24px; font-weight:bold; text-align:center; margin-bottom:6px; }
-            .login-desc  { color:#555555 !important; font-size:14px; text-align:center; margin-bottom:25px; }
-            div[data-testid="stForm"] button { background-color:#000c66 !important; color:white !important; width:120px; border-radius:6px; padding:10px 20px; font-size:16px; font-weight:500; }
-            .contenedor-soporte-inferior { border-top:1px solid #eef0f4; margin-top:35px; padding-top:25px; }
-            .titulo-soporte { font-size:12.5px; font-weight:600; color:#6c757d !important; margin-bottom:20px; text-transform:uppercase; }
-            .fila-logos-soporte { display:flex; justify-content:space-between; align-items:center; }
-            .logo-gudid-libre   { width:130px !important; height:auto !important; object-fit:contain; }
-            .logo-eudamed-libre { width:120px !important; height:auto !important; object-fit:contain; }
-            .logo-gmdn-libre    { width:135px !important; height:auto !important; object-fit:contain; }
+            .contenedor-logos-principales {
+                display: flex; justify-content: center; align-items: center;
+                gap: 25px; margin-bottom: 30px; height: 75px;
+            }
+            .logo-header-invima { height: 65px !important; width: auto !important; object-fit: contain; }
+            .logo-header-fda    { height: 50px !important; width: auto !important; object-fit: contain; }
+            .barra-separadora-vertical-azul { width: 3px; height: 60px; background-color: #00b4d8; margin: 0 10px; }
+            .login-title { color: #0f2043 !important; font-size: 24px; font-weight: bold; text-align: center; margin-bottom: 6px; }
+            .login-desc  { color: #555555 !important; font-size: 14px; text-align: center; margin-bottom: 25px; }
+            div[data-testid="stForm"] button {
+                background-color: #000c66 !important; color: white !important;
+                width: 120px; border-radius: 6px; padding: 10px 20px;
+                font-size: 16px; font-weight: 500;
+            }
+            .contenedor-soporte-inferior { border-top: 1px solid #eef0f4; margin-top: 35px; padding-top: 25px; }
+            .titulo-soporte { font-size: 12.5px; font-weight: 600; color: #6c757d !important; margin-bottom: 20px; text-transform: uppercase; }
+            .fila-logos-soporte { display: flex; justify-content: space-between; align-items: center; }
+            .logo-gudid-libre   { width: 130px !important; height: auto !important; object-fit: contain; }
+            .logo-eudamed-libre { width: 120px !important; height: auto !important; object-fit: contain; }
+            .logo-gmdn-libre    { width: 135px !important; height: auto !important; object-fit: contain; }
+
+            /* ── RESPONSIVE MÓVIL ── */
+            @media (max-width: 768px) {
+                div[data-testid="stForm"] {
+                    padding: 25px 18px !important;
+                    margin: 0 8px !important;
+                }
+                .contenedor-logos-principales { gap: 12px !important; height: 55px !important; }
+                .logo-header-invima { height: 42px !important; }
+                .logo-header-fda    { height: 32px !important; }
+                .login-title { font-size: 20px !important; }
+                .fila-logos-soporte {
+                    flex-direction: column !important;
+                    gap: 12px !important;
+                    align-items: center !important;
+                }
+                .logo-gudid-libre, .logo-eudamed-libre, .logo-gmdn-libre {
+                    width: 100px !important;
+                }
+            }
         </style>""", unsafe_allow_html=True)
 
     st.markdown("<br><br>", unsafe_allow_html=True)
@@ -160,9 +189,9 @@ if not st.session_state["autenticado"]:
                 if not usuario or not contraseña:
                     st.warning("Por favor complete todos los campos.")
                 elif validar_usuario(usuario, contraseña):
-                    st.session_state["autenticado"]        = True
+                    st.session_state["autenticado"]         = True
                     st.session_state["usuario_activo_real"] = usuario
-                    st.session_state["usuario_guardado"]   = usuario if recordar else ""
+                    st.session_state["usuario_guardado"]    = usuario if recordar else ""
                     st.success("✔ Credenciales válidas. Accediendo...")
                     time.sleep(0.5)
                     st.rerun()
@@ -178,19 +207,111 @@ else:
         <style>
             .stApp { background-image: none !important; background-color: #f4f6f9 !important; }
             header, footer, #MainMenu { visibility: hidden !important; display: none !important; }
-            [data-testid="stSidebar"] { visibility: visible !important; background-color: #0b1d3a !important; border-right: 1px solid #061122 !important; }
-            .sidebar-text-header { text-align:center; padding:15px 10px; margin-bottom:20px; color:#ffffff !important; font-size:20px; font-weight:700; border-bottom:1px solid rgba(255,255,255,0.15); }
-            [data-testid="stSidebar"] button { background-color:#1a365d !important; color:#ffffff !important; font-weight:600 !important; border:1px solid #2a4d7c !important; border-radius:6px !important; padding:10px !important; }
-            [data-testid="stSidebar"] button:hover { background-color:#2a4d7c !important; }
-            .custom-progress-container { width:100%; background-color:#ffffff; border:2px solid #1e40af; border-radius:8px; padding:3px; height:32px; overflow:hidden; margin:15px 0; }
-            .custom-progress-bar { height:100%; border-radius:4px; background-image: repeating-linear-gradient(-45deg, #1e40af, #1e40af 12px, #ffffff 12px, #ffffff 18px); transition: width 0.2s ease-in-out; }
-            .header-oficina-virtual { background-color:#ffffff !important; padding:15px 30px; border-radius:10px; box-shadow:0px 2px 8px rgba(0,0,0,0.05); margin-bottom:25px; display:flex; justify-content:space-between; align-items:center; }
-            .header-title { color:#0b1d3a !important; font-size:22px; font-weight:bold; margin:0; }
-            .user-tag { font-size:13.5px; color:#0b1d3a !important; background-color:#eff6ff !important; padding:8px 16px; border-radius:20px; border:1px solid #bfdbfe !important; font-weight:500; }
-            .card-menu-principal { background-color:#ffffff !important; padding:25px; border-radius:12px; box-shadow:0px 4px 12px rgba(0,0,0,0.05); border-left:5px solid #0b1d3a; margin-bottom:20px; }
-            .footer-institucional { margin-top:60px; padding:25px 0; border-top:1px solid #e5e7eb; text-align:center; font-size:13px; color:#4b5563 !important; }
-            .footer-links { display:flex; justify-content:center; gap:30px; margin-bottom:10px; }
-            .footer-links a { color:#0b1d3a !important; text-decoration:none; font-weight:500; }
+            [data-testid="stSidebar"] {
+                visibility: visible !important;
+                background-color: #0b1d3a !important;
+                border-right: 1px solid #061122 !important;
+            }
+            .sidebar-text-header {
+                text-align: center; padding: 15px 10px; margin-bottom: 20px;
+                color: #ffffff !important; font-size: 20px; font-weight: 700;
+                border-bottom: 1px solid rgba(255,255,255,0.15);
+            }
+            [data-testid="stSidebar"] button {
+                background-color: #1a365d !important; color: #ffffff !important;
+                font-weight: 600 !important; border: 1px solid #2a4d7c !important;
+                border-radius: 6px !important; padding: 10px !important;
+            }
+            [data-testid="stSidebar"] button:hover { background-color: #2a4d7c !important; }
+            .custom-progress-container {
+                width: 100%; background-color: #ffffff; border: 2px solid #1e40af;
+                border-radius: 8px; padding: 3px; height: 32px; overflow: hidden; margin: 15px 0;
+            }
+            .custom-progress-bar {
+                height: 100%; border-radius: 4px;
+                background-image: repeating-linear-gradient(-45deg, #1e40af, #1e40af 12px, #ffffff 12px, #ffffff 18px);
+                transition: width 0.2s ease-in-out;
+            }
+
+            /* ── HEADER ── */
+            .header-oficina-virtual {
+                background-color: #ffffff !important;
+                padding: 15px 30px; border-radius: 10px;
+                box-shadow: 0px 2px 8px rgba(0,0,0,0.05);
+                margin-bottom: 25px;
+                display: flex; justify-content: space-between; align-items: center;
+            }
+            .header-title { color: #0b1d3a !important; font-size: 22px; font-weight: bold; margin: 0; }
+            .user-tag {
+                font-size: 13.5px; color: #0b1d3a !important;
+                background-color: #eff6ff !important; padding: 8px 16px;
+                border-radius: 20px; border: 1px solid #bfdbfe !important; font-weight: 500;
+                white-space: nowrap;
+            }
+
+            /* ── CARDS MENÚ ── */
+            .card-menu-principal {
+                background-color: #ffffff !important;
+                padding: 25px; border-radius: 12px;
+                box-shadow: 0px 4px 12px rgba(0,0,0,0.05);
+                border-left: 5px solid #0b1d3a;
+                margin-bottom: 20px;
+            }
+            .card-menu-principal h4 {
+                color: #0b1d3a !important;
+                font-size: 16px !important;
+                margin: 0 0 8px 0 !important;
+                font-weight: 700 !important;
+            }
+            .card-menu-principal p {
+                color: #374151 !important;
+                font-size: 14px !important;
+                margin: 0 !important;
+            }
+            .card-menu-secundaria {
+                background-color: #ffffff !important;
+                padding: 25px; border-radius: 12px;
+                box-shadow: 0px 4px 12px rgba(0,0,0,0.05);
+                border-left: 5px solid #6b7280;
+                margin-bottom: 20px;
+                opacity: 0.65;
+            }
+            .card-menu-secundaria h4 {
+                color: #4b5563 !important;
+                font-size: 16px !important;
+                margin: 0 0 8px 0 !important;
+                font-weight: 700 !important;
+            }
+            .card-menu-secundaria p {
+                color: #4b5563 !important;
+                font-size: 14px !important;
+                margin: 0 !important;
+            }
+
+            /* ── FOOTER ── */
+            .footer-institucional {
+                margin-top: 60px; padding: 25px 0;
+                border-top: 1px solid #e5e7eb;
+                text-align: center; font-size: 13px; color: #4b5563 !important;
+            }
+            .footer-links { display: flex; justify-content: center; gap: 30px; margin-bottom: 10px; flex-wrap: wrap; }
+            .footer-links a { color: #0b1d3a !important; text-decoration: none; font-weight: 500; }
+
+            /* ── RESPONSIVE MÓVIL ── */
+            @media (max-width: 768px) {
+                .header-oficina-virtual {
+                    flex-direction: column !important;
+                    gap: 8px !important;
+                    text-align: center !important;
+                    padding: 12px 15px !important;
+                }
+                .header-title { font-size: 16px !important; }
+                .user-tag { font-size: 12px !important; padding: 6px 12px !important; }
+                .card-menu-principal, .card-menu-secundaria { padding: 15px !important; }
+                .card-menu-principal h4, .card-menu-secundaria h4 { font-size: 14px !important; }
+                .card-menu-principal p,  .card-menu-secundaria p  { font-size: 12px !important; }
+                .footer-links { gap: 15px !important; }
+            }
         </style>""", unsafe_allow_html=True)
 
     # --- SIDEBAR ---
@@ -220,17 +341,20 @@ else:
     if st.session_state["seccion_activa"] == "Inicio":
         st.markdown("<h3 style='color:#0b1d3a;'>Menú Principal</h3>", unsafe_allow_html=True)
         st.markdown("<p style='color:#374151;'>Seleccione una de las siguientes opciones:</p>", unsafe_allow_html=True)
+
         st.markdown("""
             <div class="card-menu-principal">
-                <h4 style="margin:0 0 8px 0; color:#0b1d3a !important;">1. Módulo Automatizado de Extracción Masiva</h4>
-                <p style="margin:0; color:#374151 !important; font-size:14px;">Carga masiva de archivos Excel para cruce con AccessGUDID (FDA), identificación de códigos GMDN y agencias emisoras.</p>
+                <h4>1. Módulo Automatizado de Extracción Masiva</h4>
+                <p>Carga masiva de archivos Excel para cruce con AccessGUDID (FDA), identificación de códigos GMDN y agencias emisoras.</p>
             </div>""", unsafe_allow_html=True)
-        if st.button("Ingresar al Módulo de Extracción", key="btn_ir_ext"):
+
+        if st.button("🚀 Ingresar al Módulo de Extracción", key="btn_ir_ext", use_container_width=True):
             st.session_state["seccion_activa"] = "Extraccion"; st.rerun()
+
         st.markdown("""
-            <div class="card-menu-principal" style="border-left-color:#6b7280; opacity:0.65;">
-                <h4 style="margin:0 0 8px 0; color:#4b5563 !important;">2. Consulta de Historiales y Reportes</h4>
-                <p style="margin:0; color:#4b5563 !important; font-size:14px;">Módulo de auditoría — Próximamente disponible.</p>
+            <div class="card-menu-secundaria">
+                <h4>2. Consulta de Historiales y Reportes</h4>
+                <p>Módulo de auditoría — Próximamente disponible.</p>
             </div>""", unsafe_allow_html=True)
 
     # ==========================================================
@@ -244,9 +368,9 @@ else:
 
         with col_izq:
             st.info("⚙ Configuración de Parámetros")
-            archivo_cargado      = st.file_uploader("Sube tu archivo de Excel (.xlsx)", type=["xlsx"])
-            company_name_filtro  = st.text_input("Filtrar por Company Name (Opcional)", "").strip()
-            conectar_boton       = st.button("🚀 Iniciar Extracción Masiva", disabled=(archivo_cargado is None), use_container_width=True)
+            archivo_cargado     = st.file_uploader("Sube tu archivo de Excel (.xlsx)", type=["xlsx"])
+            company_name_filtro = st.text_input("Filtrar por Company Name (Opcional)", "").strip()
+            conectar_boton      = st.button("🚀 Iniciar Extracción Masiva", disabled=(archivo_cargado is None), use_container_width=True)
 
         with col_der:
             st.warning("📊 Monitor de Procesamiento en Tiempo Real")
@@ -254,9 +378,7 @@ else:
             headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
 
             if archivo_cargado and conectar_boton:
-                # --- LECTURA CORREGIDA DEL EXCEL ---
                 try:
-                    # Lee el archivo desde el buffer de memoria (esto es lo que fallaba)
                     bytes_data = archivo_cargado.read()
                     df = pd.read_excel(io.BytesIO(bytes_data), header=None, dtype=str)
                     df[0] = df[0].astype(str).str.strip()
@@ -267,11 +389,11 @@ else:
                     st.stop()
 
                 st.success(f"📋 Referencias encontradas: {total_refs}")
-                texto_estado       = st.empty()
-                barra_custom       = st.empty()
-                tabla_viva         = st.empty()
-                lista_resultados   = []
-                session            = requests.Session()
+                texto_estado     = st.empty()
+                barra_custom     = st.empty()
+                tabla_viva       = st.empty()
+                lista_resultados = []
+                session          = requests.Session()
 
                 def actualizar_barra(pct):
                     barra_custom.markdown(f"""
@@ -367,7 +489,7 @@ else:
                                                     pedazos_trad.append(parte)
                                             gmdn_def = " ".join(pedazos_trad).strip()
                                         except:
-                                            pass  # conserva original si falla
+                                            pass
 
                                     # Issuing Agency
                                     issuing = "No encontrado"
@@ -411,7 +533,6 @@ else:
                 barra_custom.empty()
                 st.success("✨ ¡Extracción completada al 100%!")
 
-                # Registrar log en Google Sheets
                 registrar_log(st.session_state["usuario_activo_real"], f"Extracción masiva ({total_refs} refs)", len(lista_resultados))
 
                 df_final = pd.DataFrame(lista_resultados)
