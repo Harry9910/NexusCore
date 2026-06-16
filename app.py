@@ -32,54 +32,39 @@ def validar_usuario(usuario, password):
         return False
 
 
-# --- CONFIGURACIÓN DE CONEXIÓN A GOOGLE SHEETS ---
 # --- CONFIGURACIÓN DE CONEXIÓN ---
-# Se recomienda definir el scope fuera del bloque try para reutilizarlo
 SCOPE = ['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/auth/drive']
 
-try:
-    # 1. Traer los secretos
-    creds_dict = dict(st.secrets["gcp"])
-    
-    # 2. IMPORTANTE: Ajustar el salto de línea que TOML a veces altera
-    # Esto es vital para que la clave privada sea reconocida correctamente
-    creds_dict["private_key"] = creds_dict["private_key"].replace("\\n", "\n")
-    
-    # 3. Autenticar
-    creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, SCOPE)
-    client = gspread.authorize(creds)
-    
-    # 4. Conectar a la hoja
-    sheet = client.open("Usuarios_FDA").worksheet("Logs")
-    
-except Exception as e:
-    st.error(f"Error en la conexión con Google: {e}")
-    st.stop() # Detiene la app si no hay conexión, evitando errores posteriores
+# Inicializamos la variable 'sheet' como global para usarla en cualquier función
+if 'sheet' not in st.session_state:
+    try:
+        creds_dict = dict(st.secrets["gcp"])
+        creds_dict["private_key"] = creds_dict["private_key"].replace("\\n", "\n")
+        
+        creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, SCOPE)
+        client = gspread.authorize(creds)
+        
+        # Usamos ID por seguridad (cambia este ID por el tuyo real de la URL)
+        SHEET_ID = "1SSAS4NLafr3p8K3nllBoHp0AKklO5JNfWwQbSfNdbGU"
+        st.session_state.sheet = client.open_by_key(SHEET_ID).worksheet("Logs")
+        
+    except Exception as e:
+        st.error(f"Error en la conexión con Google: {e}")
+        st.stop()
 
 # --- FUNCIÓN DE REGISTRO ---
 def registrar_log(usuario, busqueda, resultados_obtenidos):
-    timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    
-    # Preparar datos (usamos lista simple para gspread)
-    nueva_fila = [timestamp, usuario, busqueda, len(resultados_obtenidos)]
-    
-    # Agregar la fila a la hoja de cálculo
-    sheet.append_row(nueva_fila)
-    
     try:
-        # Usamos 'append' si tu versión de la librería lo permite, 
-        # o leemos y concatenamos como estabas haciendo, 
-        # pero asegurándonos de que la conexión esté bien instanciada.
+        timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        nueva_fila = [timestamp, usuario, busqueda, len(resultados_obtenidos)]
         
-        # FORMA SEGURA (Leer, Concat, Sobreescribir)
-        df_existente = conn.read(worksheet="Logs", usecols=[0,1,2,3]) # Ajusta las columnas
-        df_actualizado = pd.concat([df_existente, nueva_entrada], ignore_index=True)
-        
-        # Si .update() falla, usa el método write:
-        conn.write(worksheet="Logs", data=df_actualizado) 
+        # Usamos directamente gspread para añadir la fila (es lo más seguro y rápido)
+        st.session_state.sheet.append_row(nueva_fila)
         
     except Exception as e:
         st.error(f"Error al guardar log: {e}")
+
+
 
 # --- NUEVAS FUNCIONES ---
 
