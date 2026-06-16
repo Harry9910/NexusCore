@@ -44,24 +44,6 @@ if "autenticado" not in st.session_state:
 # Lógica de estados
 if "autenticado" not in st.session_state: st.session_state["autenticado"] = False
 
-# --- INTERFAZ ---
-if not st.session_state["autenticado"]:
-    st.title("🔬 Acceso al Sistema")
-    with st.form("login"):
-        user = st.text_input("Usuario")
-        password = st.text_input("Contraseña", type="password")
-        if st.form_submit_button("Ingresar"):
-            if validar_usuario_sheets(user, password):
-                st.session_state["autenticado"] = True
-                st.rerun()
-            else:
-                st.error("Credenciales incorrectas")
-else:
-    st.title("🔬 Extractor AccessGUDID FDA")
-    st.write("Bienvenido, sistema listo para operar.")
-    if st.button("Cerrar Sesión"):
-        st.session_state["autenticado"] = False
-        st.rerun()
 
 # Configuración de la página web con layout expandido
 st.set_page_config(page_title="Extractor AccessGUDID FDA", page_icon="🔬", layout="wide")
