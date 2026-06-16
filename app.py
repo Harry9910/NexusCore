@@ -412,7 +412,7 @@ else:
                 st.success("✨ ¡Extracción completada al 100%!")
 
                 # Registrar log en Google Sheets
-                registrar_log(st.session_state["usuario_activo_real"], f"Extracción masiva ({total_refs} refs)", lista_resultados)
+                registrar_log(st.session_state["usuario_activo_real"], f"Extracción masiva ({total_refs} refs)", len(lista_resultados))
 
                 df_final = pd.DataFrame(lista_resultados)
                 output = io.BytesIO()
