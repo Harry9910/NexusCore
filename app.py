@@ -18,6 +18,11 @@ SCOPE = ['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/au
 SHEET_ID = "1SSAS4NLafR3p8K3nIlBoHp0AKklO5JNfWwQbSfNdbGU"
 ADMIN_USER = "admin"
 
+# Columnas que debe tener la hoja "Usuarios" (en este orden). Si la hoja
+# solo tiene "usuario" y "contraseña" (versión antigua), las columnas que
+# falten se crean automáticamente sin borrar nada de lo que ya existe.
+COLUMNAS_USUARIOS = ["usuario", "contraseña", "nombre", "fecha_nacimiento"]
+
 # ==========================================================
 # FUNCIONES DE CONEXIÓN Y AUTENTICACIÓN
 # ==========================================================
@@ -28,12 +33,38 @@ def get_gspread_client():
     creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, SCOPE)
     return gspread.authorize(creds)
 
+
+def asegurar_columnas_usuarios(sheet_users):
+    """
+    Garantiza que la fila de encabezados tenga usuario / contraseña / nombre /
+    fecha_nacimiento. Si faltan columnas al final, las agrega. Esto permite
+    que una hoja antigua se actualice sola sin perder usuarios existentes.
+    """
+    try:
+        encabezados = sheet_users.row_values(1)
+    except Exception:
+        encabezados = []
+    for idx, nombre_columna in enumerate(COLUMNAS_USUARIOS, start=1):
+        if idx > len(encabezados):
+            sheet_users.update_cell(1, idx, nombre_columna)
+
+
+def _obtener_hoja_usuarios():
+    client = get_gspread_client()
+    doc = client.open_by_key(SHEET_ID)
+    sheet_users = doc.worksheet("Usuarios")
+    asegurar_columnas_usuarios(sheet_users)
+    return sheet_users
+
+
 def validar_usuario(usuario, password):
     try:
-        client = get_gspread_client()
-        doc = client.open_by_key(SHEET_ID)
-        sheet_users = doc.worksheet("Usuarios")
-        datos_usuarios = sheet_users.get_all_records()
+        sheet_users = _obtener_hoja_usuarios()
+        # numericise_ignore=['all'] evita que gspread convierta contraseñas
+        # "numéricas" (ej: 0152, 2024, 01.5) en números. Esa conversión
+        # automática era la causa de que, tras cambiar la contraseña, el
+        # login dijera "incorrecta" aunque el cambio se hubiera guardado.
+        datos_usuarios = sheet_users.get_all_records(numericise_ignore=['all'])
         for fila in datos_usuarios:
             usuario_db = str(fila.get('usuario', '')).strip()
             pass_db = str(fila.get('contraseña', '')).strip()
@@ -43,6 +74,7 @@ def validar_usuario(usuario, password):
     except Exception as e:
         st.error(f"Error técnico de conexión: {e}")
         return False
+
 
 def obtener_logs():
     try:
@@ -60,70 +92,109 @@ def obtener_logs():
         st.error(f"Error al obtener historiales: {e}")
         return pd.DataFrame(columns=["Fecha", "Usuario", "Búsqueda", "Resultados"])
 
+
 def registrar_log(usuario, busqueda, cantidad_resultados):
     try:
         client = get_gspread_client()
         doc = client.open_by_key(SHEET_ID)
         sheet_logs = doc.worksheet("Logs")
         timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        sheet_logs.append_row([timestamp, usuario, busqueda, cantidad_resultados])
+        sheet_logs.append_row([timestamp, usuario, busqueda, cantidad_resultados], value_input_option='RAW')
     except Exception as e:
         st.error(f"Error al guardar log: {e}")
 
+
 def obtener_usuarios():
+    """Lista completa de usuarios, incluyendo contraseña, nombre y fecha de nacimiento."""
     try:
-        client = get_gspread_client()
-        doc = client.open_by_key(SHEET_ID)
-        sheet_users = doc.worksheet("Usuarios")
-        datos = sheet_users.get_all_records()
+        sheet_users = _obtener_hoja_usuarios()
+        datos = sheet_users.get_all_records(numericise_ignore=['all'])
         return datos, sheet_users
     except Exception as e:
         st.error(f"Error al obtener usuarios: {e}")
         return [], None
 
-def agregar_usuario(nuevo_usuario, nueva_password):
+
+def obtener_perfil(usuario):
+    """Devuelve el diccionario de datos de UN usuario puntual, o None si no existe."""
+    datos, _ = obtener_usuarios()
+    for fila in datos:
+        if str(fila.get('usuario', '')).strip().lower() == usuario.strip().lower():
+            return fila
+    return None
+
+
+def agregar_usuario(nuevo_usuario, nueva_password, nombre=""):
     try:
-        client = get_gspread_client()
-        doc = client.open_by_key(SHEET_ID)
-        sheet_users = doc.worksheet("Usuarios")
-        datos = sheet_users.get_all_records()
+        sheet_users = _obtener_hoja_usuarios()
+        datos = sheet_users.get_all_records(numericise_ignore=['all'])
         for fila in datos:
             if str(fila.get('usuario', '')).strip().lower() == nuevo_usuario.strip().lower():
                 return False, "El usuario ya existe."
-        sheet_users.append_row([nuevo_usuario.strip(), nueva_password.strip()])
+        sheet_users.append_row(
+            [nuevo_usuario.strip(), str(nueva_password).strip(), nombre.strip(), ""],
+            value_input_option='RAW'
+        )
         return True, "Usuario creado correctamente."
     except Exception as e:
         return False, f"Error: {e}"
+
 
 def eliminar_usuario(usuario_a_eliminar):
     try:
         if usuario_a_eliminar.strip().lower() == ADMIN_USER.lower():
             return False, "No se puede eliminar al administrador."
-        client = get_gspread_client()
-        doc = client.open_by_key(SHEET_ID)
-        sheet_users = doc.worksheet("Usuarios")
+        sheet_users = _obtener_hoja_usuarios()
         datos = sheet_users.get_all_values()
         for i, fila in enumerate(datos):
-            if len(fila) > 0 and str(fila[0]).strip() == usuario_a_eliminar.strip():
+            if len(fila) > 0 and str(fila[0]).strip().lower() == usuario_a_eliminar.strip().lower():
                 sheet_users.delete_rows(i + 1)
                 return True, f"Usuario '{usuario_a_eliminar}' eliminado."
         return False, "Usuario no encontrado."
     except Exception as e:
         return False, f"Error: {e}"
 
-def cambiar_password(usuario_objetivo, nueva_password):
+
+def actualizar_perfil(usuario_objetivo, nuevo_nombre=None, nueva_fecha=None, nueva_password=None):
+    """
+    Actualiza nombre, fecha de nacimiento y/o contraseña de un usuario.
+    La usan tanto 'Mi Perfil' (el propio usuario) como el Panel de
+    Administración (el admin sobre cualquier usuario) — por eso un cambio
+    hecho desde un lado se refleja automáticamente en el otro, ya que ambos
+    leen y escriben la misma fila de la misma hoja.
+
+    Se escribe siempre con value_input_option='RAW' para que Google Sheets
+    NO reinterprete el texto como número/fecha/fórmula.
+    """
     try:
-        client = get_gspread_client()
-        doc = client.open_by_key(SHEET_ID)
-        sheet_users = doc.worksheet("Usuarios")
+        sheet_users = _obtener_hoja_usuarios()
         datos = sheet_users.get_all_values()
         for i, fila in enumerate(datos):
-            if len(fila) > 0 and str(fila[0]).strip() == usuario_objetivo.strip():
-                sheet_users.update_cell(i + 1, 2, nueva_password.strip())
-                return True, f"Contraseña actualizada para '{usuario_objetivo}'."
+            if len(fila) > 0 and str(fila[0]).strip().lower() == usuario_objetivo.strip().lower():
+                fila_idx = i + 1
+                if nueva_password:
+                    sheet_users.update(f"B{fila_idx}", [[str(nueva_password).strip()]], value_input_option='RAW')
+                if nuevo_nombre is not None:
+                    sheet_users.update(f"C{fila_idx}", [[str(nuevo_nombre).strip()]], value_input_option='RAW')
+                if nueva_fecha is not None:
+                    sheet_users.update(f"D{fila_idx}", [[str(nueva_fecha).strip()]], value_input_option='RAW')
+                return True, "Datos actualizados correctamente."
         return False, "Usuario no encontrado."
     except Exception as e:
         return False, f"Error: {e}"
+
+
+def parsear_fecha(valor):
+    """Convierte un texto de fecha guardado en la hoja a un objeto date (o None)."""
+    if not valor:
+        return None
+    texto = str(valor).strip()
+    for fmt in ("%Y-%m-%d", "%d/%m/%Y", "%d-%m-%Y"):
+        try:
+            return datetime.datetime.strptime(texto, fmt).date()
+        except ValueError:
+            continue
+    return None
 
 # ==========================================================
 # FUNCIONES AUXILIARES DE IMAGEN
@@ -296,9 +367,7 @@ if not st.session_state["autenticado"]:
             display: flex; justify-content: center; align-items: center;
             gap: 20px; margin-bottom: 24px; height: 70px;
         }
-        /* INVIMA: +20% → 72px (antes 60px) */
         .logo-header-invima { height: 72px !important; width: auto !important; object-fit: contain; }
-        /* FDA: sin cambio */
         .logo-header-fda    { height: 46px !important; width: auto !important; object-fit: contain; }
         .barra-sep { width: 3px; height: 55px; background-color: #00b4d8; border-radius: 2px; }
         .login-title {
@@ -316,11 +385,8 @@ if not st.session_state["autenticado"]:
         }
         .fila-logos { display: flex; justify-content: space-around; align-items: center; flex-wrap: wrap; gap: 10px; }
 
-        /* GUDID: +40% → 126px (antes 90px) */
         .logo-gudid   { height: 126px !important; width: auto !important; object-fit: contain; max-width: 220px !important; }
-        /* EUDAMED: +40% → 126px (antes 90px) */
         .logo-eudamed { height: 126px !important; width: auto !important; object-fit: contain; max-width: 220px !important; }
-        /* GMDN: -30% → 63px (antes 90px) */
         .logo-gmdn    { height: 63px  !important; width: auto !important; object-fit: contain; max-width: 220px !important; }
 
         /* ── Responsive móvil ── */
@@ -342,7 +408,6 @@ if not st.session_state["autenticado"]:
 
     with col_centro:
         with st.form("formulario_login", clear_on_submit=False):
-            # Logos superiores
             html_cab = '<div class="contenedor-logos-principales">'
             if b64_invima: html_cab += f'<img class="logo-header-invima" src="data:image/png;base64,{b64_invima}">'
             html_cab += '<div class="barra-sep"></div>'
@@ -358,10 +423,8 @@ if not st.session_state["autenticado"]:
             recordar   = st.checkbox("Recordar mi usuario en este equipo", value=(st.session_state["usuario_guardado"] != ""))
             boton_ingresar = st.form_submit_button("Acceder", use_container_width=True)
 
-            # CSS nuclear para checkbox visible y ojo blanco
             st.markdown("""
             <style>
-            /* ══ CHECKBOX LOGIN — cuadrito azul visible, check blanco ══ */
             div[data-testid="stForm"] [data-baseweb="checkbox"] label > div:first-child {
                 background-color: #ffffff !important;
                 background: #ffffff !important;
@@ -378,14 +441,12 @@ if not st.session_state["autenticado"]:
                 align-items: center !important;
                 justify-content: center !important;
             }
-            /* Cuando está marcado: fondo azul */
             div[data-testid="stForm"] [data-baseweb="checkbox"] [aria-checked="true"] > div:first-child,
             div[data-testid="stForm"] [data-baseweb="checkbox"] label[aria-checked="true"] > div:first-child {
                 background-color: #1a365d !important;
                 background: #1a365d !important;
                 border-color: #1a365d !important;
             }
-            /* SVG checkmark blanco y visible */
             div[data-testid="stForm"] [data-baseweb="checkbox"] label > div:first-child svg {
                 fill: #ffffff !important;
                 color: #ffffff !important;
@@ -399,7 +460,6 @@ if not st.session_state["autenticado"]:
                 fill: #ffffff !important;
                 stroke: #ffffff !important;
             }
-            /* Texto del checkbox sin borde */
             div[data-testid="stForm"] [data-baseweb="checkbox"] label,
             div[data-testid="stForm"] [data-baseweb="checkbox"] label > div:not(:first-child),
             div[data-testid="stForm"] [data-baseweb="checkbox"] p,
@@ -411,7 +471,6 @@ if not st.session_state["autenticado"]:
                 color: #374151 !important;
             }
 
-            /* ══ OJO contraseña ══ */
             div[data-testid="stPasswordInput"] [data-baseweb="base-input"],
             div[data-testid="stPasswordInput"] [data-baseweb="base-input"] *:not(button):not(button *):not(input):not(svg):not(svg *) {
                 background-color: #f8fafc !important;
@@ -471,7 +530,6 @@ if not st.session_state["autenticado"]:
             </style>
             """, unsafe_allow_html=True)
 
-            # Logos inferiores — clases individuales por logo
             html_sop = '<div class="soporte-inferior"><div class="soporte-titulo">Bases de datos vinculadas</div><div class="fila-logos">'
             if b64_gudid:   html_sop += f'<img class="logo-gudid"   src="data:image/png;base64,{b64_gudid}">'
             if b64_eudamed: html_sop += f'<img class="logo-eudamed" src="data:image/png;base64,{b64_eudamed}">'
@@ -506,7 +564,6 @@ else:
         section.main { background-color: #f0f4f8 !important; }
         header, footer, #MainMenu { visibility: hidden !important; display: none !important; }
 
-        /* ── Todo el texto del contenido principal en oscuro ── */
         section.main p,
         section.main span,
         section.main label,
@@ -515,7 +572,6 @@ else:
             color: #1e293b !important;
         }
 
-        /* ── Sidebar ── */
         [data-testid="stSidebar"] {
             background-color: #0b1d3a !important;
             border-right: 1px solid #061122 !important;
@@ -539,7 +595,6 @@ else:
             border-bottom: 1px solid rgba(255,255,255,0.15);
         }
 
-        /* ── Botones del contenido principal — NUNCA NEGROS ── */
         .stButton > button,
         .stDownloadButton > button,
         section.main button {
@@ -576,7 +631,6 @@ else:
         .stButton > button p,
         .stButton > button span { color: #ffffff !important; }
 
-        /* ── Botón OJO en contenido principal ── */
         section.main [data-baseweb="base-input"] {
             overflow: hidden !important;
             border-radius: 7px !important;
@@ -611,7 +665,6 @@ else:
             background-color: #2a4d7c !important;
         }
 
-        /* ── Inputs contenido principal ── */
         section.main input[type="text"],
         section.main input[type="password"],
         section.main input[type="number"] {
@@ -628,7 +681,6 @@ else:
         section.main input::placeholder { color: #94a3b8 !important; }
         section.main label { color: #374151 !important; }
 
-        /* ── Selectbox ── */
         section.main [data-baseweb="select"] > div {
             background-color: #ffffff !important;
             color: #1e293b !important;
@@ -640,17 +692,13 @@ else:
             color: #1e293b !important;
         }
 
-        /* ── Date input ── */
         [data-testid="stDateInput"] input { background-color: #ffffff !important; color: #1e293b !important; }
 
-        /* ── Checkbox ── */
         section.main [data-baseweb="checkbox"] p { color: #374151 !important; }
 
-        /* ── Alertas ── */
         [data-testid="stAlert"] p,
         [data-testid="stAlert"] span { color: #1e293b !important; }
 
-        /* ── File uploader ── */
         [data-testid="stFileUploadDropzone"] {
             background-color: #eef2ff !important;
             border: 2px dashed #1a365d !important;
@@ -659,7 +707,6 @@ else:
         [data-testid="stFileUploadDropzone"] p,
         [data-testid="stFileUploadDropzone"] span { color: #374151 !important; }
 
-        /* ── Métricas ── */
         [data-testid="stMetric"] {
             background-color: #ffffff !important;
             border-radius: 10px !important;
@@ -670,7 +717,6 @@ else:
         [data-testid="stMetricLabel"] p { color: #374151 !important; }
         [data-testid="stMetricValue"]   { color: #0b1d3a !important; }
 
-        /* ── Progreso ── */
         .prog-wrap {
             width: 100%; background-color: #e2e8f0; border: 2px solid #1e40af;
             border-radius: 8px; padding: 3px; height: 30px; overflow: hidden; margin: 14px 0;
@@ -681,7 +727,6 @@ else:
             transition: width 0.2s ease-in-out;
         }
 
-        /* ── Header ── */
         .header-box {
             background-color: #ffffff !important;
             padding: 14px 28px; border-radius: 10px;
@@ -704,7 +749,6 @@ else:
             font-weight: 700; letter-spacing: 0.4px;
         }
 
-        /* ── Cards menú ── */
         .card-azul {
             background-color: #ffffff !important;
             padding: 22px; border-radius: 12px;
@@ -725,7 +769,6 @@ else:
         .card-roja h4 { color: #991b1b !important; font-size: 15px !important; font-weight: 700 !important; margin: 0 0 6px 0 !important; }
         .card-roja p  { color: #475569 !important; font-size: 13px !important; margin: 0 !important; }
 
-        /* ── Cards panel admin ── */
         .admin-card {
             background-color: #ffffff !important;
             border-radius: 12px !important;
@@ -742,7 +785,22 @@ else:
             display: block;
         }
 
-        /* ── Tabla usuarios ── */
+        .perfil-card {
+            background-color: #ffffff !important;
+            border-radius: 12px !important;
+            padding: 22px !important;
+            box-shadow: 0 3px 10px rgba(0,0,0,0.07) !important;
+            border-top: 4px solid #0b1d3a !important;
+            margin-bottom: 20px !important;
+        }
+        .perfil-card-title {
+            color: #0b1d3a !important;
+            font-size: 15px !important;
+            font-weight: 700 !important;
+            margin: 0 0 16px 0 !important;
+            display: block;
+        }
+
         .tabla-usr {
             width: 100%; border-collapse: collapse;
             border-radius: 8px; overflow: hidden;
@@ -762,7 +820,6 @@ else:
         .tabla-usr tr:hover td { background-color: #eff6ff !important; }
         .meta-txt { color: #64748b !important; font-size: 12px; margin-top: 8px; }
 
-        /* ── Footer ── */
         .footer-box {
             margin-top: 50px; padding: 22px 0;
             border-top: 1px solid #e2e8f0;
@@ -772,19 +829,16 @@ else:
         .footer-links { display: flex; justify-content: center; gap: 28px; margin-bottom: 8px; flex-wrap: wrap; }
         .footer-links a { color: #0b1d3a !important; text-decoration: none; font-weight: 500; }
 
-        /* ── Responsive móvil ── */
         @media (max-width: 768px) {
             .header-box { flex-direction: column !important; gap: 8px !important; padding: 12px !important; text-align: center !important; }
             .header-titulo { font-size: 15px !important; }
             .user-pill { font-size: 11px !important; }
-            .card-azul, .card-roja, .admin-card { padding: 14px !important; }
+            .card-azul, .card-roja, .admin-card, .perfil-card { padding: 14px !important; }
         }
 
-        /* ── Scrollbar ── */
         ::-webkit-scrollbar { width: 5px; height: 5px; }
         ::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 3px; }
 
-        /* ══ FORZAR FONDO BLANCO EN TODOS LOS INPUTS / SELECTS / DATES ══ */
         [data-testid="stTextInput"] > div,
         [data-testid="stTextInput"] > div > div,
         [data-testid="stTextInput"] input {
@@ -893,10 +947,8 @@ else:
     </style>
     """, unsafe_allow_html=True)
 
-    # CSS nuclear para inputs, selects, file uploader
     st.markdown("""
     <style>
-    /* ===== NUCLEAR OVERRIDE — FONDO BLANCO EN TODO ===== */
     div[data-baseweb="base-input"] {
         background-color: white !important;
     }
@@ -981,6 +1033,11 @@ else:
         st.markdown('<div class="sidebar-header">⚙️ Opciones del Sistema</div>', unsafe_allow_html=True)
         st.markdown("<p style='color:#94a3b8; font-size:10px; text-transform:uppercase; font-weight:700; margin:0 0 10px 5px; letter-spacing:0.5px;'>Navegación</p>", unsafe_allow_html=True)
 
+        # "Mi Perfil" siempre va primero / arriba a la izquierda, disponible para TODOS los usuarios
+        if st.sidebar.button("👤 Mi Perfil", use_container_width=True):
+            st.session_state["seccion_activa"] = "Perfil"; st.rerun()
+        st.sidebar.markdown("<div style='margin-top:8px'></div>", unsafe_allow_html=True)
+
         if st.sidebar.button("🏠 Menú Principal", use_container_width=True):
             st.session_state["seccion_activa"] = "Inicio"; st.rerun()
         st.sidebar.markdown("<div style='margin-top:8px'></div>", unsafe_allow_html=True)
@@ -1010,9 +1067,62 @@ else:
         </div>""", unsafe_allow_html=True)
 
     # ==========================================================
+    # VISTA 0: MI PERFIL (disponible para cualquier usuario autenticado)
+    # ==========================================================
+    if st.session_state["seccion_activa"] == "Perfil":
+        st.markdown("<h3 style='color:#0b1d3a;'>👤 Mi Perfil</h3>", unsafe_allow_html=True)
+        st.markdown("<p style='color:#475569;'>Actualice sus datos personales y, si lo desea, su contraseña de acceso.</p>", unsafe_allow_html=True)
+
+        perfil_actual = obtener_perfil(usuario_sesion) or {}
+
+        st.markdown('<div class="perfil-card"><span class="perfil-card-title">📝 Datos Personales</span>', unsafe_allow_html=True)
+        st.text_input("Usuario", value=usuario_sesion, disabled=True, key="perfil_usuario_ro")
+        nuevo_nombre = st.text_input(
+            "Nombre completo",
+            value=str(perfil_actual.get("nombre", "")),
+            placeholder="Ej: Juan Pérez",
+            key="perfil_nombre"
+        )
+        fecha_guardada = parsear_fecha(perfil_actual.get("fecha_nacimiento", ""))
+        nueva_fecha = st.date_input(
+            "Fecha de nacimiento",
+            value=fecha_guardada if fecha_guardada else datetime.date(2000, 1, 1),
+            min_value=datetime.date(1920, 1, 1),
+            max_value=datetime.date.today(),
+            key="perfil_fecha"
+        )
+        st.markdown('</div>', unsafe_allow_html=True)
+
+        st.markdown('<div class="perfil-card"><span class="perfil-card-title">🔑 Cambiar mi Contraseña (opcional)</span>', unsafe_allow_html=True)
+        st.caption("Deje estos dos campos vacíos si no desea cambiar su contraseña actual.")
+        pwd_nueva = st.text_input("Nueva contraseña", type="password", key="perfil_pwd1", placeholder="Nueva contraseña")
+        pwd_confirmar = st.text_input("Confirmar nueva contraseña", type="password", key="perfil_pwd2", placeholder="Repita la nueva contraseña")
+        st.markdown('</div>', unsafe_allow_html=True)
+
+        if st.button("💾 Guardar Cambios", key="btn_guardar_perfil", use_container_width=True):
+            if (pwd_nueva or pwd_confirmar) and pwd_nueva != pwd_confirmar:
+                st.error("Las contraseñas nuevas no coinciden.")
+            elif pwd_nueva and len(pwd_nueva) < 4:
+                st.warning("La nueva contraseña debe tener mínimo 4 caracteres.")
+            else:
+                ok, msg = actualizar_perfil(
+                    usuario_sesion,
+                    nuevo_nombre=nuevo_nombre,
+                    nueva_fecha=nueva_fecha.strftime("%Y-%m-%d"),
+                    nueva_password=pwd_nueva if pwd_nueva else None
+                )
+                if ok:
+                    st.success(f"✔ {msg}")
+                    registrar_log(usuario_sesion, "Actualizó su perfil", "-")
+                    time.sleep(0.6)
+                    st.rerun()
+                else:
+                    st.error(f"❌ {msg}")
+
+    # ==========================================================
     # VISTA 1: MENÚ PRINCIPAL
     # ==========================================================
-    if st.session_state["seccion_activa"] == "Inicio":
+    elif st.session_state["seccion_activa"] == "Inicio":
         st.markdown("<h3 style='color:#0b1d3a; margin-bottom:4px;'>Menú Principal</h3>", unsafe_allow_html=True)
         st.markdown("<p style='color:#475569; margin-bottom:20px;'>Seleccione una de las siguientes opciones:</p>", unsafe_allow_html=True)
 
@@ -1032,11 +1142,19 @@ else:
         if st.button("📋 Ver Historiales y Reportes", key="btn_hist", use_container_width=True):
             st.session_state["seccion_activa"] = "Historiales"; st.rerun()
 
+        st.markdown("""
+            <div class="card-azul" style="border-left-color:#0b1d3a;">
+                <h4>3. Mi Perfil</h4>
+                <p>Edite su nombre, fecha de nacimiento y contraseña de acceso a la plataforma.</p>
+            </div>""", unsafe_allow_html=True)
+        if st.button("👤 Editar mi Perfil", key="btn_perfil_inicio", use_container_width=True):
+            st.session_state["seccion_activa"] = "Perfil"; st.rerun()
+
         if es_admin:
             st.markdown("""
                 <div class="card-roja">
-                    <h4>🔐 3. Panel de Administración</h4>
-                    <p>Gestión completa de usuarios: agregar, eliminar, cambiar contraseñas y visualizar lista de accesos.</p>
+                    <h4>🔐 4. Panel de Administración</h4>
+                    <p>Gestión completa de usuarios: agregar, eliminar, ver/cambiar contraseñas y editar datos.</p>
                 </div>""", unsafe_allow_html=True)
             if st.button("👥 Ir al Panel de Administración", key="btn_admin", use_container_width=True):
                 st.session_state["seccion_activa"] = "Admin"; st.rerun()
@@ -1076,9 +1194,6 @@ else:
             }
             </style>''', unsafe_allow_html=True)
 
-            # ──────────────────────────────────────────────
-            # FILTRO DINÁMICO: VARIOS "Company Name"
-            # ──────────────────────────────────────────────
             st.markdown("<p style='font-weight:500; color:#374151; margin-bottom:4px; font-size:14px;'>Filtrar por Company Name (Opcional)</p>", unsafe_allow_html=True)
             st.caption("Puede agregar varios fabricantes; se incluirá cualquier coincidencia con al menos uno de ellos.")
 
@@ -1103,7 +1218,6 @@ else:
                 st.session_state["lista_filtros_company"].append("")
                 st.rerun()
 
-            # Lista final de filtros (limpios, sin vacíos, en mayúsculas) usada en la búsqueda
             company_names_filtro = [
                 c.strip().upper() for c in st.session_state["lista_filtros_company"] if c.strip()
             ]
@@ -1283,15 +1397,24 @@ else:
 
         with col_lista:
             st.markdown('<div class="admin-card"><span class="admin-card-title">📋 Lista de Usuarios Registrados</span>', unsafe_allow_html=True)
+            mostrar_pwds = st.checkbox("👁 Mostrar contraseñas", key="chk_mostrar_pwds")
             with st.spinner("Cargando usuarios..."):
                 datos_usuarios, _ = obtener_usuarios()
             if datos_usuarios:
                 filas = ""
                 for u in datos_usuarios:
-                    nom = str(u.get('usuario', '')).strip()
-                    rol = "🔴 Admin" if nom.lower() == ADMIN_USER.lower() else "🟢 Usuario"
-                    filas += f"<tr><td>{nom}</td><td>{rol}</td></tr>"
-                st.markdown(f'<table class="tabla-usr"><thead><tr><th>Usuario</th><th>Rol</th></tr></thead><tbody>{filas}</tbody></table><p class="meta-txt">Total: {len(datos_usuarios)} usuario(s)</p>', unsafe_allow_html=True)
+                    nom_usr = str(u.get('usuario', '')).strip()
+                    pwd_usr = str(u.get('contraseña', '')).strip()
+                    nombre_usr = str(u.get('nombre', '')).strip() or "—"
+                    fecha_usr = str(u.get('fecha_nacimiento', '')).strip() or "—"
+                    rol = "🔴 Admin" if nom_usr.lower() == ADMIN_USER.lower() else "🟢 Usuario"
+                    pwd_mostrar = pwd_usr if mostrar_pwds else "•" * max(len(pwd_usr), 4)
+                    filas += f"<tr><td>{nom_usr}</td><td>{pwd_mostrar}</td><td>{nombre_usr}</td><td>{fecha_usr}</td><td>{rol}</td></tr>"
+                st.markdown(
+                    f'<table class="tabla-usr"><thead><tr><th>Usuario</th><th>Contraseña</th><th>Nombre</th><th>Fecha Nac.</th><th>Rol</th></tr></thead>'
+                    f'<tbody>{filas}</tbody></table><p class="meta-txt">Total: {len(datos_usuarios)} usuario(s)</p>',
+                    unsafe_allow_html=True
+                )
             else:
                 st.info("No se encontraron usuarios.")
             st.markdown('</div>', unsafe_allow_html=True)
@@ -1299,6 +1422,7 @@ else:
         with col_agregar:
             st.markdown('<div class="admin-card"><span class="admin-card-title">➕ Agregar Nuevo Usuario</span>', unsafe_allow_html=True)
             nuevo_usr  = st.text_input("Nombre de usuario", key="nu", placeholder="Ej: usuario_nuevo")
+            nuevo_nombre_cuenta = st.text_input("Nombre completo (opcional)", key="nu_nombre", placeholder="Ej: Juan Pérez")
             nuevo_pwd  = st.text_input("Contraseña", type="password", key="np", placeholder="Contraseña segura")
             nuevo_pwd2 = st.text_input("Confirmar contraseña", type="password", key="np2", placeholder="Repita la contraseña")
             if st.button("✅ Crear Usuario", key="btn_crear", use_container_width=True):
@@ -1306,7 +1430,7 @@ else:
                 elif nuevo_pwd != nuevo_pwd2: st.error("Las contraseñas no coinciden.")
                 elif len(nuevo_pwd) < 4: st.warning("Mínimo 4 caracteres.")
                 else:
-                    ok, msg = agregar_usuario(nuevo_usr, nuevo_pwd)
+                    ok, msg = agregar_usuario(nuevo_usr, nuevo_pwd, nombre=nuevo_nombre_cuenta)
                     if ok: st.success(f"✔ {msg}"); registrar_log(usuario_sesion, f"[ADMIN] Creó: {nuevo_usr}", "-"); time.sleep(0.5); st.rerun()
                     else: st.error(f"❌ {msg}")
             st.markdown('</div>', unsafe_allow_html=True)
@@ -1330,20 +1454,42 @@ else:
             st.markdown('</div>', unsafe_allow_html=True)
 
         with col_pwd:
-            st.markdown('<div class="admin-card"><span class="admin-card-title">🔑 Cambiar Contraseña</span>', unsafe_allow_html=True)
+            st.markdown('<div class="admin-card"><span class="admin-card-title">✏️ Editar Usuario (nombre, fecha y/o contraseña)</span>', unsafe_allow_html=True)
             todos = [str(u.get('usuario','')).strip() for u in datos_usuarios] if datos_usuarios else []
             if todos:
-                usr_pwd = st.selectbox("Seleccionar usuario", todos, key="sel_p")
-                npwd1   = st.text_input("Nueva contraseña", type="password", key="np1", placeholder="Nueva contraseña")
-                npwd2   = st.text_input("Confirmar contraseña", type="password", key="np2b", placeholder="Repita la contraseña")
-                if st.button("🔑 Actualizar Contraseña", key="btn_p", use_container_width=True):
-                    if not npwd1: st.warning("Ingrese la nueva contraseña.")
-                    elif npwd1 != npwd2: st.error("Las contraseñas no coinciden.")
-                    elif len(npwd1) < 4: st.warning("Mínimo 4 caracteres.")
+                usr_editar = st.selectbox("Seleccionar usuario", todos, key="sel_p")
+                perfil_sel = next((u for u in datos_usuarios if str(u.get('usuario','')).strip() == usr_editar), {})
+
+                nombre_edit = st.text_input("Nombre completo", value=str(perfil_sel.get('nombre','')), key="edit_nombre")
+                fecha_edit_actual = parsear_fecha(perfil_sel.get('fecha_nacimiento',''))
+                fecha_edit = st.date_input(
+                    "Fecha de nacimiento",
+                    value=fecha_edit_actual if fecha_edit_actual else datetime.date(2000, 1, 1),
+                    min_value=datetime.date(1920, 1, 1),
+                    max_value=datetime.date.today(),
+                    key="edit_fecha"
+                )
+                npwd1 = st.text_input("Nueva contraseña (opcional)", type="password", key="np1", placeholder="Dejar en blanco para no cambiar")
+                npwd2 = st.text_input("Confirmar contraseña", type="password", key="np2b", placeholder="Repita la nueva contraseña")
+
+                if st.button("💾 Guardar Cambios del Usuario", key="btn_p", use_container_width=True):
+                    if npwd1 and npwd1 != npwd2:
+                        st.error("Las contraseñas no coinciden.")
+                    elif npwd1 and len(npwd1) < 4:
+                        st.warning("Mínimo 4 caracteres.")
                     else:
-                        ok, msg = cambiar_password(usr_pwd, npwd1)
-                        if ok: st.success(f"✔ {msg}"); registrar_log(usuario_sesion, f"[ADMIN] Cambió pwd de: {usr_pwd}", "-"); time.sleep(0.5); st.rerun()
-                        else: st.error(f"❌ {msg}")
+                        ok, msg = actualizar_perfil(
+                            usr_editar,
+                            nuevo_nombre=nombre_edit,
+                            nueva_fecha=fecha_edit.strftime("%Y-%m-%d"),
+                            nueva_password=npwd1 if npwd1 else None
+                        )
+                        if ok:
+                            st.success(f"✔ {msg}")
+                            registrar_log(usuario_sesion, f"[ADMIN] Editó usuario: {usr_editar}", "-")
+                            time.sleep(0.5); st.rerun()
+                        else:
+                            st.error(f"❌ {msg}")
             else:
                 st.info("No hay usuarios disponibles.")
             st.markdown('</div>', unsafe_allow_html=True)
@@ -1358,5 +1504,5 @@ else:
                 <a href="#">Tratamiento de datos</a>
                 <a href="#">Mesa de Ayuda</a>
             </div>
-            <p>v 1.1.26 © Invima 2026. Todos los derechos reservados.</p>
+            <p>v 1.2.26 © Invima 2026. Todos los derechos reservados.</p>
         </div>""", unsafe_allow_html=True)
