@@ -179,49 +179,142 @@ if "seccion_activa"      not in st.session_state: st.session_state["seccion_acti
 # ==========================================================
 CSS_GLOBAL = """
 <style>
-/* ── TABLAS / DATAFRAMES: fondo gris muy claro, texto oscuro ── */
-[data-testid="stDataFrame"] div,
-[data-testid="stDataFrame"] table,
-[data-testid="stDataFrame"] thead,
-[data-testid="stDataFrame"] tbody,
-[data-testid="stDataFrame"] tr,
-[data-testid="stDataFrame"] td,
-[data-testid="stDataFrame"] th {
-    background-color: #f8f9fb !important;
+
+/* ══════════════════════════════════════════════
+   FORZAR TEMA CLARO EN TODA LA APP
+   ══════════════════════════════════════════════ */
+
+/* Fondo general de la app */
+.stApp, .stApp > div, section.main, section.main > div {
+    background-color: #f0f2f6 !important;
     color: #1a1a2e !important;
 }
-/* ── SELECTBOX / INPUTS: fondo claro ── */
-div[data-baseweb="select"] > div,
-div[data-baseweb="input"]  > div,
-input, textarea {
-    background-color: #f8f9fb !important;
+
+/* ── TODOS LOS INPUTS DE TEXTO ── */
+input[type="text"],
+input[type="password"],
+input[type="email"],
+input[type="number"],
+input[type="search"],
+textarea,
+[data-baseweb="input"] input,
+[data-baseweb="textarea"] textarea {
+    background-color: #ffffff !important;
+    color: #1a1a2e !important;
+    border: 1px solid #d1d5db !important;
+    border-radius: 6px !important;
+    caret-color: #1a1a2e !important;
+}
+input::placeholder, textarea::placeholder {
+    color: #9ca3af !important;
+}
+
+/* ── CONTENEDOR BASE DE INPUTS (Streamlit usa baseweb) ── */
+[data-baseweb="base-input"],
+[data-baseweb="input"] > div,
+[data-baseweb="textarea"] > div {
+    background-color: #ffffff !important;
+    border-color: #d1d5db !important;
+}
+
+/* ── SELECTBOX ── */
+[data-baseweb="select"] > div,
+[data-baseweb="select"] div[role="button"],
+[data-baseweb="popover"] ul li,
+[data-baseweb="menu"],
+[data-baseweb="menu"] ul,
+[data-baseweb="menu"] li {
+    background-color: #ffffff !important;
     color: #1a1a2e !important;
 }
+[data-baseweb="select"] svg { fill: #1a1a2e !important; }
+
 /* ── DATE INPUT ── */
-div[data-testid="stDateInput"] input {
-    background-color: #f8f9fb !important;
+[data-testid="stDateInput"] input,
+[data-testid="stDateInput"] > div > div {
+    background-color: #ffffff !important;
+    color: #1a1a2e !important;
+    border-color: #d1d5db !important;
+}
+
+/* ── LABELS DE INPUTS ── */
+label, .stTextInput label, .stSelectbox label,
+.stDateInput label, .stFileUploader label,
+p, li, span {
     color: #1a1a2e !important;
 }
+
+/* ── CHECKBOX ── */
+[data-baseweb="checkbox"] span {
+    background-color: #ffffff !important;
+    border-color: #d1d5db !important;
+}
+[data-testid="stCheckbox"] label span { color: #1a1a2e !important; }
+
+/* ── TABLAS / DATAFRAMES ── */
+[data-testid="stDataFrame"],
+[data-testid="stDataFrame"] > div,
+[data-testid="stDataFrame"] iframe,
+.dvn-scroller,
+.glideDataEditor {
+    background-color: #ffffff !important;
+    color: #1a1a2e !important;
+}
+
 /* ── MÉTRICAS ── */
 [data-testid="stMetric"] {
-    background-color: #f0f4ff !important;
-    border-radius: 10px;
+    background-color: #ffffff !important;
+    border-radius: 10px !important;
     padding: 14px 18px !important;
     border: 1px solid #dce4f5 !important;
+    box-shadow: 0 1px 4px rgba(0,0,0,0.06) !important;
 }
-[data-testid="stMetricLabel"] p,
+[data-testid="stMetricLabel"] p { color: #374151 !important; }
 [data-testid="stMetricValue"]   { color: #0b1d3a !important; }
+
 /* ── FILE UPLOADER ── */
-[data-testid="stFileUploadDropzone"] {
+[data-testid="stFileUploadDropzone"],
+[data-testid="stFileUploadDropzone"] > div {
     background-color: #f0f4ff !important;
     border: 2px dashed #1e40af !important;
     color: #1a1a2e !important;
+    border-radius: 8px !important;
 }
-/* ── INFO / WARNING / SUCCESS / ERROR boxes ── */
-div[data-testid="stAlert"] {
-    background-color: #f0f4ff !important;
+[data-testid="stFileUploadDropzone"] p,
+[data-testid="stFileUploadDropzone"] span { color: #374151 !important; }
+
+/* ── ALERTAS (info / warning / success / error) ── */
+[data-testid="stAlert"],
+[data-testid="stAlert"] > div,
+[data-testid="stAlert"] p {
     color: #1a1a2e !important;
 }
+[data-testid="stAlert"][data-baseweb="notification"] { background-color: #eff6ff !important; }
+
+/* ── SPINNER ── */
+[data-testid="stSpinner"] p { color: #1a1a2e !important; }
+
+/* ── BOTONES GENERALES (contenido principal) ── */
+section.main button:not([data-testid="stSidebar"] button) {
+    background-color: #0b1d3a !important;
+    color: #ffffff !important;
+    border: none !important;
+    border-radius: 6px !important;
+    font-weight: 600 !important;
+}
+section.main button:not([data-testid="stSidebar"] button):hover {
+    background-color: #1a365d !important;
+}
+
+/* ── TABS ── */
+[data-baseweb="tab-list"] { background-color: #f0f2f6 !important; }
+[data-baseweb="tab"]       { color: #1a1a2e !important; }
+
+/* ── SCROLLBAR ── */
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: #f0f2f6; }
+::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 3px; }
+
 </style>
 """
 st.markdown(CSS_GLOBAL, unsafe_allow_html=True)
@@ -246,6 +339,16 @@ if not st.session_state["autenticado"]:
                 max-width: 540px;
                 margin: 0 auto;
             }
+            /* inputs dentro del formulario de login */
+            div[data-testid="stForm"] input,
+            div[data-testid="stForm"] [data-baseweb="base-input"],
+            div[data-testid="stForm"] [data-baseweb="input"] > div {
+                background-color: #ffffff !important;
+                color: #1a1a2e !important;
+                border: 1px solid #d1d5db !important;
+            }
+            div[data-testid="stForm"] input::placeholder { color: #9ca3af !important; }
+            div[data-testid="stForm"] label { color: #374151 !important; }
             .contenedor-logos-principales {
                 display: flex; justify-content: center; align-items: center;
                 gap: 25px; margin-bottom: 30px; height: 75px;
@@ -397,18 +500,33 @@ else:
             /* panel admin */
             .admin-section-card {
                 background-color: #ffffff !important;
-                border-radius: 12px;
-                padding: 24px;
-                box-shadow: 0px 3px 10px rgba(0,0,0,0.07);
-                border-top: 4px solid #dc2626;
-                margin-bottom: 24px;
+                border-radius: 12px !important;
+                padding: 24px !important;
+                box-shadow: 0px 3px 10px rgba(0,0,0,0.08) !important;
+                border-top: 4px solid #dc2626 !important;
+                margin-bottom: 24px !important;
             }
-            .admin-section-card h4 { color: #991b1b !important; font-size: 15px !important; font-weight: 700 !important; margin-bottom: 16px !important; }
+            .admin-section-card h4 {
+                color: #991b1b !important;
+                font-size: 15px !important;
+                font-weight: 700 !important;
+                margin-bottom: 16px !important;
+                background-color: transparent !important;
+            }
+            /* forzar fondo blanco dentro de las cards admin */
+            .admin-section-card input,
+            .admin-section-card [data-baseweb="base-input"],
+            .admin-section-card [data-baseweb="input"] > div,
+            .admin-section-card [data-baseweb="select"] > div {
+                background-color: #ffffff !important;
+                color: #1a1a2e !important;
+                border: 1px solid #d1d5db !important;
+            }
             /* tabla usuarios */
             .tabla-usuarios {
                 width: 100%; border-collapse: collapse; margin-top: 8px;
-                background-color: #f8f9fb !important;
                 border-radius: 8px; overflow: hidden;
+                border: 1px solid #e5e7eb;
             }
             .tabla-usuarios th {
                 background-color: #0b1d3a !important; color: #ffffff !important;
@@ -416,8 +534,9 @@ else:
             }
             .tabla-usuarios td {
                 padding: 9px 14px; font-size: 13px; color: #1a1a2e !important;
-                border-bottom: 1px solid #e5e7eb; background-color: #f8f9fb !important;
+                border-bottom: 1px solid #e5e7eb; background-color: #f8fafc !important;
             }
+            .tabla-usuarios tr:hover td { background-color: #eff6ff !important; }
             .tabla-usuarios tr:last-child td { border-bottom: none; }
             /* footer */
             .footer-institucional {
