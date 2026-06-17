@@ -233,11 +233,9 @@ if not st.session_state["autenticado"]:
             color: #64748b !important;
         }
 
-        /* ── Botón Acceder ── */
-        div[data-testid="stForm"] > div > div > div button[kind="primaryFormSubmit"],
-        div[data-testid="stForm"] button[data-testid="baseButton-secondaryFormSubmit"],
+        /* ── Botón Acceder — azul, nunca negro ── */
         div[data-testid="stForm"] button {
-            background-color: #0b1d3a !important;
+            background-color: #1a365d !important;
             color: #ffffff !important;
             border: none !important;
             border-radius: 8px !important;
@@ -245,10 +243,31 @@ if not st.session_state["autenticado"]:
             font-size: 15px !important;
             padding: 10px 24px !important;
         }
-        /* Excepción: el botón ojo NO debe ser azul */
-        div[data-testid="stForm"] [data-baseweb="base-input"] button {
+        div[data-testid="stForm"] button:hover {
+            background-color: #2a4d7c !important;
+            color: #ffffff !important;
+        }
+        div[data-testid="stForm"] button:focus,
+        div[data-testid="stForm"] button:active {
+            background-color: #1a365d !important;
+            color: #ffffff !important;
+        }
+        /* Excepción: botón ojo — siempre transparente */
+        div[data-testid="stForm"] [data-baseweb="base-input"] button,
+        div[data-testid="stForm"] [data-baseweb="input"] button {
             background-color: transparent !important;
+            background: none !important;
             color: #64748b !important;
+            border: none !important;
+            box-shadow: none !important;
+            padding: 0 4px !important;
+            width: 30px !important;
+            min-width: 30px !important;
+        }
+        div[data-testid="stForm"] [data-baseweb="base-input"] button:hover,
+        div[data-testid="stForm"] [data-baseweb="input"] button:hover {
+            background-color: transparent !important;
+            color: #374151 !important;
         }
 
         /* ── Checkbox ── */
@@ -380,19 +399,42 @@ else:
             border-bottom: 1px solid rgba(255,255,255,0.15);
         }
 
-        /* ── Botones del contenido principal ── */
-        section.main button:not([data-baseweb="base-input"] button):not([data-baseweb="input"] button) {
+        /* ── Botones del contenido principal — NUNCA NEGROS ── */
+        .stButton > button,
+        .stDownloadButton > button,
+        section.main button {
             background-color: #1a365d !important;
             color: #ffffff !important;
             border: none !important;
             border-radius: 7px !important;
             font-weight: 600 !important;
         }
-        section.main button:not([data-baseweb="base-input"] button):not([data-baseweb="input"] button):hover {
+        .stButton > button:hover,
+        .stDownloadButton > button:hover,
+        section.main button:hover {
+            background-color: #2a4d7c !important;
+            color: #ffffff !important;
+        }
+        .stButton > button:active,
+        section.main button:active {
             background-color: #0b1d3a !important;
+            color: #ffffff !important;
+        }
+        .stButton > button:focus,
+        section.main button:focus {
+            background-color: #1a365d !important;
+            color: #ffffff !important;
+        }
+        .stButton > button:disabled,
+        section.main button:disabled {
+            background-color: #94a3b8 !important;
+            color: #e2e8f0 !important;
+            opacity: 0.7 !important;
         }
         section.main button p,
-        section.main button span { color: #ffffff !important; }
+        section.main button span,
+        .stButton > button p,
+        .stButton > button span { color: #ffffff !important; }
 
         /* ── Botón OJO en contenido principal — transparente ── */
         section.main [data-baseweb="base-input"] button,
