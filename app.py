@@ -308,7 +308,7 @@ if not st.session_state["autenticado"]:
             margin-bottom: 16px; text-transform: uppercase; letter-spacing: 0.5px;
         }
         .fila-logos { display: flex; justify-content: space-around; align-items: center; flex-wrap: wrap; gap: 10px; }
-        .logo-soporte { height: 32px !important; width: auto !important; object-fit: contain; }
+        .logo-soporte { height: 44px !important; width: auto !important; object-fit: contain; max-width: 130px !important; }
 
         /* ── Responsive móvil ── */
         @media (max-width: 768px) {
@@ -343,7 +343,7 @@ if not st.session_state["autenticado"]:
             recordar   = st.checkbox("Recordar mi usuario en este equipo", value=(st.session_state["usuario_guardado"] != ""))
             boton_ingresar = st.form_submit_button("Acceder", use_container_width=True)
 
-            # ── CSS nuclear: checkbox sin borde en texto + ojo blanco visible ──
+            # ── CSS nuclear: checkbox sin borde en texto + ojo blanco sin negro ──
             st.markdown("""
             <style>
             /* ══ CHECKBOX ══ solo el cuadrito tiene borde, el texto NO */
@@ -370,16 +370,25 @@ if not st.session_state["autenticado"]:
                 background: transparent !important;
             }
 
-            /* ══ OJO ══ quitar negro, icono blanco */
+            /* ══ OJO ══
+               El input de password tiene: [input_div][button][extra_div_negro]
+               Ponemos el contenedor en overflow:hidden y el div extra en blanco */
+            div[data-testid="stPasswordInput"] [data-baseweb="base-input"] {
+                overflow: hidden !important;
+                border-radius: 8px !important;
+                background-color: #f8fafc !important;
+            }
+            /* Todos los divs hijos del base-input → fondo transparente/blanco */
             div[data-testid="stPasswordInput"] [data-baseweb="base-input"] > div {
-                background-color: transparent !important;
+                background-color: #f8fafc !important;
                 border: none !important;
                 padding: 0 !important;
                 margin: 0 !important;
             }
+            /* El botón del ojo */
             div[data-testid="stPasswordInput"] button {
                 background-color: #1a365d !important;
-                border-radius: 0 6px 6px 0 !important;
+                border-radius: 0 !important;
                 width: 42px !important;
                 min-width: 42px !important;
                 height: 100% !important;
