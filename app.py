@@ -601,7 +601,7 @@ else:
             padding: 9px 14px; font-size: 13px;
             color: #1e293b !important;
             border-bottom: 1px solid #e2e8f0;
-            background-color: #f8fafc !important;
+            background-color: #ffffff !important;
         }
         .tabla-usr tr:last-child td { border-bottom: none; }
         .tabla-usr tr:hover td { background-color: #eff6ff !important; }
@@ -640,22 +640,27 @@ else:
         }
         [data-testid="stTextInput"] input::placeholder { color: #94a3b8 !important; }
 
-        /* Selectbox */
+        /* Selectbox — fondo blanco en todos los estados */
+        [data-testid="stSelectbox"],
+        [data-testid="stSelectbox"] > div,
         [data-testid="stSelectbox"] > div > div,
-        [data-testid="stSelectbox"] > div > div > div {
+        [data-testid="stSelectbox"] > div > div > div,
+        [data-testid="stSelectbox"] > div > div > div > div {
             background-color: #ffffff !important;
             color: #1e293b !important;
         }
-        [data-baseweb="select"] > div {
+        [data-baseweb="select"],
+        [data-baseweb="select"] > div,
+        [data-baseweb="select"] > div > div,
+        [data-baseweb="select"] div[role="combobox"],
+        [data-baseweb="select"] div[role="option"],
+        [data-baseweb="select"] input {
             background-color: #ffffff !important;
             color: #1e293b !important;
             border-color: #cbd5e1 !important;
         }
-        [data-baseweb="select"] div[role="combobox"],
-        [data-baseweb="select"] div[role="option"] {
-            background-color: #ffffff !important;
-            color: #1e293b !important;
-        }
+        /* Flecha del selectbox */
+        [data-baseweb="select"] svg { fill: #374151 !important; }
 
         /* Date inputs */
         [data-testid="stDateInput"] > div,
@@ -694,18 +699,30 @@ else:
             background-color: #eff6ff !important;
         }
 
-        /* File uploader — el botón "Upload" no debe ser negro */
+        /* File uploader — nunca negro */
+        [data-testid="stFileUploadDropzone"],
+        [data-testid="stFileUploadDropzone"] > div,
+        [data-testid="stFileUploaderDropzoneInstructions"],
+        section.main [data-testid="stFileUploader"] > div,
+        section.main [data-testid="stFileUploader"] > label + div {
+            background-color: #eef2ff !important;
+            border: 2px dashed #1a365d !important;
+            border-radius: 8px !important;
+            color: #374151 !important;
+        }
         [data-testid="stFileUploadDropzone"] button,
-        [data-testid="baseButton-secondary"] {
+        [data-testid="stFileUploadDropzone"] button:hover,
+        section.main [data-testid="stFileUploader"] button,
+        [data-testid="baseButton-secondary"],
+        [kind="secondary"] {
             background-color: #1a365d !important;
             color: #ffffff !important;
             border: none !important;
             border-radius: 6px !important;
         }
-        [data-testid="stFileUploadDropzone"] {
-            background-color: #eef2ff !important;
-            border: 2px dashed #1a365d !important;
-            border-radius: 8px !important;
+        [data-testid="stFileUploadDropzone"] p,
+        [data-testid="stFileUploadDropzone"] span,
+        [data-testid="stFileUploadDropzone"] small {
             color: #374151 !important;
         }
 
