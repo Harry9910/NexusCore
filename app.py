@@ -209,59 +209,16 @@ if not st.session_state["autenticado"]:
         }
 
         /* ════════════════════════════════════════════════
-           BOTÓN OJO — icono visible, sin bloque negro
+           BOTÓN OJO — base-input limpio, sin fondo negro
         ════════════════════════════════════════════════ */
-
-        /* Contenedor del input: borde redondeado, sin overflow hidden
-           para que el ojo no quede aplastado */
         div[data-testid="stForm"] [data-baseweb="base-input"] {
             border-radius: 8px !important;
-            overflow: visible !important;
+            overflow: hidden !important;
             background-color: #f8fafc !important;
             border: 1.5px solid #cbd5e1 !important;
         }
-
-        /* El div que envuelve el botón ojo — eliminar fondo negro */
-        div[data-testid="stForm"] [data-baseweb="base-input"] > div:last-child {
+        div[data-testid="stForm"] [data-baseweb="base-input"] > div {
             background-color: transparent !important;
-            border-radius: 0 6px 6px 0 !important;
-            overflow: hidden !important;
-        }
-
-        /* El botón ojo en sí */
-        div[data-testid="stForm"] [data-baseweb="base-input"] button {
-            background-color: #1a365d !important;
-            border: none !important;
-            box-shadow: none !important;
-            width: 40px !important;
-            min-width: 40px !important;
-            height: 36px !important;
-            padding: 0 !important;
-            margin: 0 !important;
-            border-radius: 0 6px 6px 0 !important;
-            display: flex !important;
-            align-items: center !important;
-            justify-content: center !important;
-            cursor: pointer !important;
-        }
-        div[data-testid="stForm"] [data-baseweb="base-input"] button:hover {
-            background-color: #2a4d7c !important;
-        }
-
-        /* El SVG del ojo — blanco y visible */
-        div[data-testid="stForm"] [data-baseweb="base-input"] button svg {
-            fill: #ffffff !important;
-            stroke: #ffffff !important;
-            color: #ffffff !important;
-            width: 18px !important;
-            height: 18px !important;
-            display: block !important;
-            visibility: visible !important;
-            opacity: 1 !important;
-        }
-        div[data-testid="stForm"] [data-baseweb="base-input"] button svg path {
-            fill: #ffffff !important;
-            stroke: #ffffff !important;
         }
 
         /* ════════════════════════════════════════════════
@@ -386,30 +343,47 @@ if not st.session_state["autenticado"]:
             recordar   = st.checkbox("Recordar mi usuario en este equipo", value=(st.session_state["usuario_guardado"] != ""))
             boton_ingresar = st.form_submit_button("Acceder", use_container_width=True)
 
-            # ── CSS nuclear: checkbox blanco + ojo sin bloque negro ──
+            # ── CSS nuclear: checkbox sin borde en texto + ojo blanco visible ──
             st.markdown("""
             <style>
-            /* CHECKBOX — fondo blanco, borde azul */
-            div[data-testid="stForm"] label[data-baseweb="checkbox"] > div,
-            div[data-testid="stForm"] [data-baseweb="checkbox"] label > div {
+            /* ══ CHECKBOX ══ solo el cuadrito tiene borde, el texto NO */
+            div[data-testid="stForm"] [data-baseweb="checkbox"] label > div:first-child {
                 background-color: #ffffff !important;
                 background: #ffffff !important;
                 border: 2px solid #1a365d !important;
                 border-radius: 4px !important;
                 min-width: 16px !important;
                 min-height: 16px !important;
+                width: 16px !important;
+                height: 16px !important;
+                flex-shrink: 0 !important;
+                outline: none !important;
+                box-shadow: none !important;
             }
-            /* OJO — quitar div negro extra */
+            div[data-testid="stForm"] [data-baseweb="checkbox"] label,
+            div[data-testid="stForm"] [data-baseweb="checkbox"] label > div:not(:first-child),
+            div[data-testid="stForm"] [data-baseweb="checkbox"] p,
+            div[data-testid="stForm"] [data-baseweb="checkbox"] span {
+                border: none !important;
+                outline: none !important;
+                box-shadow: none !important;
+                background: transparent !important;
+            }
+
+            /* ══ OJO ══ quitar negro, icono blanco */
             div[data-testid="stPasswordInput"] [data-baseweb="base-input"] > div {
                 background-color: transparent !important;
+                border: none !important;
                 padding: 0 !important;
+                margin: 0 !important;
             }
             div[data-testid="stPasswordInput"] button {
                 background-color: #1a365d !important;
                 border-radius: 0 6px 6px 0 !important;
-                width: 40px !important;
-                min-width: 40px !important;
-                height: 38px !important;
+                width: 42px !important;
+                min-width: 42px !important;
+                height: 100% !important;
+                min-height: 36px !important;
                 border: none !important;
                 padding: 0 !important;
                 margin: 0 !important;
@@ -417,15 +391,32 @@ if not st.session_state["autenticado"]:
                 align-items: center !important;
                 justify-content: center !important;
             }
-            div[data-testid="stPasswordInput"] button svg {
+            div[data-testid="stPasswordInput"] button:hover {
+                background-color: #2a4d7c !important;
+            }
+            div[data-testid="stPasswordInput"] button svg,
+            div[data-testid="stPasswordInput"] button > svg,
+            div[data-testid="stPasswordInput"] button span svg {
                 fill: #ffffff !important;
+                color: #ffffff !important;
+                stroke: #ffffff !important;
                 width: 18px !important;
                 height: 18px !important;
                 display: block !important;
                 opacity: 1 !important;
+                visibility: visible !important;
             }
-            div[data-testid="stPasswordInput"] button svg path {
+            div[data-testid="stPasswordInput"] button svg path,
+            div[data-testid="stPasswordInput"] button svg circle,
+            div[data-testid="stPasswordInput"] button svg line,
+            div[data-testid="stPasswordInput"] button svg polyline {
                 fill: #ffffff !important;
+                stroke: #ffffff !important;
+            }
+            div[data-testid="stPasswordInput"] button span {
+                background: transparent !important;
+                display: flex !important;
+                align-items: center !important;
             }
             </style>
             """, unsafe_allow_html=True)
