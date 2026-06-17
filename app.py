@@ -16,21 +16,19 @@ from oauth2client.service_account import ServiceAccountCredentials
 # ==========================================================
 SCOPE = ['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/auth/drive']
 SHEET_ID = "1SSAS4NLafR3p8K3nIlBoHp0AKklO5JNfWwQbSfNdbGU"
-ADMIN_USER = "admin"  # Usuario con privilegios de administrador
+ADMIN_USER = "admin"
 
 # ==========================================================
 # FUNCIONES DE CONEXIÓN Y AUTENTICACIÓN
 # ==========================================================
 
 def get_gspread_client():
-    """Crea y retorna un cliente de gspread autenticado."""
     creds_dict = dict(st.secrets["gcp"])
     creds_dict["private_key"] = creds_dict["private_key"].replace("\\n", "\n")
     creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, SCOPE)
     return gspread.authorize(creds)
 
 def validar_usuario(usuario, password):
-    """Valida usuario y contraseña contra la hoja 'Usuarios' de Google Sheets."""
     try:
         client = get_gspread_client()
         doc = client.open_by_key(SHEET_ID)
@@ -47,7 +45,6 @@ def validar_usuario(usuario, password):
         return False
 
 def obtener_logs():
-    """Obtiene todos los logs desde la hoja 'Logs' de Google Sheets."""
     try:
         client = get_gspread_client()
         doc = client.open_by_key(SHEET_ID)
@@ -64,7 +61,6 @@ def obtener_logs():
         return pd.DataFrame(columns=["Fecha", "Usuario", "Búsqueda", "Resultados"])
 
 def registrar_log(usuario, busqueda, cantidad_resultados):
-    """Registra una búsqueda en la hoja 'Logs' de Google Sheets."""
     try:
         client = get_gspread_client()
         doc = client.open_by_key(SHEET_ID)
@@ -74,12 +70,7 @@ def registrar_log(usuario, busqueda, cantidad_resultados):
     except Exception as e:
         st.error(f"Error al guardar log: {e}")
 
-# ==========================================================
-# FUNCIONES DE GESTIÓN DE USUARIOS (SOLO ADMIN)
-# ==========================================================
-
 def obtener_usuarios():
-    """Obtiene la lista de usuarios desde Google Sheets."""
     try:
         client = get_gspread_client()
         doc = client.open_by_key(SHEET_ID)
@@ -91,13 +82,11 @@ def obtener_usuarios():
         return [], None
 
 def agregar_usuario(nuevo_usuario, nueva_password):
-    """Agrega un nuevo usuario a la hoja 'Usuarios'."""
     try:
         client = get_gspread_client()
         doc = client.open_by_key(SHEET_ID)
         sheet_users = doc.worksheet("Usuarios")
         datos = sheet_users.get_all_records()
-        # Verificar que no exista
         for fila in datos:
             if str(fila.get('usuario', '')).strip().lower() == nuevo_usuario.strip().lower():
                 return False, "El usuario ya existe."
@@ -107,14 +96,13 @@ def agregar_usuario(nuevo_usuario, nueva_password):
         return False, f"Error: {e}"
 
 def eliminar_usuario(usuario_a_eliminar):
-    """Elimina un usuario de la hoja 'Usuarios'."""
     try:
         if usuario_a_eliminar.strip().lower() == ADMIN_USER.lower():
             return False, "No se puede eliminar al administrador."
         client = get_gspread_client()
         doc = client.open_by_key(SHEET_ID)
         sheet_users = doc.worksheet("Usuarios")
-        datos = sheet_users.get_all_values()  # incluye cabecera
+        datos = sheet_users.get_all_values()
         for i, fila in enumerate(datos):
             if len(fila) > 0 and str(fila[0]).strip() == usuario_a_eliminar.strip():
                 sheet_users.delete_rows(i + 1)
@@ -124,12 +112,11 @@ def eliminar_usuario(usuario_a_eliminar):
         return False, f"Error: {e}"
 
 def cambiar_password(usuario_objetivo, nueva_password):
-    """Cambia la contraseña de un usuario."""
     try:
         client = get_gspread_client()
         doc = client.open_by_key(SHEET_ID)
         sheet_users = doc.worksheet("Usuarios")
-        datos = sheet_users.get_all_values()  # incluye cabecera
+        datos = sheet_users.get_all_values()
         for i, fila in enumerate(datos):
             if len(fila) > 0 and str(fila[0]).strip() == usuario_objetivo.strip():
                 sheet_users.update_cell(i + 1, 2, nueva_password.strip())
@@ -175,272 +162,147 @@ if "usuario_activo_real" not in st.session_state: st.session_state["usuario_acti
 if "seccion_activa"      not in st.session_state: st.session_state["seccion_activa"]      = "Inicio"
 
 # ==========================================================
-# CSS GLOBAL (compartido login + app)
-# ==========================================================
-CSS_GLOBAL = """
-<style>
-
-/* ══════════════════════════════════════════════
-   TEXTO GENERAL — negro en el contenido principal
-   ══════════════════════════════════════════════ */
-section.main p, section.main span, section.main li,
-section.main h1, section.main h2, section.main h3,
-section.main h4, section.main h5, section.main h6,
-section.main label, section.main div {
-    color: #111111 !important;
-}
-
-/* ── INPUTS — fondo blanco, letra negra ── */
-input[type="text"], input[type="password"],
-input[type="email"], input[type="number"],
-input[type="search"], textarea {
-    background-color: #ffffff !important;
-    color: #111111 !important;
-    border: 1px solid #d1d5db !important;
-    border-radius: 6px !important;
-    caret-color: #111111 !important;
-}
-input::placeholder, textarea::placeholder { color: #9ca3af !important; }
-
-[data-baseweb="base-input"],
-[data-baseweb="input"] > div,
-[data-baseweb="textarea"] > div {
-    background-color: #ffffff !important;
-    border-color: #d1d5db !important;
-    color: #111111 !important;
-}
-
-/* ── BOTÓN OJO (ver contraseña) — pequeño y discreto ── */
-[data-baseweb="base-input"] button,
-[data-baseweb="input"] button {
-    background-color: transparent !important;
-    border: none !important;
-    padding: 0 6px !important;
-    min-width: 28px !important;
-    width: 28px !important;
-    height: 28px !important;
-    box-shadow: none !important;
-    color: #6b7280 !important;
-}
-[data-baseweb="base-input"] button svg,
-[data-baseweb="input"] button svg {
-    width: 16px !important;
-    height: 16px !important;
-    fill: #6b7280 !important;
-    color: #6b7280 !important;
-}
-[data-baseweb="base-input"] button:hover svg,
-[data-baseweb="input"] button:hover svg {
-    fill: #374151 !important;
-}
-
-/* ── SELECTBOX — fondo blanco, letra negra ── */
-[data-baseweb="select"] > div,
-[data-baseweb="select"] div[role="button"] {
-    background-color: #ffffff !important;
-    color: #111111 !important;
-    border-color: #d1d5db !important;
-}
-[data-baseweb="popover"] ul, [data-baseweb="popover"] li,
-[data-baseweb="menu"], [data-baseweb="menu"] ul, [data-baseweb="menu"] li {
-    background-color: #ffffff !important;
-    color: #111111 !important;
-}
-[data-baseweb="select"] svg { fill: #374151 !important; }
-
-/* ── DATE INPUT ── */
-[data-testid="stDateInput"] input,
-[data-testid="stDateInput"] > div > div {
-    background-color: #ffffff !important;
-    color: #111111 !important;
-    border-color: #d1d5db !important;
-}
-
-/* ── LABELS ── */
-label { color: #111111 !important; }
-
-/* ── CHECKBOX ── */
-[data-baseweb="checkbox"] span {
-    background-color: #ffffff !important;
-    border-color: #9ca3af !important;
-}
-
-/* ── DATAFRAMES ── */
-[data-testid="stDataFrame"],
-[data-testid="stDataFrame"] > div,
-[data-testid="stDataFrame"] iframe {
-    background-color: #ffffff !important;
-    color: #111111 !important;
-}
-
-/* ── MÉTRICAS ── */
-[data-testid="stMetric"] {
-    background-color: #ffffff !important;
-    border-radius: 10px !important;
-    padding: 14px 18px !important;
-    border: 1px solid #dce4f5 !important;
-    box-shadow: 0 1px 4px rgba(0,0,0,0.06) !important;
-}
-[data-testid="stMetricLabel"] p { color: #374151 !important; }
-[data-testid="stMetricValue"]   { color: #0b1d3a !important; }
-
-/* ── FILE UPLOADER ── */
-[data-testid="stFileUploadDropzone"],
-[data-testid="stFileUploadDropzone"] > div {
-    background-color: #eef2ff !important;
-    border: 2px dashed #1a365d !important;
-    border-radius: 8px !important;
-}
-[data-testid="stFileUploadDropzone"] p,
-[data-testid="stFileUploadDropzone"] span { color: #374151 !important; }
-
-/* ── ALERTAS ── */
-[data-testid="stAlert"] p,
-[data-testid="stAlert"] span { color: #111111 !important; }
-
-/* ── SPINNER ── */
-[data-testid="stSpinner"] p { color: #111111 !important; }
-
-/* ══════════════════════════════════════════════
-   BOTONES EN CONTENIDO PRINCIPAL
-   Fondo azul #1a365d, letra blanca
-   ══════════════════════════════════════════════ */
-section.main button {
-    background-color: #1a365d !important;
-    color: #ffffff !important;
-    border: none !important;
-    border-radius: 6px !important;
-    font-weight: 600 !important;
-    box-shadow: 0 2px 4px rgba(0,0,0,0.15) !important;
-}
-section.main button:hover {
-    background-color: #0b1d3a !important;
-    color: #ffffff !important;
-}
-/* Forzar texto blanco dentro de botones del contenido */
-section.main button p,
-section.main button span,
-section.main button div {
-    color: #ffffff !important;
-}
-/* Excepción: botón ojo dentro de inputs NO debe ser azul */
-section.main [data-baseweb="base-input"] button,
-section.main [data-baseweb="input"] button {
-    background-color: transparent !important;
-    box-shadow: none !important;
-    color: #6b7280 !important;
-    width: 28px !important;
-    min-width: 28px !important;
-    padding: 0 4px !important;
-}
-section.main [data-baseweb="base-input"] button span,
-section.main [data-baseweb="input"] button span {
-    color: #6b7280 !important;
-}
-
-/* ── SIDEBAR — letras blancas (se mantiene) ── */
-[data-testid="stSidebar"] p,
-[data-testid="stSidebar"] span,
-[data-testid="stSidebar"] label,
-[data-testid="stSidebar"] div { color: #ffffff !important; }
-[data-testid="stSidebar"] button p,
-[data-testid="stSidebar"] button span { color: #ffffff !important; }
-
-/* ── SCROLLBAR ── */
-::-webkit-scrollbar { width: 6px; height: 6px; }
-::-webkit-scrollbar-track { background: #f0f2f6; }
-::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 3px; }
-
-</style>
-"""
-st.markdown(CSS_GLOBAL, unsafe_allow_html=True)
-
-# ==========================================================
 # PANTALLA DE LOGIN
 # ==========================================================
 if not st.session_state["autenticado"]:
     st.markdown("""
-        <style>
-            .stApp {
-                background-image: linear-gradient(rgba(15,32,67,0.65), rgba(15,32,67,0.85)),
-                                  url('https://images.unsplash.com/photo-1576091160399-112ba8d25d1d?q=80&w=2070');
-                background-size: cover; background-position: center; background-attachment: fixed;
-            }
-            header, footer, [data-testid="stSidebar"], #MainMenu { visibility: hidden !important; display: none !important; }
-            div[data-testid="stForm"] {
-                background-color: rgba(255,255,255,0.98) !important;
-                border-radius: 16px !important;
-                padding: 45px 40px !important;
-                box-shadow: 0px 12px 40px rgba(0,0,0,0.35) !important;
-                max-width: 540px;
-                margin: 0 auto;
-            }
-            /* inputs dentro del formulario de login */
-            div[data-testid="stForm"] input,
-            div[data-testid="stForm"] [data-baseweb="base-input"],
-            div[data-testid="stForm"] [data-baseweb="input"] > div {
-                background-color: #ffffff !important;
-                color: #1a1a2e !important;
-                border: 1px solid #d1d5db !important;
-            }
-            div[data-testid="stForm"] input::placeholder { color: #9ca3af !important; }
-            div[data-testid="stForm"] label { color: #374151 !important; }
-            .contenedor-logos-principales {
-                display: flex; justify-content: center; align-items: center;
-                gap: 25px; margin-bottom: 30px; height: 75px;
-            }
-            .logo-header-invima { height: 65px !important; width: auto !important; object-fit: contain; }
-            .logo-header-fda    { height: 50px !important; width: auto !important; object-fit: contain; }
-            .barra-separadora-vertical-azul { width: 3px; height: 60px; background-color: #00b4d8; margin: 0 10px; }
-            .login-title { color: #0f2043 !important; font-size: 24px; font-weight: bold; text-align: center; margin-bottom: 6px; }
-            .login-desc  { color: #555555 !important; font-size: 14px; text-align: center; margin-bottom: 25px; }
-            div[data-testid="stForm"] button {
-                background-color: #1a365d !important; color: #ffffff !important;
-                width: 120px; border-radius: 6px; padding: 10px 20px;
-                font-size: 16px; font-weight: 600; border: none !important;
-            }
-            div[data-testid="stForm"] button:hover { background-color: #0b1d3a !important; }
-            /* Botón ojo dentro del login — pequeño y discreto */
-            div[data-testid="stForm"] [data-baseweb="base-input"] button,
-            div[data-testid="stForm"] [data-baseweb="input"] button {
-                background-color: transparent !important;
-                width: 28px !important; min-width: 28px !important;
-                padding: 0 4px !important; box-shadow: none !important;
-                border: none !important; color: #6b7280 !important;
-            }
-            div[data-testid="stForm"] [data-baseweb="base-input"] button svg,
-            div[data-testid="stForm"] [data-baseweb="input"] button svg {
-                width: 15px !important; height: 15px !important;
-                fill: #6b7280 !important;
-            }
-            .contenedor-soporte-inferior { border-top: 1px solid #eef0f4; margin-top: 35px; padding-top: 25px; }
-            .titulo-soporte { font-size: 12.5px; font-weight: 600; color: #6c757d !important; margin-bottom: 20px; text-transform: uppercase; }
-            .fila-logos-soporte { display: flex; justify-content: space-between; align-items: center; }
-            .logo-gudid-libre   { width: 130px !important; height: auto !important; object-fit: contain; }
-            .logo-eudamed-libre { width: 120px !important; height: auto !important; object-fit: contain; }
-            .logo-gmdn-libre    { width: 135px !important; height: auto !important; object-fit: contain; }
-            @media (max-width: 768px) {
-                div[data-testid="stForm"] { padding: 25px 18px !important; margin: 0 8px !important; }
-                .contenedor-logos-principales { gap: 12px !important; height: 55px !important; }
-                .logo-header-invima { height: 42px !important; }
-                .logo-header-fda    { height: 32px !important; }
-                .login-title { font-size: 20px !important; }
-                .fila-logos-soporte { flex-direction: column !important; gap: 12px !important; align-items: center !important; }
-                .logo-gudid-libre, .logo-eudamed-libre, .logo-gmdn-libre { width: 100px !important; }
-            }
-        </style>""", unsafe_allow_html=True)
+    <style>
+        /* ── Fondo login ── */
+        .stApp {
+            background-image: linear-gradient(rgba(15,32,67,0.65), rgba(15,32,67,0.85)),
+                              url('https://images.unsplash.com/photo-1576091160399-112ba8d25d1d?q=80&w=2070');
+            background-size: cover; background-position: center; background-attachment: fixed;
+        }
+        header, footer, [data-testid="stSidebar"], #MainMenu {
+            visibility: hidden !important; display: none !important;
+        }
+
+        /* ── Tarjeta del formulario ── */
+        div[data-testid="stForm"] {
+            background-color: #ffffff !important;
+            border-radius: 16px !important;
+            padding: 40px 36px !important;
+            box-shadow: 0px 12px 40px rgba(0,0,0,0.35) !important;
+            max-width: 480px !important;
+            margin: 0 auto !important;
+        }
+
+        /* ── Texto dentro del formulario ── */
+        div[data-testid="stForm"] label,
+        div[data-testid="stForm"] p,
+        div[data-testid="stForm"] span:not([data-baseweb]) {
+            color: #1a1a2e !important;
+        }
+
+        /* ── Inputs del login ── */
+        div[data-testid="stForm"] input {
+            background-color: #f8fafc !important;
+            color: #1a1a2e !important;
+            border: 1.5px solid #cbd5e1 !important;
+            border-radius: 8px !important;
+        }
+        div[data-testid="stForm"] input::placeholder { color: #94a3b8 !important; }
+        div[data-testid="stForm"] [data-baseweb="base-input"],
+        div[data-testid="stForm"] [data-baseweb="input"] > div {
+            background-color: #f8fafc !important;
+            border-color: #cbd5e1 !important;
+        }
+
+        /* ── Botón OJO del login — TRANSPARENTE, sin fondo negro ── */
+        div[data-testid="stForm"] [data-baseweb="base-input"] button,
+        div[data-testid="stForm"] [data-baseweb="input"] button {
+            background-color: transparent !important;
+            background: transparent !important;
+            border: none !important;
+            box-shadow: none !important;
+            width: 30px !important;
+            min-width: 30px !important;
+            max-width: 30px !important;
+            padding: 0 4px !important;
+            margin: 0 !important;
+            color: #64748b !important;
+        }
+        div[data-testid="stForm"] [data-baseweb="base-input"] button svg,
+        div[data-testid="stForm"] [data-baseweb="input"] button svg {
+            fill: #64748b !important;
+            width: 16px !important;
+            height: 16px !important;
+        }
+        div[data-testid="stForm"] [data-baseweb="base-input"] button *,
+        div[data-testid="stForm"] [data-baseweb="input"] button * {
+            color: #64748b !important;
+        }
+
+        /* ── Botón Acceder ── */
+        div[data-testid="stForm"] > div > div > div button[kind="primaryFormSubmit"],
+        div[data-testid="stForm"] button[data-testid="baseButton-secondaryFormSubmit"],
+        div[data-testid="stForm"] button {
+            background-color: #0b1d3a !important;
+            color: #ffffff !important;
+            border: none !important;
+            border-radius: 8px !important;
+            font-weight: 600 !important;
+            font-size: 15px !important;
+            padding: 10px 24px !important;
+        }
+        /* Excepción: el botón ojo NO debe ser azul */
+        div[data-testid="stForm"] [data-baseweb="base-input"] button {
+            background-color: transparent !important;
+            color: #64748b !important;
+        }
+
+        /* ── Checkbox ── */
+        div[data-testid="stForm"] [data-baseweb="checkbox"] span { border-color: #94a3b8 !important; }
+        div[data-testid="stForm"] [data-baseweb="checkbox"] p { color: #374151 !important; }
+
+        /* ── Clases custom login ── */
+        .contenedor-logos-principales {
+            display: flex; justify-content: center; align-items: center;
+            gap: 20px; margin-bottom: 24px; height: 70px;
+        }
+        .logo-header-invima { height: 60px !important; width: auto !important; object-fit: contain; }
+        .logo-header-fda    { height: 46px !important; width: auto !important; object-fit: contain; }
+        .barra-sep { width: 3px; height: 55px; background-color: #00b4d8; border-radius: 2px; }
+        .login-title {
+            color: #0b1d3a !important; font-size: 22px; font-weight: 700;
+            text-align: center; margin-bottom: 4px;
+        }
+        .login-desc {
+            color: #64748b !important; font-size: 13px;
+            text-align: center; margin-bottom: 20px;
+        }
+        .soporte-inferior { border-top: 1px solid #e2e8f0; margin-top: 28px; padding-top: 20px; }
+        .soporte-titulo {
+            font-size: 11px; font-weight: 700; color: #94a3b8 !important;
+            margin-bottom: 16px; text-transform: uppercase; letter-spacing: 0.5px;
+        }
+        .fila-logos { display: flex; justify-content: space-around; align-items: center; flex-wrap: wrap; gap: 10px; }
+        .logo-soporte { height: 32px !important; width: auto !important; object-fit: contain; }
+
+        /* ── Responsive móvil ── */
+        @media (max-width: 768px) {
+            div[data-testid="stForm"] { padding: 24px 16px !important; margin: 0 6px !important; }
+            .logo-header-invima { height: 40px !important; }
+            .logo-header-fda    { height: 30px !important; }
+            .login-title { font-size: 18px !important; }
+            .fila-logos { gap: 8px !important; }
+            .logo-soporte { height: 26px !important; }
+        }
+    </style>
+    """, unsafe_allow_html=True)
 
     st.markdown("<br><br>", unsafe_allow_html=True)
-    _, col_centro, _ = st.columns([1, 1.2, 1])
+    _, col_centro, _ = st.columns([1, 1.4, 1])
 
     with col_centro:
         with st.form("formulario_login", clear_on_submit=False):
-            html_cabecera = '<div class="contenedor-logos-principales">'
-            if b64_invima: html_cabecera += f'<img class="logo-header-invima" src="data:image/png;base64,{b64_invima}">'
-            html_cabecera += '<div class="barra-separadora-vertical-azul"></div>'
-            if b64_fda:    html_cabecera += f'<img class="logo-header-fda" src="data:image/png;base64,{b64_fda}">'
-            html_cabecera += '</div>'
-            st.markdown(html_cabecera, unsafe_allow_html=True)
+            # Logos superiores
+            html_cab = '<div class="contenedor-logos-principales">'
+            if b64_invima: html_cab += f'<img class="logo-header-invima" src="data:image/png;base64,{b64_invima}">'
+            html_cab += '<div class="barra-sep"></div>'
+            if b64_fda: html_cab += f'<img class="logo-header-fda" src="data:image/png;base64,{b64_fda}">'
+            html_cab += '</div>'
+            st.markdown(html_cab, unsafe_allow_html=True)
 
             st.markdown("<div class='login-title'>Plataforma de Extracción</div>", unsafe_allow_html=True)
             st.markdown("<div class='login-desc'>Gestión Automatizada de Dispositivos Médicos</div>", unsafe_allow_html=True)
@@ -448,14 +310,15 @@ if not st.session_state["autenticado"]:
             usuario    = st.text_input("Nombre de usuario", value=st.session_state["usuario_guardado"], placeholder="Introduzca su usuario").strip()
             contraseña = st.text_input("Contraseña", type="password", placeholder="Introduzca su contraseña")
             recordar   = st.checkbox("Recordar mi usuario en este equipo", value=(st.session_state["usuario_guardado"] != ""))
-            boton_ingresar = st.form_submit_button("Acceder")
+            boton_ingresar = st.form_submit_button("Acceder", use_container_width=True)
 
-            html_soporte = '<div class="contenedor-soporte-inferior"><div class="titulo-soporte">Bases de datos vinculadas:</div><div class="fila-logos-soporte">'
-            if b64_gudid:   html_soporte += f'<img class="logo-gudid-libre"   src="data:image/png;base64,{b64_gudid}">'
-            if b64_eudamed: html_soporte += f'<img class="logo-eudamed-libre" src="data:image/png;base64,{b64_eudamed}">'
-            if b64_gmdn:    html_soporte += f'<img class="logo-gmdn-libre"    src="data:image/png;base64,{b64_gmdn}">'
-            html_soporte += '</div></div>'
-            st.markdown(html_soporte, unsafe_allow_html=True)
+            # Logos inferiores
+            html_sop = '<div class="soporte-inferior"><div class="soporte-titulo">Bases de datos vinculadas</div><div class="fila-logos">'
+            if b64_gudid:   html_sop += f'<img class="logo-soporte" src="data:image/png;base64,{b64_gudid}">'
+            if b64_eudamed: html_sop += f'<img class="logo-soporte" src="data:image/png;base64,{b64_eudamed}">'
+            if b64_gmdn:    html_sop += f'<img class="logo-soporte" src="data:image/png;base64,{b64_gmdn}">'
+            html_sop += '</div></div>'
+            st.markdown(html_sop, unsafe_allow_html=True)
 
             if boton_ingresar:
                 if not usuario or not contraseña:
@@ -472,211 +335,331 @@ if not st.session_state["autenticado"]:
     st.stop()
 
 # ==========================================================
-# INTERFAZ INTERNA (usuario autenticado)
+# INTERFAZ INTERNA
 # ==========================================================
 else:
     es_admin = st.session_state["usuario_activo_real"].strip().lower() == ADMIN_USER.lower()
 
     st.markdown("""
-        <style>
-            .stApp { background-image: none !important; background-color: #f0f2f6 !important; }
-            section.main, section.main > div { background-color: #f0f2f6 !important; color: #1a1a2e !important; }
-            header, footer, #MainMenu { visibility: hidden !important; display: none !important; }
-            [data-testid="stSidebar"] {
-                visibility: visible !important;
-                background-color: #0b1d3a !important;
-                border-right: 1px solid #061122 !important;
-            }
-            .sidebar-text-header {
-                text-align: center; padding: 15px 10px; margin-bottom: 20px;
-                color: #ffffff !important; font-size: 20px; font-weight: 700;
-                border-bottom: 1px solid rgba(255,255,255,0.15);
-            }
-            [data-testid="stSidebar"] button {
-                background-color: #1a365d !important; color: #ffffff !important;
-                font-weight: 600 !important; border: 1px solid #2a4d7c !important;
-                border-radius: 6px !important; padding: 10px !important;
-            }
-            [data-testid="stSidebar"] button:hover { background-color: #2a4d7c !important; }
-            /* barra de progreso */
-            .custom-progress-container {
-                width: 100%; background-color: #e8ecf4; border: 2px solid #1e40af;
-                border-radius: 8px; padding: 3px; height: 32px; overflow: hidden; margin: 15px 0;
-            }
-            .custom-progress-bar {
-                height: 100%; border-radius: 4px;
-                background-image: repeating-linear-gradient(-45deg, #1e40af, #1e40af 12px, #e8ecf4 12px, #e8ecf4 18px);
-                transition: width 0.2s ease-in-out;
-            }
-            /* header */
-            .header-oficina-virtual {
-                background-color: #ffffff !important;
-                padding: 15px 30px; border-radius: 10px;
-                box-shadow: 0px 2px 8px rgba(0,0,0,0.05);
-                margin-bottom: 25px;
-                display: flex; justify-content: space-between; align-items: center;
-            }
-            .header-title { color: #0b1d3a !important; font-size: 22px; font-weight: bold; margin: 0; }
-            .user-tag {
-                font-size: 13.5px; color: #0b1d3a !important;
-                background-color: #eff6ff !important; padding: 8px 16px;
-                border-radius: 20px; border: 1px solid #bfdbfe !important; font-weight: 500;
-                white-space: nowrap;
-            }
-            .admin-badge {
-                font-size: 11px; color: #ffffff !important;
-                background-color: #dc2626 !important; padding: 3px 10px;
-                border-radius: 12px; font-weight: 700; margin-left: 8px;
-                vertical-align: middle; letter-spacing: 0.5px;
-            }
-            /* cards menú */
-            .card-menu-principal {
-                background-color: #ffffff !important;
-                padding: 25px; border-radius: 12px;
-                box-shadow: 0px 4px 12px rgba(0,0,0,0.05);
-                border-left: 5px solid #0b1d3a;
-                margin-bottom: 20px;
-            }
-            .card-menu-principal h4 { color: #0b1d3a !important; font-size: 16px !important; margin: 0 0 8px 0 !important; font-weight: 700 !important; }
-            .card-menu-principal p  { color: #374151 !important; font-size: 14px !important; margin: 0 !important; }
-            .card-menu-admin {
-                background-color: #fff5f5 !important;
-                padding: 25px; border-radius: 12px;
-                box-shadow: 0px 4px 12px rgba(0,0,0,0.05);
-                border-left: 5px solid #dc2626;
-                margin-bottom: 20px;
-            }
-            .card-menu-admin h4 { color: #991b1b !important; font-size: 16px !important; margin: 0 0 8px 0 !important; font-weight: 700 !important; }
-            .card-menu-admin p  { color: #374151 !important; font-size: 14px !important; margin: 0 !important; }
-            /* panel admin */
-            .admin-section-card {
-                background-color: #ffffff !important;
-                border-radius: 12px !important;
-                padding: 24px !important;
-                box-shadow: 0px 3px 10px rgba(0,0,0,0.08) !important;
-                border-top: 4px solid #dc2626 !important;
-                margin-bottom: 24px !important;
-            }
-            .admin-section-card h4 {
-                color: #991b1b !important;
-                font-size: 15px !important;
-                font-weight: 700 !important;
-                margin-bottom: 16px !important;
-                background-color: transparent !important;
-            }
-            /* forzar fondo blanco dentro de las cards admin */
-            .admin-section-card input,
-            .admin-section-card [data-baseweb="base-input"],
-            .admin-section-card [data-baseweb="input"] > div,
-            .admin-section-card [data-baseweb="select"] > div {
-                background-color: #ffffff !important;
-                color: #1a1a2e !important;
-                border: 1px solid #d1d5db !important;
-            }
-            /* tabla usuarios */
-            .tabla-usuarios {
-                width: 100%; border-collapse: collapse; margin-top: 8px;
-                border-radius: 8px; overflow: hidden;
-                border: 1px solid #e5e7eb;
-            }
-            .tabla-usuarios th {
-                background-color: #0b1d3a !important; color: #ffffff !important;
-                padding: 10px 14px; font-size: 13px; text-align: left;
-            }
-            .tabla-usuarios td {
-                padding: 9px 14px; font-size: 13px; color: #1a1a2e !important;
-                border-bottom: 1px solid #e5e7eb; background-color: #f8fafc !important;
-            }
-            .tabla-usuarios tr:hover td { background-color: #eff6ff !important; }
-            .tabla-usuarios tr:last-child td { border-bottom: none; }
-            /* footer */
-            .footer-institucional {
-                margin-top: 60px; padding: 25px 0;
-                border-top: 1px solid #e5e7eb;
-                text-align: center; font-size: 13px; color: #4b5563 !important;
-            }
-            .footer-links { display: flex; justify-content: center; gap: 30px; margin-bottom: 10px; flex-wrap: wrap; }
-            .footer-links a { color: #0b1d3a !important; text-decoration: none; font-weight: 500; }
-            /* responsive */
-            @media (max-width: 768px) {
-                .header-oficina-virtual { flex-direction: column !important; gap: 8px !important; text-align: center !important; padding: 12px 15px !important; }
-                .header-title { font-size: 16px !important; }
-                .user-tag { font-size: 12px !important; padding: 6px 12px !important; }
-                .card-menu-principal, .card-menu-admin { padding: 15px !important; }
-            }
-        </style>""", unsafe_allow_html=True)
+    <style>
+        /* ── Base ── */
+        .stApp { background-color: #f0f4f8 !important; }
+        section.main { background-color: #f0f4f8 !important; }
+        header, footer, #MainMenu { visibility: hidden !important; display: none !important; }
+
+        /* ── Todo el texto del contenido principal en oscuro ── */
+        section.main p,
+        section.main span,
+        section.main label,
+        section.main h1, section.main h2, section.main h3,
+        section.main h4, section.main h5, section.main h6 {
+            color: #1e293b !important;
+        }
+
+        /* ── Sidebar ── */
+        [data-testid="stSidebar"] {
+            background-color: #0b1d3a !important;
+            border-right: 1px solid #061122 !important;
+        }
+        [data-testid="stSidebar"] *:not(button):not(button *) {
+            color: #ffffff !important;
+        }
+        [data-testid="stSidebar"] button {
+            background-color: #1a365d !important;
+            color: #ffffff !important;
+            border: 1px solid #2a4d7c !important;
+            border-radius: 6px !important;
+            font-weight: 600 !important;
+        }
+        [data-testid="stSidebar"] button:hover { background-color: #2a4d7c !important; }
+        [data-testid="stSidebar"] button p,
+        [data-testid="stSidebar"] button span { color: #ffffff !important; }
+        .sidebar-header {
+            text-align: center; padding: 15px 10px; margin-bottom: 20px;
+            color: #ffffff; font-size: 19px; font-weight: 700;
+            border-bottom: 1px solid rgba(255,255,255,0.15);
+        }
+
+        /* ── Botones del contenido principal ── */
+        section.main button:not([data-baseweb="base-input"] button):not([data-baseweb="input"] button) {
+            background-color: #1a365d !important;
+            color: #ffffff !important;
+            border: none !important;
+            border-radius: 7px !important;
+            font-weight: 600 !important;
+        }
+        section.main button:not([data-baseweb="base-input"] button):not([data-baseweb="input"] button):hover {
+            background-color: #0b1d3a !important;
+        }
+        section.main button p,
+        section.main button span { color: #ffffff !important; }
+
+        /* ── Botón OJO en contenido principal — transparente ── */
+        section.main [data-baseweb="base-input"] button,
+        section.main [data-baseweb="input"] button {
+            background-color: transparent !important;
+            background: none !important;
+            border: none !important;
+            box-shadow: none !important;
+            width: 30px !important;
+            min-width: 30px !important;
+            padding: 0 4px !important;
+            color: #64748b !important;
+        }
+        section.main [data-baseweb="base-input"] button svg,
+        section.main [data-baseweb="input"] button svg {
+            fill: #64748b !important;
+            width: 16px !important; height: 16px !important;
+        }
+        section.main [data-baseweb="base-input"] button *,
+        section.main [data-baseweb="input"] button * { color: #64748b !important; }
+
+        /* ── Inputs contenido principal ── */
+        section.main input[type="text"],
+        section.main input[type="password"],
+        section.main input[type="number"] {
+            background-color: #ffffff !important;
+            color: #1e293b !important;
+            border: 1.5px solid #cbd5e1 !important;
+            border-radius: 7px !important;
+        }
+        section.main [data-baseweb="base-input"],
+        section.main [data-baseweb="input"] > div {
+            background-color: #ffffff !important;
+            border-color: #cbd5e1 !important;
+        }
+        section.main input::placeholder { color: #94a3b8 !important; }
+        section.main label { color: #374151 !important; }
+
+        /* ── Selectbox ── */
+        section.main [data-baseweb="select"] > div {
+            background-color: #ffffff !important;
+            color: #1e293b !important;
+            border-color: #cbd5e1 !important;
+        }
+        [data-baseweb="popover"] li,
+        [data-baseweb="menu"] li {
+            background-color: #ffffff !important;
+            color: #1e293b !important;
+        }
+
+        /* ── Date input ── */
+        [data-testid="stDateInput"] input { background-color: #ffffff !important; color: #1e293b !important; }
+
+        /* ── Checkbox ── */
+        section.main [data-baseweb="checkbox"] p { color: #374151 !important; }
+
+        /* ── Alertas (info, warning, success, error) ── */
+        [data-testid="stAlert"] p,
+        [data-testid="stAlert"] span { color: #1e293b !important; }
+
+        /* ── File uploader ── */
+        [data-testid="stFileUploadDropzone"] {
+            background-color: #eef2ff !important;
+            border: 2px dashed #1a365d !important;
+            border-radius: 8px !important;
+        }
+        [data-testid="stFileUploadDropzone"] p,
+        [data-testid="stFileUploadDropzone"] span { color: #374151 !important; }
+
+        /* ── Métricas ── */
+        [data-testid="stMetric"] {
+            background-color: #ffffff !important;
+            border-radius: 10px !important;
+            padding: 14px 18px !important;
+            border: 1px solid #dce4f5 !important;
+            box-shadow: 0 1px 4px rgba(0,0,0,0.06) !important;
+        }
+        [data-testid="stMetricLabel"] p { color: #374151 !important; }
+        [data-testid="stMetricValue"]   { color: #0b1d3a !important; }
+
+        /* ── Progreso ── */
+        .prog-wrap {
+            width: 100%; background-color: #e2e8f0; border: 2px solid #1e40af;
+            border-radius: 8px; padding: 3px; height: 30px; overflow: hidden; margin: 14px 0;
+        }
+        .prog-bar {
+            height: 100%; border-radius: 5px;
+            background-image: repeating-linear-gradient(-45deg, #1e40af, #1e40af 12px, #e2e8f0 12px, #e2e8f0 18px);
+            transition: width 0.2s ease-in-out;
+        }
+
+        /* ── Header ── */
+        .header-box {
+            background-color: #ffffff !important;
+            padding: 14px 28px; border-radius: 10px;
+            box-shadow: 0px 2px 8px rgba(0,0,0,0.07);
+            margin-bottom: 22px;
+            display: flex; justify-content: space-between; align-items: center;
+        }
+        .header-titulo { color: #0b1d3a !important; font-size: 20px; font-weight: 700; margin: 0; }
+        .user-pill {
+            font-size: 13px; color: #0b1d3a !important;
+            background-color: #eff6ff !important;
+            padding: 7px 15px; border-radius: 20px;
+            border: 1px solid #bfdbfe !important; font-weight: 500;
+            white-space: nowrap; display: inline-flex; align-items: center; gap: 6px;
+        }
+        .badge-admin {
+            font-size: 10px; color: #ffffff !important;
+            background-color: #dc2626 !important;
+            padding: 2px 8px; border-radius: 10px;
+            font-weight: 700; letter-spacing: 0.4px;
+        }
+
+        /* ── Cards menú ── */
+        .card-azul {
+            background-color: #ffffff !important;
+            padding: 22px; border-radius: 12px;
+            box-shadow: 0 3px 10px rgba(0,0,0,0.06);
+            border-left: 5px solid #0b1d3a;
+            margin-bottom: 16px;
+        }
+        .card-azul h4 { color: #0b1d3a !important; font-size: 15px !important; font-weight: 700 !important; margin: 0 0 6px 0 !important; }
+        .card-azul p  { color: #475569 !important; font-size: 13px !important; margin: 0 !important; }
+
+        .card-roja {
+            background-color: #fff5f5 !important;
+            padding: 22px; border-radius: 12px;
+            box-shadow: 0 3px 10px rgba(0,0,0,0.06);
+            border-left: 5px solid #dc2626;
+            margin-bottom: 16px;
+        }
+        .card-roja h4 { color: #991b1b !important; font-size: 15px !important; font-weight: 700 !important; margin: 0 0 6px 0 !important; }
+        .card-roja p  { color: #475569 !important; font-size: 13px !important; margin: 0 !important; }
+
+        /* ── Cards panel admin ── */
+        .admin-card {
+            background-color: #ffffff !important;
+            border-radius: 12px !important;
+            padding: 22px !important;
+            box-shadow: 0 3px 10px rgba(0,0,0,0.07) !important;
+            border-top: 4px solid #dc2626 !important;
+            margin-bottom: 20px !important;
+        }
+        .admin-card-title {
+            color: #991b1b !important;
+            font-size: 15px !important;
+            font-weight: 700 !important;
+            margin: 0 0 16px 0 !important;
+            display: block;
+        }
+
+        /* ── Tabla usuarios ── */
+        .tabla-usr {
+            width: 100%; border-collapse: collapse;
+            border-radius: 8px; overflow: hidden;
+            border: 1px solid #e2e8f0; margin-top: 8px;
+        }
+        .tabla-usr th {
+            background-color: #0b1d3a !important; color: #ffffff !important;
+            padding: 10px 14px; font-size: 13px; text-align: left;
+        }
+        .tabla-usr td {
+            padding: 9px 14px; font-size: 13px;
+            color: #1e293b !important;
+            border-bottom: 1px solid #e2e8f0;
+            background-color: #f8fafc !important;
+        }
+        .tabla-usr tr:last-child td { border-bottom: none; }
+        .tabla-usr tr:hover td { background-color: #eff6ff !important; }
+        .meta-txt { color: #64748b !important; font-size: 12px; margin-top: 8px; }
+
+        /* ── Footer ── */
+        .footer-box {
+            margin-top: 50px; padding: 22px 0;
+            border-top: 1px solid #e2e8f0;
+            text-align: center; font-size: 13px;
+        }
+        .footer-box p, .footer-box a, .footer-box span { color: #64748b !important; }
+        .footer-links { display: flex; justify-content: center; gap: 28px; margin-bottom: 8px; flex-wrap: wrap; }
+        .footer-links a { color: #0b1d3a !important; text-decoration: none; font-weight: 500; }
+
+        /* ── Responsive móvil ── */
+        @media (max-width: 768px) {
+            .header-box { flex-direction: column !important; gap: 8px !important; padding: 12px !important; text-align: center !important; }
+            .header-titulo { font-size: 15px !important; }
+            .user-pill { font-size: 11px !important; }
+            .card-azul, .card-roja, .admin-card { padding: 14px !important; }
+        }
+
+        /* ── Scrollbar ── */
+        ::-webkit-scrollbar { width: 5px; height: 5px; }
+        ::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 3px; }
+    </style>
+    """, unsafe_allow_html=True)
 
     # --- SIDEBAR ---
     with st.sidebar:
-        st.markdown('<div class="sidebar-text-header">⚙️ Opciones del Sistema</div>', unsafe_allow_html=True)
-        st.markdown("<p style='color:#ffffff; font-size:11px; text-transform:uppercase; font-weight:bold; margin-left:5px; margin-bottom:12px;'>Navegación del Portal</p>", unsafe_allow_html=True)
-        if st.sidebar.button("🏠 Menú Principal / Inicio", use_container_width=True):
+        st.markdown('<div class="sidebar-header">⚙️ Opciones del Sistema</div>', unsafe_allow_html=True)
+        st.markdown("<p style='color:#94a3b8; font-size:10px; text-transform:uppercase; font-weight:700; margin:0 0 10px 5px; letter-spacing:0.5px;'>Navegación</p>", unsafe_allow_html=True)
+
+        if st.sidebar.button("🏠 Menú Principal", use_container_width=True):
             st.session_state["seccion_activa"] = "Inicio"; st.rerun()
-        st.sidebar.markdown("<div style='margin-top:10px;'></div>", unsafe_allow_html=True)
-        if st.sidebar.button("🚀 Panel de Extracción Masiva", use_container_width=True):
+        st.sidebar.markdown("<div style='margin-top:8px'></div>", unsafe_allow_html=True)
+        if st.sidebar.button("🚀 Extracción Masiva", use_container_width=True):
             st.session_state["seccion_activa"] = "Extraccion"; st.rerun()
-        st.sidebar.markdown("<div style='margin-top:10px;'></div>", unsafe_allow_html=True)
+        st.sidebar.markdown("<div style='margin-top:8px'></div>", unsafe_allow_html=True)
         if st.sidebar.button("📋 Historiales y Reportes", use_container_width=True):
             st.session_state["seccion_activa"] = "Historiales"; st.rerun()
 
-        # Botón admin solo visible para admin
         if es_admin:
-            st.sidebar.markdown("<div style='margin-top:10px;'></div>", unsafe_allow_html=True)
-            st.sidebar.markdown("<p style='color:#fca5a5; font-size:11px; text-transform:uppercase; font-weight:bold; margin-left:5px; margin-bottom:8px;'>Administración</p>", unsafe_allow_html=True)
+            st.sidebar.markdown("<hr style='border-color:rgba(255,255,255,0.15); margin:16px 0 10px;'>", unsafe_allow_html=True)
+            st.sidebar.markdown("<p style='color:#fca5a5; font-size:10px; text-transform:uppercase; font-weight:700; margin:0 0 8px 5px;'>Administración</p>", unsafe_allow_html=True)
             if st.sidebar.button("👥 Panel de Administración", use_container_width=True):
                 st.session_state["seccion_activa"] = "Admin"; st.rerun()
 
-        st.sidebar.markdown("<br><br><br>", unsafe_allow_html=True)
-        if st.sidebar.button("🚪 Cerrar Sesión Segura", use_container_width=True):
+        st.sidebar.markdown("<br><br>", unsafe_allow_html=True)
+        if st.sidebar.button("🚪 Cerrar Sesión", use_container_width=True):
             st.session_state["autenticado"] = False; st.rerun()
 
-    # --- ENCABEZADO ---
+    # --- HEADER ---
     usuario_sesion = st.session_state["usuario_activo_real"]
-    badge_admin = '<span class="admin-badge">ADMIN</span>' if es_admin else ""
+    badge = '<span class="badge-admin">ADMIN</span>' if es_admin else ""
     st.markdown(f"""
-        <div class="header-oficina-virtual">
-            <div class="header-title">Oficina Virtual de Dispositivos Médicos</div>
-            <div class="user-tag">👤 <b>Usuario activo:</b> {usuario_sesion}{badge_admin}</div>
+        <div class="header-box">
+            <div class="header-titulo">Oficina Virtual de Dispositivos Médicos</div>
+            <div class="user-pill">👤 <b>{usuario_sesion}</b>{badge}</div>
         </div>""", unsafe_allow_html=True)
 
     # ==========================================================
     # VISTA 1: MENÚ PRINCIPAL
     # ==========================================================
     if st.session_state["seccion_activa"] == "Inicio":
-        st.markdown("<h3 style='color:#0b1d3a;'>Menú Principal</h3>", unsafe_allow_html=True)
-        st.markdown("<p style='color:#374151;'>Seleccione una de las siguientes opciones:</p>", unsafe_allow_html=True)
+        st.markdown("<h3 style='color:#0b1d3a; margin-bottom:4px;'>Menú Principal</h3>", unsafe_allow_html=True)
+        st.markdown("<p style='color:#475569; margin-bottom:20px;'>Seleccione una de las siguientes opciones:</p>", unsafe_allow_html=True)
 
         st.markdown("""
-            <div class="card-menu-principal">
+            <div class="card-azul">
                 <h4>1. Módulo Automatizado de Extracción Masiva</h4>
                 <p>Carga masiva de archivos Excel para cruce con AccessGUDID (FDA), identificación de códigos GMDN y agencias emisoras.</p>
             </div>""", unsafe_allow_html=True)
-        if st.button("🚀 Ingresar al Módulo de Extracción", key="btn_ir_ext", use_container_width=True):
+        if st.button("🚀 Ingresar al Módulo de Extracción", key="btn_ext", use_container_width=True):
             st.session_state["seccion_activa"] = "Extraccion"; st.rerun()
 
         st.markdown("""
-            <div class="card-menu-principal" style="border-left-color:#0369a1;">
+            <div class="card-azul" style="border-left-color:#0369a1;">
                 <h4>2. Consulta de Historiales y Reportes</h4>
                 <p>Consulta el historial de referencias buscadas por usuario, con fecha y cantidad de resultados obtenidos.</p>
             </div>""", unsafe_allow_html=True)
-        if st.button("📋 Ver Historiales y Reportes", key="btn_ir_hist", use_container_width=True):
+        if st.button("📋 Ver Historiales y Reportes", key="btn_hist", use_container_width=True):
             st.session_state["seccion_activa"] = "Historiales"; st.rerun()
 
         if es_admin:
             st.markdown("""
-                <div class="card-menu-admin">
-                    <h4>🔐 3. Panel de Administración (Solo Admin)</h4>
+                <div class="card-roja">
+                    <h4>🔐 3. Panel de Administración</h4>
                     <p>Gestión completa de usuarios: agregar, eliminar, cambiar contraseñas y visualizar lista de accesos.</p>
                 </div>""", unsafe_allow_html=True)
-            if st.button("👥 Ir al Panel de Administración", key="btn_ir_admin", use_container_width=True):
+            if st.button("👥 Ir al Panel de Administración", key="btn_admin", use_container_width=True):
                 st.session_state["seccion_activa"] = "Admin"; st.rerun()
 
     # ==========================================================
-    # VISTA 2: PANEL DE EXTRACCIÓN MASIVA
+    # VISTA 2: EXTRACCIÓN MASIVA
     # ==========================================================
     elif st.session_state["seccion_activa"] == "Extraccion":
         st.markdown("<h3 style='color:#0b1d3a;'>🚀 Extracción Automatizada AccessGUDID (FDA)</h3>", unsafe_allow_html=True)
-        st.markdown("<p style='color:#374151;'>Suba su archivo, aplique filtros opcionales e inicie la consulta.</p>", unsafe_allow_html=True)
+        st.markdown("<p style='color:#475569;'>Suba su archivo, aplique filtros opcionales e inicie la consulta.</p>", unsafe_allow_html=True)
 
         col_izq, col_der = st.columns([1, 2])
 
@@ -688,7 +671,6 @@ else:
 
         with col_der:
             st.warning("📊 Monitor de Procesamiento en Tiempo Real")
-
             headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
 
             if archivo_cargado and conectar_boton:
@@ -699,44 +681,28 @@ else:
                     referencias_totales = [r for r in df[0].tolist() if r and r != "nan"]
                     total_refs = len(referencias_totales)
                 except Exception as e:
-                    st.error(f"Error al abrir el archivo de Excel: {e}")
-                    st.stop()
+                    st.error(f"Error al abrir el archivo de Excel: {e}"); st.stop()
 
                 st.success(f"📋 Referencias encontradas: {total_refs}")
-                texto_estado     = st.empty()
-                barra_custom     = st.empty()
-                tabla_viva       = st.empty()
-                lista_resultados = []
-                session          = requests.Session()
+                texto_estado = st.empty(); barra_custom = st.empty(); tabla_viva = st.empty()
+                lista_resultados = []; session = requests.Session()
 
                 def actualizar_barra(pct):
-                    barra_custom.markdown(f"""
-                        <div class="custom-progress-container">
-                            <div class="custom-progress-bar" style="width:{pct}%;"></div>
-                        </div>""", unsafe_allow_html=True)
+                    barra_custom.markdown(f'<div class="prog-wrap"><div class="prog-bar" style="width:{pct}%;"></div></div>', unsafe_allow_html=True)
 
                 for idx, ref in enumerate(referencias_totales):
                     base_pct = (idx / total_refs) * 100
                     paso_pct = (1 / total_refs) * 100
-
                     texto_estado.info(f"⏳ Fila {idx+1} de {total_refs} | 🔍 Buscando: {ref}...")
                     actualizar_barra(int(base_pct + paso_pct * 0.33))
-
                     url_busqueda = f"https://accessgudid.nlm.nih.gov/devices/search?query={urllib.parse.quote(ref)}"
-
                     try:
                         response = session.get(url_busqueda, headers=headers, timeout=15)
-                        actualizar_barra(int(base_pct + paso_pct * 0.66))
-                        time.sleep(0.4)
-
+                        actualizar_barra(int(base_pct + paso_pct * 0.66)); time.sleep(0.4)
                         if response.status_code == 200:
                             soup = BeautifulSoup(response.text, 'html.parser')
-                            enlaces = list(dict.fromkeys([
-                                a['href'] for a in soup.find_all('a', href=True)
-                                if '/devices/' in a['href'] and 'search' not in a['href']
-                            ]))
+                            enlaces = list(dict.fromkeys([a['href'] for a in soup.find_all('a', href=True) if '/devices/' in a['href'] and 'search' not in a['href']]))
                             coincidencias = []
-
                             for href in enlaces:
                                 try:
                                     res = session.get(f"https://accessgudid.nlm.nih.gov{href}", headers=headers, timeout=15)
@@ -744,125 +710,80 @@ else:
                                     soup2 = BeautifulSoup(res.text, 'html.parser')
                                     texto = soup2.get_text()
                                     lineas = [l.strip() for l in texto.split('\n') if l.strip()]
-
                                     company = "No encontrado"
                                     for i, l in enumerate(lineas):
                                         if "Company Name" in l:
                                             company = lineas[i+1] if l.replace(":","").strip() == "Company Name" and i+1 < len(lineas) else l.replace("Company Name","").replace(":","").strip()
                                             break
                                     company = " ".join(company.split()).strip() or "No encontrado"
-
-                                    if company_name_filtro and company_name_filtro.upper() not in company.upper():
-                                        continue
-
+                                    if company_name_filtro and company_name_filtro.upper() not in company.upper(): continue
                                     gmdn_code = "No encontrado"
                                     for p in texto.replace(':',' ').replace('(',' ').replace(')',' ').split():
-                                        if p.isdigit() and len(p) == 5:
-                                            gmdn_code = p; break
-
+                                        if p.isdigit() and len(p) == 5: gmdn_code = p; break
                                     gmdn_def, gmdn_status = "No encontrado", "No encontrado"
                                     for i, l in enumerate(lineas):
                                         if "GMDN Term Definition" in l:
-                                            candidatos = [
-                                                x.replace("[?]","").strip() for x in lineas[i:]
-                                                if x.replace("[?]","").strip()
-                                                and not any(h in x for h in ["GMDN Term Code","GMDN Term Name","GMDN Term Definition","GMDN Term Status","Implantable?"])
-                                                and not (x.strip().isdigit() and len(x.strip())==5)
-                                            ]
-                                            if len(candidatos) >= 2:
-                                                gmdn_def, gmdn_status = candidatos[1], candidatos[2] if len(candidatos)>2 else candidatos[1]
-                                            elif len(candidatos) == 1:
-                                                gmdn_def = candidatos[0]
+                                            candidatos = [x.replace("[?]","").strip() for x in lineas[i:] if x.replace("[?]","").strip() and not any(h in x for h in ["GMDN Term Code","GMDN Term Name","GMDN Term Definition","GMDN Term Status","Implantable?"]) and not (x.strip().isdigit() and len(x.strip())==5)]
+                                            if len(candidatos) >= 2: gmdn_def, gmdn_status = candidatos[1], candidatos[2] if len(candidatos)>2 else candidatos[1]
+                                            elif len(candidatos) == 1: gmdn_def = candidatos[0]
                                             break
-
                                     diccionario_estados = {"active":"Activo","obsolete":"Obsoleto","no encontrado":"No encontrado"}
                                     gmdn_status = diccionario_estados.get(gmdn_status.lower(), gmdn_status)
-
                                     if gmdn_def and gmdn_def.lower() != "no encontrado":
                                         try:
                                             texto_url = gmdn_def.replace('"','').replace("'","")
                                             partes, pedazos_trad = [], []
                                             palabras, parte_actual, cuenta = texto_url.split(), [], 0
                                             for palabra in palabras:
-                                                if cuenta + len(palabra) + 1 > 450:
-                                                    partes.append(" ".join(parte_actual)); parte_actual=[palabra]; cuenta=len(palabra)
-                                                else:
-                                                    parte_actual.append(palabra); cuenta += len(palabra)+1
+                                                if cuenta + len(palabra) + 1 > 450: partes.append(" ".join(parte_actual)); parte_actual=[palabra]; cuenta=len(palabra)
+                                                else: parte_actual.append(palabra); cuenta += len(palabra)+1
                                             if parte_actual: partes.append(" ".join(parte_actual))
                                             for parte in partes:
                                                 r_t = requests.get(f"https://api.mymemory.translated.net/get?q={urllib.parse.quote(parte)}&langpair=en|es", timeout=5)
                                                 if r_t.status_code == 200:
                                                     trad = r_t.json().get("responseData",{}).get("translatedText","")
                                                     pedazos_trad.append(trad if trad and "MYMEMORY" not in trad else parte)
-                                                else:
-                                                    pedazos_trad.append(parte)
+                                                else: pedazos_trad.append(parte)
                                             gmdn_def = " ".join(pedazos_trad).strip()
-                                        except:
-                                            pass
-
+                                        except: pass
                                     issuing = "No encontrado"
                                     for i, l in enumerate(lineas):
                                         if "Issuing Agency" in l:
                                             issuing = lineas[i+1] if l.replace(":","").strip() == "Issuing Agency" and i+1 < len(lineas) else l.replace("Issuing Agency","").replace(":","").strip()
                                             break
                                     issuing = " ".join(issuing.split()).strip() or "No encontrado"
-
-                                    coincidencias.append({
-                                        "Referencia_Original": ref,
-                                        "Primary_DI_Number":   href.split('/')[-1].strip(),
-                                        "Nombre_Empresa_FDA":  company,
-                                        "Codigo_GMDN":         gmdn_code,
-                                        "Definicion_GMDN":     " ".join(str(gmdn_def).split()).strip(),
-                                        "Estado_GMDN":         " ".join(str(gmdn_status).split()).strip(),
-                                        "Issuing_Agency":      issuing
-                                    })
-                                except:
-                                    continue
-
-                            if coincidencias:
-                                lista_resultados.extend(coincidencias)
-                            else:
-                                lista_resultados.append({"Referencia_Original":ref,"Primary_DI_Number":"Filtrado","Nombre_Empresa_FDA":"No coincide","Codigo_GMDN":"Filtrado","Definicion_GMDN":"Filtrado","Estado_GMDN":"Filtrado","Issuing_Agency":"Filtrado"})
-
+                                    coincidencias.append({"Referencia_Original":ref,"Primary_DI_Number":href.split('/')[-1].strip(),"Nombre_Empresa_FDA":company,"Codigo_GMDN":gmdn_code,"Definicion_GMDN":" ".join(str(gmdn_def).split()).strip(),"Estado_GMDN":" ".join(str(gmdn_status).split()).strip(),"Issuing_Agency":issuing})
+                                except: continue
+                            if coincidencias: lista_resultados.extend(coincidencias)
+                            else: lista_resultados.append({"Referencia_Original":ref,"Primary_DI_Number":"Filtrado","Nombre_Empresa_FDA":"No coincide","Codigo_GMDN":"Filtrado","Definicion_GMDN":"Filtrado","Estado_GMDN":"Filtrado","Issuing_Agency":"Filtrado"})
                         elif response.status_code == 429:
                             st.warning("⏳ Servidor saturado. Esperando 15 segundos..."); time.sleep(15)
                         else:
                             lista_resultados.append({"Referencia_Original":ref,"Primary_DI_Number":"No encontrado","Nombre_Empresa_FDA":"No encontrado","Codigo_GMDN":"No encontrado","Definicion_GMDN":"No encontrado","Estado_GMDN":"No encontrado","Issuing_Agency":"No encontrado"})
-
                     except Exception:
                         lista_resultados.append({"Referencia_Original":ref,"Primary_DI_Number":"Error de Red","Nombre_Empresa_FDA":"Error","Codigo_GMDN":"Error","Definicion_GMDN":"Error","Estado_GMDN":"Error","Issuing_Agency":"Error"})
-
                     actualizar_barra(int((idx+1)/total_refs*100))
                     tabla_viva.dataframe(pd.DataFrame(lista_resultados), use_container_width=True)
                     time.sleep(0.8)
 
-                texto_estado.empty()
-                barra_custom.empty()
+                texto_estado.empty(); barra_custom.empty()
                 st.success("✨ ¡Extracción completada al 100%!")
                 registrar_log(st.session_state["usuario_activo_real"], f"Extracción masiva ({total_refs} refs)", len(lista_resultados))
-
                 df_final = pd.DataFrame(lista_resultados)
                 output = io.BytesIO()
                 with pd.ExcelWriter(output, engine='openpyxl') as writer:
                     df_final.to_excel(writer, index=False)
-
-                st.download_button(
-                    label="📥 Descargar Excel con Resultados",
-                    data=output.getvalue(),
-                    file_name="resultados_fda.xlsx",
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                    use_container_width=True
-                )
+                st.download_button(label="📥 Descargar Excel con Resultados", data=output.getvalue(), file_name="resultados_fda.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True)
 
             elif not archivo_cargado:
                 st.info("👈 Cargue un archivo en el panel izquierdo para activar la monitorización.")
 
     # ==========================================================
-    # VISTA 3: HISTORIALES Y REPORTES
+    # VISTA 3: HISTORIALES
     # ==========================================================
     elif st.session_state["seccion_activa"] == "Historiales":
         st.markdown("<h3 style='color:#0b1d3a;'>📋 Historiales y Reportes</h3>", unsafe_allow_html=True)
-        st.markdown("<p style='color:#374151;'>Consulta el registro de búsquedas realizadas en la plataforma.</p>", unsafe_allow_html=True)
+        st.markdown("<p style='color:#475569;'>Registro de búsquedas realizadas en la plataforma.</p>", unsafe_allow_html=True)
 
         with st.spinner("Cargando historial..."):
             df_logs = obtener_logs()
@@ -870,189 +791,127 @@ else:
         if df_logs.empty:
             st.info("No hay registros de búsquedas aún.")
         else:
-            col_f1, col_f2, col_f3 = st.columns([1, 1, 1])
+            col_f1, col_f2, col_f3 = st.columns(3)
             with col_f1:
-                usuarios_disponibles = ["Todos"] + sorted(df_logs["Usuario"].dropna().unique().tolist())
-                filtro_usuario = st.selectbox("👤 Filtrar por usuario", usuarios_disponibles)
+                usuarios_disp = ["Todos"] + sorted(df_logs["Usuario"].dropna().unique().tolist())
+                filtro_usuario = st.selectbox("👤 Usuario", usuarios_disp)
             with col_f2:
                 fecha_min = df_logs["Fecha"].min().date() if not df_logs["Fecha"].isna().all() else datetime.date.today()
-                fecha_max = df_logs["Fecha"].max().date() if not df_logs["Fecha"].isna().all() else datetime.date.today()
                 filtro_fecha_ini = st.date_input("📅 Desde", value=fecha_min)
             with col_f3:
+                fecha_max = df_logs["Fecha"].max().date() if not df_logs["Fecha"].isna().all() else datetime.date.today()
                 filtro_fecha_fin = st.date_input("📅 Hasta", value=fecha_max)
 
-            df_filtrado = df_logs.copy()
+            df_fil = df_logs.copy()
             if filtro_usuario != "Todos":
-                df_filtrado = df_filtrado[df_filtrado["Usuario"] == filtro_usuario]
-            df_filtrado = df_filtrado[
-                (df_filtrado["Fecha"].dt.date >= filtro_fecha_ini) &
-                (df_filtrado["Fecha"].dt.date <= filtro_fecha_fin)
-            ]
+                df_fil = df_fil[df_fil["Usuario"] == filtro_usuario]
+            df_fil = df_fil[(df_fil["Fecha"].dt.date >= filtro_fecha_ini) & (df_fil["Fecha"].dt.date <= filtro_fecha_fin)]
 
             st.markdown("<br>", unsafe_allow_html=True)
             m1, m2, m3 = st.columns(3)
-            m1.metric("📊 Total de búsquedas", len(df_filtrado))
-            m2.metric("👥 Usuarios activos", df_filtrado["Usuario"].nunique())
-            total_resultados = pd.to_numeric(df_filtrado["Resultados"], errors="coerce").sum()
-            m3.metric("🔬 Referencias procesadas", int(total_resultados) if not pd.isna(total_resultados) else 0)
+            m1.metric("📊 Total búsquedas", len(df_fil))
+            m2.metric("👥 Usuarios activos", df_fil["Usuario"].nunique())
+            total_res = pd.to_numeric(df_fil["Resultados"], errors="coerce").sum()
+            m3.metric("🔬 Referencias procesadas", int(total_res) if not pd.isna(total_res) else 0)
             st.markdown("<br>", unsafe_allow_html=True)
 
-            df_mostrar = df_filtrado.copy()
+            df_mostrar = df_fil.copy()
             df_mostrar["Fecha"] = df_mostrar["Fecha"].dt.strftime("%Y-%m-%d %H:%M")
             st.dataframe(df_mostrar, use_container_width=True, hide_index=True)
 
-            output_logs = io.BytesIO()
-            with pd.ExcelWriter(output_logs, engine='openpyxl') as writer:
+            out_logs = io.BytesIO()
+            with pd.ExcelWriter(out_logs, engine='openpyxl') as writer:
                 df_mostrar.to_excel(writer, index=False)
-
-            st.download_button(
-                label="📥 Descargar Historial en Excel",
-                data=output_logs.getvalue(),
-                file_name=f"historial_busquedas_{datetime.datetime.now().strftime('%Y%m%d')}.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                use_container_width=True
-            )
+            st.download_button(label="📥 Descargar Historial en Excel", data=out_logs.getvalue(), file_name=f"historial_{datetime.datetime.now().strftime('%Y%m%d')}.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True)
 
     # ==========================================================
-    # VISTA 4: PANEL DE ADMINISTRACIÓN (solo admin)
+    # VISTA 4: PANEL ADMIN
     # ==========================================================
     elif st.session_state["seccion_activa"] == "Admin":
         if not es_admin:
-            st.error("🔒 Acceso denegado. Solo el administrador puede ver esta sección.")
-            st.stop()
+            st.error("🔒 Acceso denegado."); st.stop()
 
         st.markdown("<h3 style='color:#991b1b;'>👥 Panel de Administración de Usuarios</h3>", unsafe_allow_html=True)
-        st.markdown("<p style='color:#374151;'>Gestión completa de cuentas de acceso a la plataforma.</p>", unsafe_allow_html=True)
+        st.markdown("<p style='color:#475569;'>Gestión completa de cuentas de acceso a la plataforma.</p>", unsafe_allow_html=True)
 
-        # ── FILA SUPERIOR: Lista de usuarios + Agregar usuario ──
         col_lista, col_agregar = st.columns([1.4, 1])
 
-        # --- LISTA DE USUARIOS ---
         with col_lista:
-            st.markdown('<div class="admin-section-card">', unsafe_allow_html=True)
-            st.markdown("<h4>📋 Lista de Usuarios Registrados</h4>", unsafe_allow_html=True)
-
+            st.markdown('<div class="admin-card"><span class="admin-card-title">📋 Lista de Usuarios Registrados</span>', unsafe_allow_html=True)
             with st.spinner("Cargando usuarios..."):
                 datos_usuarios, _ = obtener_usuarios()
-
             if datos_usuarios:
-                filas_html = ""
+                filas = ""
                 for u in datos_usuarios:
-                    nombre = str(u.get('usuario', '')).strip()
-                    es_adm = "🔴 Admin" if nombre.lower() == ADMIN_USER.lower() else "🟢 Usuario"
-                    filas_html += f"<tr><td>{nombre}</td><td>{es_adm}</td></tr>"
-
-                st.markdown(f"""
-                    <table class="tabla-usuarios">
-                        <thead><tr><th>Usuario</th><th>Rol</th></tr></thead>
-                        <tbody>{filas_html}</tbody>
-                    </table>""", unsafe_allow_html=True)
-                st.markdown(f"<p style='color:#6b7280; font-size:12px; margin-top:10px;'>Total: {len(datos_usuarios)} usuario(s) registrado(s)</p>", unsafe_allow_html=True)
+                    nom = str(u.get('usuario', '')).strip()
+                    rol = "🔴 Admin" if nom.lower() == ADMIN_USER.lower() else "🟢 Usuario"
+                    filas += f"<tr><td>{nom}</td><td>{rol}</td></tr>"
+                st.markdown(f'<table class="tabla-usr"><thead><tr><th>Usuario</th><th>Rol</th></tr></thead><tbody>{filas}</tbody></table><p class="meta-txt">Total: {len(datos_usuarios)} usuario(s)</p>', unsafe_allow_html=True)
             else:
                 st.info("No se encontraron usuarios.")
             st.markdown('</div>', unsafe_allow_html=True)
 
-        # --- AGREGAR USUARIO ---
         with col_agregar:
-            st.markdown('<div class="admin-section-card">', unsafe_allow_html=True)
-            st.markdown("<h4>➕ Agregar Nuevo Usuario</h4>", unsafe_allow_html=True)
-
-            nuevo_usr = st.text_input("Nombre de usuario", key="nuevo_usr", placeholder="Ej: usuario_nuevo")
-            nuevo_pwd = st.text_input("Contraseña", type="password", key="nuevo_pwd", placeholder="Contraseña segura")
-            nuevo_pwd2 = st.text_input("Confirmar contraseña", type="password", key="nuevo_pwd2", placeholder="Repita la contraseña")
-
+            st.markdown('<div class="admin-card"><span class="admin-card-title">➕ Agregar Nuevo Usuario</span>', unsafe_allow_html=True)
+            nuevo_usr  = st.text_input("Nombre de usuario", key="nu", placeholder="Ej: usuario_nuevo")
+            nuevo_pwd  = st.text_input("Contraseña", type="password", key="np", placeholder="Contraseña segura")
+            nuevo_pwd2 = st.text_input("Confirmar contraseña", type="password", key="np2", placeholder="Repita la contraseña")
             if st.button("✅ Crear Usuario", key="btn_crear", use_container_width=True):
-                if not nuevo_usr or not nuevo_pwd:
-                    st.warning("Complete todos los campos.")
-                elif nuevo_pwd != nuevo_pwd2:
-                    st.error("Las contraseñas no coinciden.")
-                elif len(nuevo_pwd) < 4:
-                    st.warning("La contraseña debe tener al menos 4 caracteres.")
+                if not nuevo_usr or not nuevo_pwd: st.warning("Complete todos los campos.")
+                elif nuevo_pwd != nuevo_pwd2: st.error("Las contraseñas no coinciden.")
+                elif len(nuevo_pwd) < 4: st.warning("Mínimo 4 caracteres.")
                 else:
                     ok, msg = agregar_usuario(nuevo_usr, nuevo_pwd)
-                    if ok:
-                        st.success(f"✔ {msg}")
-                        registrar_log(usuario_sesion, f"[ADMIN] Creó usuario: {nuevo_usr}", "-")
-                        time.sleep(0.5); st.rerun()
-                    else:
-                        st.error(f"❌ {msg}")
+                    if ok: st.success(f"✔ {msg}"); registrar_log(usuario_sesion, f"[ADMIN] Creó: {nuevo_usr}", "-"); time.sleep(0.5); st.rerun()
+                    else: st.error(f"❌ {msg}")
             st.markdown('</div>', unsafe_allow_html=True)
 
-        # ── FILA INFERIOR: Eliminar usuario + Cambiar contraseña ──
         col_elim, col_pwd = st.columns(2)
 
-        # --- ELIMINAR USUARIO ---
         with col_elim:
-            st.markdown('<div class="admin-section-card">', unsafe_allow_html=True)
-            st.markdown("<h4>🗑️ Eliminar Usuario</h4>", unsafe_allow_html=True)
-
-            nombres_disponibles = [
-                str(u.get('usuario', '')).strip()
-                for u in datos_usuarios
-                if str(u.get('usuario', '')).strip().lower() != ADMIN_USER.lower()
-            ] if datos_usuarios else []
-
-            if nombres_disponibles:
-                usuario_a_eliminar = st.selectbox("Seleccionar usuario a eliminar", nombres_disponibles, key="sel_eliminar")
-                confirmar_elim = st.checkbox(f"Confirmo que deseo eliminar a **{usuario_a_eliminar}**", key="chk_elim")
-                if st.button("🗑️ Eliminar Usuario", key="btn_eliminar", use_container_width=True):
-                    if not confirmar_elim:
-                        st.warning("Marque la casilla de confirmación antes de eliminar.")
+            st.markdown('<div class="admin-card"><span class="admin-card-title">🗑️ Eliminar Usuario</span>', unsafe_allow_html=True)
+            no_admin = [str(u.get('usuario','')).strip() for u in datos_usuarios if str(u.get('usuario','')).strip().lower() != ADMIN_USER.lower()] if datos_usuarios else []
+            if no_admin:
+                usr_elim = st.selectbox("Seleccionar usuario", no_admin, key="sel_e")
+                confirmar = st.checkbox(f"Confirmo eliminar a **{usr_elim}**", key="chk_e")
+                if st.button("🗑️ Eliminar Usuario", key="btn_e", use_container_width=True):
+                    if not confirmar: st.warning("Marque la casilla de confirmación.")
                     else:
-                        ok, msg = eliminar_usuario(usuario_a_eliminar)
-                        if ok:
-                            st.success(f"✔ {msg}")
-                            registrar_log(usuario_sesion, f"[ADMIN] Eliminó usuario: {usuario_a_eliminar}", "-")
-                            time.sleep(0.5); st.rerun()
-                        else:
-                            st.error(f"❌ {msg}")
+                        ok, msg = eliminar_usuario(usr_elim)
+                        if ok: st.success(f"✔ {msg}"); registrar_log(usuario_sesion, f"[ADMIN] Eliminó: {usr_elim}", "-"); time.sleep(0.5); st.rerun()
+                        else: st.error(f"❌ {msg}")
             else:
-                st.info("No hay usuarios disponibles para eliminar.")
+                st.info("No hay usuarios para eliminar.")
             st.markdown('</div>', unsafe_allow_html=True)
 
-        # --- CAMBIAR CONTRASEÑA ---
         with col_pwd:
-            st.markdown('<div class="admin-section-card">', unsafe_allow_html=True)
-            st.markdown("<h4>🔑 Cambiar Contraseña de Usuario</h4>", unsafe_allow_html=True)
-
-            todos_usuarios = [
-                str(u.get('usuario', '')).strip()
-                for u in datos_usuarios
-            ] if datos_usuarios else []
-
-            if todos_usuarios:
-                usuario_cambio_pwd = st.selectbox("Seleccionar usuario", todos_usuarios, key="sel_pwd")
-                nueva_pwd_1 = st.text_input("Nueva contraseña", type="password", key="npwd1", placeholder="Nueva contraseña")
-                nueva_pwd_2 = st.text_input("Confirmar nueva contraseña", type="password", key="npwd2", placeholder="Repita la contraseña")
-
-                if st.button("🔑 Actualizar Contraseña", key="btn_cambiar_pwd", use_container_width=True):
-                    if not nueva_pwd_1:
-                        st.warning("Ingrese la nueva contraseña.")
-                    elif nueva_pwd_1 != nueva_pwd_2:
-                        st.error("Las contraseñas no coinciden.")
-                    elif len(nueva_pwd_1) < 4:
-                        st.warning("La contraseña debe tener al menos 4 caracteres.")
+            st.markdown('<div class="admin-card"><span class="admin-card-title">🔑 Cambiar Contraseña</span>', unsafe_allow_html=True)
+            todos = [str(u.get('usuario','')).strip() for u in datos_usuarios] if datos_usuarios else []
+            if todos:
+                usr_pwd = st.selectbox("Seleccionar usuario", todos, key="sel_p")
+                npwd1   = st.text_input("Nueva contraseña", type="password", key="np1", placeholder="Nueva contraseña")
+                npwd2   = st.text_input("Confirmar contraseña", type="password", key="np2b", placeholder="Repita la contraseña")
+                if st.button("🔑 Actualizar Contraseña", key="btn_p", use_container_width=True):
+                    if not npwd1: st.warning("Ingrese la nueva contraseña.")
+                    elif npwd1 != npwd2: st.error("Las contraseñas no coinciden.")
+                    elif len(npwd1) < 4: st.warning("Mínimo 4 caracteres.")
                     else:
-                        ok, msg = cambiar_password(usuario_cambio_pwd, nueva_pwd_1)
-                        if ok:
-                            st.success(f"✔ {msg}")
-                            registrar_log(usuario_sesion, f"[ADMIN] Cambió contraseña de: {usuario_cambio_pwd}", "-")
-                            time.sleep(0.5); st.rerun()
-                        else:
-                            st.error(f"❌ {msg}")
+                        ok, msg = cambiar_password(usr_pwd, npwd1)
+                        if ok: st.success(f"✔ {msg}"); registrar_log(usuario_sesion, f"[ADMIN] Cambió pwd de: {usr_pwd}", "-"); time.sleep(0.5); st.rerun()
+                        else: st.error(f"❌ {msg}")
             else:
                 st.info("No hay usuarios disponibles.")
             st.markdown('</div>', unsafe_allow_html=True)
 
     # ==========================================================
-    # PIE DE PÁGINA
+    # FOOTER
     # ==========================================================
     st.markdown("""
-        <div class="footer-institucional">
+        <div class="footer-box">
             <div class="footer-links">
                 <a href="#">Políticas de privacidad</a>
                 <a href="#">Tratamiento de datos</a>
                 <a href="#">Mesa de Ayuda</a>
             </div>
-            <div>v 1.1.26 © Invima 2026. Todos los derechos reservados.</div>
+            <p>v 1.1.26 © Invima 2026. Todos los derechos reservados.</p>
         </div>""", unsafe_allow_html=True)
