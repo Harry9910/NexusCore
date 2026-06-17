@@ -208,9 +208,6 @@ if not st.session_state["autenticado"]:
             border-color: #cbd5e1 !important;
         }
 
-        /* ════════════════════════════════════════════════
-           BOTÓN OJO — base-input limpio, sin fondo negro
-        ════════════════════════════════════════════════ */
         div[data-testid="stForm"] [data-baseweb="base-input"] {
             border-radius: 8px !important;
             overflow: hidden !important;
@@ -235,7 +232,6 @@ if not st.session_state["autenticado"]:
             font-size: 15px !important;
             padding: 10px 24px !important;
         }
-        /* Forzar blanco en cualquier hijo del botón Acceder */
         div[data-testid="stForm"] button[kind="primaryFormSubmit"] *,
         div[data-testid="stForm"] button[kind="primaryFormSubmit"] p,
         div[data-testid="stForm"] button[kind="primaryFormSubmit"] span,
@@ -244,7 +240,6 @@ if not st.session_state["autenticado"]:
         div[data-testid="stForm"] button[data-testid="baseButton-primaryFormSubmit"] span {
             color: #ffffff !important;
         }
-        /* Selector nuclear de último recurso para el botón submit */
         div[data-testid="stForm"] div[data-testid="stFormSubmitButton"] button,
         div[data-testid="stForm"] div[data-testid="stFormSubmitButton"] button p,
         div[data-testid="stForm"] div[data-testid="stFormSubmitButton"] button span {
@@ -257,10 +252,8 @@ if not st.session_state["autenticado"]:
         }
 
         /* ════════════════════════════════════════════════
-           CHECKBOX — fondo BLANCO, borde AZUL
+           CHECKBOX — fondo BLANCO, borde AZUL, check AZUL VISIBLE
         ════════════════════════════════════════════════ */
-
-        /* El cuadrito del checkbox — todos los selectores posibles */
         div[data-testid="stForm"] [data-baseweb="checkbox"] [data-testid="stCheckbox"] span,
         div[data-testid="stForm"] [data-baseweb="checkbox"] label span:first-of-type,
         div[data-testid="stForm"] [data-baseweb="checkbox"] > label > div,
@@ -274,12 +267,23 @@ if not st.session_state["autenticado"]:
             border: 2px solid #1a365d !important;
             border-radius: 4px !important;
         }
-        /* Marcado → azul */
+        /* Marcado → azul con check blanco */
         div[data-testid="stForm"] [data-baseweb="checkbox"] input[type="checkbox"]:checked + label span:first-of-type,
         div[data-testid="stForm"] [data-baseweb="checkbox"] [aria-checked="true"] > div,
         div[data-testid="stForm"] [data-baseweb="checkbox"] [aria-checked="true"] span:first-child {
             background-color: #1a365d !important;
             border-color: #1a365d !important;
+        }
+        /* SVG del check mark en blanco */
+        div[data-testid="stForm"] [data-baseweb="checkbox"] [aria-checked="true"] svg,
+        div[data-testid="stForm"] [data-baseweb="checkbox"] [aria-checked="true"] svg path,
+        div[data-testid="stForm"] [data-baseweb="checkbox"] label > div:first-child svg,
+        div[data-testid="stForm"] [data-baseweb="checkbox"] label > div:first-child svg path {
+            fill: #ffffff !important;
+            stroke: #ffffff !important;
+            color: #ffffff !important;
+            opacity: 1 !important;
+            visibility: visible !important;
         }
         div[data-testid="stForm"] [data-baseweb="checkbox"] p,
         div[data-testid="stForm"] [data-baseweb="checkbox"] label {
@@ -291,7 +295,9 @@ if not st.session_state["autenticado"]:
             display: flex; justify-content: center; align-items: center;
             gap: 20px; margin-bottom: 24px; height: 70px;
         }
-        .logo-header-invima { height: 60px !important; width: auto !important; object-fit: contain; }
+        /* INVIMA: +20% → 72px (antes 60px) */
+        .logo-header-invima { height: 72px !important; width: auto !important; object-fit: contain; }
+        /* FDA: sin cambio */
         .logo-header-fda    { height: 46px !important; width: auto !important; object-fit: contain; }
         .barra-sep { width: 3px; height: 55px; background-color: #00b4d8; border-radius: 2px; }
         .login-title {
@@ -308,16 +314,24 @@ if not st.session_state["autenticado"]:
             margin-bottom: 16px; text-transform: uppercase; letter-spacing: 0.5px;
         }
         .fila-logos { display: flex; justify-content: space-around; align-items: center; flex-wrap: wrap; gap: 10px; }
-        .logo-soporte { height: 90px !important; width: auto !important; object-fit: contain; max-width: 220px !important; }
+
+        /* GUDID: +40% → 126px (antes 90px) */
+        .logo-gudid   { height: 126px !important; width: auto !important; object-fit: contain; max-width: 220px !important; }
+        /* EUDAMED: +40% → 126px (antes 90px) */
+        .logo-eudamed { height: 126px !important; width: auto !important; object-fit: contain; max-width: 220px !important; }
+        /* GMDN: -30% → 63px (antes 90px) */
+        .logo-gmdn    { height: 63px  !important; width: auto !important; object-fit: contain; max-width: 220px !important; }
 
         /* ── Responsive móvil ── */
         @media (max-width: 768px) {
             div[data-testid="stForm"] { padding: 24px 16px !important; margin: 0 6px !important; }
-            .logo-header-invima { height: 40px !important; }
+            .logo-header-invima { height: 48px !important; }
             .logo-header-fda    { height: 30px !important; }
             .login-title { font-size: 18px !important; }
             .fila-logos { gap: 8px !important; }
-            .logo-soporte { height: 26px !important; }
+            .logo-gudid   { height: 80px !important; }
+            .logo-eudamed { height: 80px !important; }
+            .logo-gmdn    { height: 42px !important; }
         }
     </style>
     """, unsafe_allow_html=True)
@@ -343,23 +357,48 @@ if not st.session_state["autenticado"]:
             recordar   = st.checkbox("Recordar mi usuario en este equipo", value=(st.session_state["usuario_guardado"] != ""))
             boton_ingresar = st.form_submit_button("Acceder", use_container_width=True)
 
-            # ── CSS nuclear: checkbox sin borde en texto + ojo blanco sin negro ──
+            # CSS nuclear para checkbox visible y ojo blanco
             st.markdown("""
             <style>
-            /* ══ CHECKBOX ══ solo el cuadrito tiene borde, el texto NO */
+            /* ══ CHECKBOX LOGIN — cuadrito azul visible, check blanco ══ */
             div[data-testid="stForm"] [data-baseweb="checkbox"] label > div:first-child {
                 background-color: #ffffff !important;
                 background: #ffffff !important;
                 border: 2px solid #1a365d !important;
                 border-radius: 4px !important;
-                min-width: 16px !important;
-                min-height: 16px !important;
-                width: 16px !important;
-                height: 16px !important;
+                min-width: 18px !important;
+                min-height: 18px !important;
+                width: 18px !important;
+                height: 18px !important;
                 flex-shrink: 0 !important;
                 outline: none !important;
                 box-shadow: none !important;
+                display: flex !important;
+                align-items: center !important;
+                justify-content: center !important;
             }
+            /* Cuando está marcado: fondo azul */
+            div[data-testid="stForm"] [data-baseweb="checkbox"] [aria-checked="true"] > div:first-child,
+            div[data-testid="stForm"] [data-baseweb="checkbox"] label[aria-checked="true"] > div:first-child {
+                background-color: #1a365d !important;
+                background: #1a365d !important;
+                border-color: #1a365d !important;
+            }
+            /* SVG checkmark blanco y visible */
+            div[data-testid="stForm"] [data-baseweb="checkbox"] label > div:first-child svg {
+                fill: #ffffff !important;
+                color: #ffffff !important;
+                opacity: 1 !important;
+                visibility: visible !important;
+                display: block !important;
+                width: 14px !important;
+                height: 14px !important;
+            }
+            div[data-testid="stForm"] [data-baseweb="checkbox"] label > div:first-child svg path {
+                fill: #ffffff !important;
+                stroke: #ffffff !important;
+            }
+            /* Texto del checkbox sin borde */
             div[data-testid="stForm"] [data-baseweb="checkbox"] label,
             div[data-testid="stForm"] [data-baseweb="checkbox"] label > div:not(:first-child),
             div[data-testid="stForm"] [data-baseweb="checkbox"] p,
@@ -368,10 +407,10 @@ if not st.session_state["autenticado"]:
                 outline: none !important;
                 box-shadow: none !important;
                 background: transparent !important;
+                color: #374151 !important;
             }
 
-            /* ══ OJO ══ enfoque nuclear: todo el base-input es f8fafc,
-               solo el botón rompe con azul */
+            /* ══ OJO contraseña ══ */
             div[data-testid="stPasswordInput"] [data-baseweb="base-input"],
             div[data-testid="stPasswordInput"] [data-baseweb="base-input"] *:not(button):not(button *):not(input):not(svg):not(svg *) {
                 background-color: #f8fafc !important;
@@ -431,11 +470,11 @@ if not st.session_state["autenticado"]:
             </style>
             """, unsafe_allow_html=True)
 
-            # Logos inferiores
+            # Logos inferiores — clases individuales por logo
             html_sop = '<div class="soporte-inferior"><div class="soporte-titulo">Bases de datos vinculadas</div><div class="fila-logos">'
-            if b64_gudid:   html_sop += f'<img class="logo-soporte" src="data:image/png;base64,{b64_gudid}">'
-            if b64_eudamed: html_sop += f'<img class="logo-soporte" src="data:image/png;base64,{b64_eudamed}">'
-            if b64_gmdn:    html_sop += f'<img class="logo-soporte" src="data:image/png;base64,{b64_gmdn}">'
+            if b64_gudid:   html_sop += f'<img class="logo-gudid"   src="data:image/png;base64,{b64_gudid}">'
+            if b64_eudamed: html_sop += f'<img class="logo-eudamed" src="data:image/png;base64,{b64_eudamed}">'
+            if b64_gmdn:    html_sop += f'<img class="logo-gmdn"    src="data:image/png;base64,{b64_gmdn}">'
             html_sop += '</div></div>'
             st.markdown(html_sop, unsafe_allow_html=True)
 
@@ -536,7 +575,7 @@ else:
         .stButton > button p,
         .stButton > button span { color: #ffffff !important; }
 
-        /* ── Botón OJO en contenido principal — azul solo en su celda ── */
+        /* ── Botón OJO en contenido principal ── */
         section.main [data-baseweb="base-input"] {
             overflow: hidden !important;
             border-radius: 7px !important;
@@ -606,7 +645,7 @@ else:
         /* ── Checkbox ── */
         section.main [data-baseweb="checkbox"] p { color: #374151 !important; }
 
-        /* ── Alertas (info, warning, success, error) ── */
+        /* ── Alertas ── */
         [data-testid="stAlert"] p,
         [data-testid="stAlert"] span { color: #1e293b !important; }
 
