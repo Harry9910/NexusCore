@@ -220,13 +220,36 @@ if "mostrar_modal_perfil"  not in st.session_state: st.session_state["mostrar_mo
 CSS_GLOBAL = """
 <style>
 /* ══════════════════════════════════════════════════════════
-   RESET SIDEBAR — siempre visible dentro de la app
+   RESET SIDEBAR — siempre visible y SIEMPRE EXPANDIDO.
+   FIX: Streamlit puede colapsar el sidebar (pantallas angostas,
+   clic accidental, etc.). Antes, como el <header> que contiene el
+   botón para volver a expandirlo estaba oculto con display:none,
+   una vez colapsado ya no había forma de recuperarlo. Por eso
+   forzamos aquí ancho/visibilidad fijos, sin importar el estado
+   "aria-expanded" que Streamlit le asigne internamente.
 ══════════════════════════════════════════════════════════ */
 [data-testid="stSidebar"] {
     display: flex !important;
     visibility: visible !important;
+    transform: none !important;
+    min-width: 260px !important;
+    width: 260px !important;
+    margin-left: 0px !important;
+    position: relative !important;
     background-color: #0b1d3a !important;
     border-right: 1px solid #061122 !important;
+}
+[data-testid="stSidebar"][aria-expanded="false"] {
+    min-width: 260px !important;
+    width: 260px !important;
+    margin-left: 0px !important;
+}
+/* Por si en tu versión de Streamlit el sidebar SÍ logra colapsarse,
+   dejamos visible el botón de expandir (flecha) como respaldo. */
+[data-testid="collapsedControl"],
+[data-testid="stSidebarCollapsedControl"] {
+    display: flex !important;
+    visibility: visible !important;
 }
 [data-testid="stSidebar"] *:not(button):not(button *) {
     color: #ffffff !important;
@@ -253,7 +276,19 @@ CSS_GLOBAL = """
 ══════════════════════════════════════════════════════════ */
 .stApp { background-color: #f0f4f8 !important; }
 section.main { background-color: #f0f4f8 !important; }
-header, footer, #MainMenu { visibility: hidden !important; display: none !important; }
+
+/* FIX: ya NO ocultamos el <header> completo (display:none), porque
+   ahí vive el control nativo de Streamlit para expandir el sidebar
+   si llegara a colapsarse. Solo ocultamos la barra de herramientas
+   (botón "Deploy", menú de 3 puntos) y el footer. */
+footer, #MainMenu, [data-testid="stToolbar"] {
+    visibility: hidden !important; display: none !important;
+}
+header[data-testid="stHeader"] {
+    background-color: transparent !important;
+    height: 3rem !important;
+    box-shadow: none !important;
+}
 
 section.main p, section.main span, section.main label,
 section.main h1, section.main h2, section.main h3,
@@ -374,7 +409,7 @@ div[data-testid="stFileUploadDropzone"] button * { color: white !important; }
 }
 
 /* ══════════════════════════════════════════════════════════
-   HEADER con botón de perfil a la derecha
+   HEADER con botones de Inicio / Mi Perfil a la derecha
 ══════════════════════════════════════════════════════════ */
 .header-box {
     background-color: #ffffff !important;
@@ -398,8 +433,9 @@ div[data-testid="stFileUploadDropzone"] button * { color: white !important; }
     padding: 2px 8px; border-radius: 10px;
     font-weight: 700; letter-spacing: 0.4px;
 }
-/* Botón de perfil en header — estilo especial */
-.btn-perfil-header > button {
+/* Botones de acción en el header (Inicio / Mi Perfil) — estilo especial */
+.btn-perfil-header > button,
+.btn-inicio-header > button {
     background-color: #0b1d3a !important;
     color: #ffffff !important;
     border: 2px solid #2a4d7c !important;
@@ -409,9 +445,12 @@ div[data-testid="stFileUploadDropzone"] button * { color: white !important; }
     padding: 6px 16px !important;
     white-space: nowrap !important;
 }
-.btn-perfil-header > button:hover { background-color: #1a365d !important; }
+.btn-perfil-header > button:hover,
+.btn-inicio-header > button:hover { background-color: #1a365d !important; }
 .btn-perfil-header > button p,
-.btn-perfil-header > button span { color: #ffffff !important; }
+.btn-perfil-header > button span,
+.btn-inicio-header > button p,
+.btn-inicio-header > button span { color: #ffffff !important; }
 
 /* ══════════════════════════════════════════════════════════
    CARDS
@@ -483,6 +522,8 @@ div[data-testid="stFileUploadDropzone"] button * { color: white !important; }
     .header-titulo { font-size: 15px !important; }
     .user-pill { font-size: 11px !important; }
     .card-azul, .card-roja, .admin-card, .perfil-card { padding: 14px !important; }
+    /* En móvil dejamos el sidebar un poco más angosto, pero SIEMPRE visible */
+    [data-testid="stSidebar"] { min-width: 220px !important; width: 220px !important; }
 }
 
 ::-webkit-scrollbar { width: 5px; height: 5px; }
@@ -498,6 +539,8 @@ CSS_LOGIN = """
                       url('https://images.unsplash.com/photo-1576091160399-112ba8d25d1d?q=80&w=2070');
     background-size: cover; background-position: center; background-attachment: fixed;
 }
+/* En el login NO existe sidebar (no se crea hasta después de autenticar),
+   así que aquí sí podemos ocultar header/footer/menú sin riesgo. */
 header, footer, [data-testid="stSidebar"], #MainMenu {
     visibility: hidden !important; display: none !important;
 }
@@ -657,11 +700,13 @@ else:
             st.session_state["autenticado"] = False
             st.rerun()
 
-    # ── HEADER con botón de perfil a la derecha ───────────
+    # ── HEADER con botones de Inicio / Mi Perfil a la derecha ───────────
+    # FIX: se agrega un botón "🏠 Inicio" directamente en el header principal.
+    # Así, aunque el sidebar no se viera por cualquier motivo (pantalla muy
+    # angosta, navegador raro, etc.), siempre hay una forma de volver al menú.
     badge = '<span class="badge-admin">ADMIN</span>' if es_admin else ""
 
-    # Columnas: título ocupa la mayor parte, botón perfil a la derecha
-    col_titulo, col_perfil_btn = st.columns([5, 1])
+    col_titulo, col_inicio_btn, col_perfil_btn = st.columns([4, 1, 1])
     with col_titulo:
         st.markdown(
             f'<div style="background:#ffffff;padding:12px 24px;border-radius:10px;'
@@ -672,6 +717,12 @@ else:
             f'</div>',
             unsafe_allow_html=True
         )
+    with col_inicio_btn:
+        st.markdown('<div class="btn-inicio-header">', unsafe_allow_html=True)
+        if st.button("🏠 Inicio", key="btn_header_inicio", use_container_width=True):
+            st.session_state["seccion_activa"] = "Inicio"
+            st.rerun()
+        st.markdown('</div>', unsafe_allow_html=True)
     with col_perfil_btn:
         st.markdown('<div class="btn-perfil-header">', unsafe_allow_html=True)
         if st.button("⚙️ Mi Perfil", key="btn_header_perfil", use_container_width=True):
