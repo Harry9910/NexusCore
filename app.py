@@ -181,53 +181,42 @@ CSS_GLOBAL = """
 <style>
 
 /* ══════════════════════════════════════════════
-   FORZAR TEMA CLARO EN TODA LA APP
+   TEMA CLARO — sin tocar el fondo de .stApp
+   (el fondo lo controla cada vista por separado)
    ══════════════════════════════════════════════ */
 
-/* Fondo general de la app */
-.stApp, .stApp > div, section.main, section.main > div {
-    background-color: #f0f2f6 !important;
-    color: #1a1a2e !important;
-}
-
-/* ── TODOS LOS INPUTS DE TEXTO ── */
-input[type="text"],
-input[type="password"],
-input[type="email"],
-input[type="number"],
-input[type="search"],
-textarea,
-[data-baseweb="input"] input,
-[data-baseweb="textarea"] textarea {
+/* ── INPUTS ── */
+input[type="text"], input[type="password"],
+input[type="email"], input[type="number"],
+input[type="search"], textarea {
     background-color: #ffffff !important;
     color: #1a1a2e !important;
     border: 1px solid #d1d5db !important;
     border-radius: 6px !important;
     caret-color: #1a1a2e !important;
 }
-input::placeholder, textarea::placeholder {
-    color: #9ca3af !important;
-}
-
-/* ── CONTENEDOR BASE DE INPUTS (Streamlit usa baseweb) ── */
+input::placeholder, textarea::placeholder { color: #9ca3af !important; }
 [data-baseweb="base-input"],
 [data-baseweb="input"] > div,
 [data-baseweb="textarea"] > div {
     background-color: #ffffff !important;
     border-color: #d1d5db !important;
+    color: #1a1a2e !important;
 }
 
 /* ── SELECTBOX ── */
 [data-baseweb="select"] > div,
-[data-baseweb="select"] div[role="button"],
-[data-baseweb="popover"] ul li,
-[data-baseweb="menu"],
-[data-baseweb="menu"] ul,
-[data-baseweb="menu"] li {
+[data-baseweb="select"] div[role="button"] {
+    background-color: #ffffff !important;
+    color: #1a1a2e !important;
+    border-color: #d1d5db !important;
+}
+[data-baseweb="popover"] ul, [data-baseweb="popover"] li,
+[data-baseweb="menu"], [data-baseweb="menu"] ul, [data-baseweb="menu"] li {
     background-color: #ffffff !important;
     color: #1a1a2e !important;
 }
-[data-baseweb="select"] svg { fill: #1a1a2e !important; }
+[data-baseweb="select"] svg { fill: #374151 !important; }
 
 /* ── DATE INPUT ── */
 [data-testid="stDateInput"] input,
@@ -237,26 +226,22 @@ input::placeholder, textarea::placeholder {
     border-color: #d1d5db !important;
 }
 
-/* ── LABELS DE INPUTS ── */
+/* ── LABELS ── */
 label, .stTextInput label, .stSelectbox label,
-.stDateInput label, .stFileUploader label,
-p, li, span {
+.stDateInput label, .stFileUploader label, .stCheckbox label {
     color: #1a1a2e !important;
 }
 
 /* ── CHECKBOX ── */
 [data-baseweb="checkbox"] span {
     background-color: #ffffff !important;
-    border-color: #d1d5db !important;
+    border-color: #9ca3af !important;
 }
-[data-testid="stCheckbox"] label span { color: #1a1a2e !important; }
 
-/* ── TABLAS / DATAFRAMES ── */
+/* ── DATAFRAMES ── */
 [data-testid="stDataFrame"],
 [data-testid="stDataFrame"] > div,
-[data-testid="stDataFrame"] iframe,
-.dvn-scroller,
-.glideDataEditor {
+[data-testid="stDataFrame"] iframe {
     background-color: #ffffff !important;
     color: #1a1a2e !important;
 }
@@ -275,40 +260,39 @@ p, li, span {
 /* ── FILE UPLOADER ── */
 [data-testid="stFileUploadDropzone"],
 [data-testid="stFileUploadDropzone"] > div {
-    background-color: #f0f4ff !important;
-    border: 2px dashed #1e40af !important;
-    color: #1a1a2e !important;
+    background-color: #eef2ff !important;
+    border: 2px dashed #1a365d !important;
     border-radius: 8px !important;
 }
 [data-testid="stFileUploadDropzone"] p,
 [data-testid="stFileUploadDropzone"] span { color: #374151 !important; }
 
-/* ── ALERTAS (info / warning / success / error) ── */
-[data-testid="stAlert"],
-[data-testid="stAlert"] > div,
-[data-testid="stAlert"] p {
-    color: #1a1a2e !important;
-}
-[data-testid="stAlert"][data-baseweb="notification"] { background-color: #eff6ff !important; }
+/* ── ALERTAS ── */
+[data-testid="stAlert"] p, [data-testid="stAlert"] span { color: #1a1a2e !important; }
 
 /* ── SPINNER ── */
 [data-testid="stSpinner"] p { color: #1a1a2e !important; }
 
-/* ── BOTONES GENERALES (contenido principal) ── */
-section.main button:not([data-testid="stSidebar"] button) {
-    background-color: #0b1d3a !important;
+/* ══════════════════════════════════════
+   BOTONES — mismo azul que el sidebar #1a365d
+   ══════════════════════════════════════ */
+section.main button,
+div[data-testid="stForm"] button {
+    background-color: #1a365d !important;
     color: #ffffff !important;
     border: none !important;
     border-radius: 6px !important;
     font-weight: 600 !important;
 }
-section.main button:not([data-testid="stSidebar"] button):hover {
-    background-color: #1a365d !important;
+section.main button:hover,
+div[data-testid="stForm"] button:hover {
+    background-color: #0b1d3a !important;
+    color: #ffffff !important;
 }
-
-/* ── TABS ── */
-[data-baseweb="tab-list"] { background-color: #f0f2f6 !important; }
-[data-baseweb="tab"]       { color: #1a1a2e !important; }
+section.main button p, section.main button span,
+div[data-testid="stForm"] button p, div[data-testid="stForm"] button span {
+    color: #ffffff !important;
+}
 
 /* ── SCROLLBAR ── */
 ::-webkit-scrollbar { width: 6px; height: 6px; }
@@ -359,9 +343,12 @@ if not st.session_state["autenticado"]:
             .login-title { color: #0f2043 !important; font-size: 24px; font-weight: bold; text-align: center; margin-bottom: 6px; }
             .login-desc  { color: #555555 !important; font-size: 14px; text-align: center; margin-bottom: 25px; }
             div[data-testid="stForm"] button {
-                background-color: #000c66 !important; color: white !important;
+                background-color: #1a365d !important; color: white !important;
                 width: 120px; border-radius: 6px; padding: 10px 20px;
-                font-size: 16px; font-weight: 500;
+                font-size: 16px; font-weight: 600;
+            }
+            div[data-testid="stForm"] button:hover {
+                background-color: #0b1d3a !important;
             }
             .contenedor-soporte-inferior { border-top: 1px solid #eef0f4; margin-top: 35px; padding-top: 25px; }
             .titulo-soporte { font-size: 12.5px; font-weight: 600; color: #6c757d !important; margin-bottom: 20px; text-transform: uppercase; }
@@ -430,6 +417,7 @@ else:
     st.markdown("""
         <style>
             .stApp { background-image: none !important; background-color: #f0f2f6 !important; }
+            section.main, section.main > div { background-color: #f0f2f6 !important; color: #1a1a2e !important; }
             header, footer, #MainMenu { visibility: hidden !important; display: none !important; }
             [data-testid="stSidebar"] {
                 visibility: visible !important;
