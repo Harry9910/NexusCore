@@ -370,40 +370,23 @@ if not st.session_state["autenticado"]:
                 background: transparent !important;
             }
 
-            /* ══ OJO ══ botón azul + quitar negro con width 0 en el div extra */
-            div[data-testid="stPasswordInput"] [data-baseweb="base-input"] {
-                overflow: hidden !important;
-                border-radius: 8px !important;
+            /* ══ OJO ══ enfoque nuclear: todo el base-input es f8fafc,
+               solo el botón rompe con azul */
+            div[data-testid="stPasswordInput"] [data-baseweb="base-input"],
+            div[data-testid="stPasswordInput"] [data-baseweb="base-input"] *:not(button):not(button *):not(input):not(svg):not(svg *) {
                 background-color: #f8fafc !important;
-                display: flex !important;
-                align-items: stretch !important;
-            }
-            /* input ocupa todo el espacio disponible */
-            div[data-testid="stPasswordInput"] [data-baseweb="base-input"] input {
-                flex: 1 !important;
-                background-color: #f8fafc !important;
-                min-width: 0 !important;
-            }
-            /* div contenedor del botón: sin padding/margin extra */
-            div[data-testid="stPasswordInput"] [data-baseweb="base-input"] > div:not(:first-child) {
-                background-color: #f8fafc !important;
-                padding: 0 !important;
-                margin: 0 !important;
+                background: #f8fafc !important;
                 border: none !important;
-                width: auto !important;
-                flex-shrink: 0 !important;
+                box-shadow: none !important;
             }
-            /* El div negro extra que aparece DESPUÉS del botón → ancho 0 */
-            div[data-testid="stPasswordInput"] [data-baseweb="base-input"] > div:last-child:not(:has(button)) {
-                width: 0 !important;
-                min-width: 0 !important;
-                max-width: 0 !important;
-                padding: 0 !important;
-                margin: 0 !important;
+            div[data-testid="stPasswordInput"] [data-baseweb="base-input"] {
+                border: 1.5px solid #cbd5e1 !important;
+                border-radius: 8px !important;
                 overflow: hidden !important;
+            }
+            div[data-testid="stPasswordInput"] input {
                 background-color: #f8fafc !important;
             }
-            /* El botón del ojo */
             div[data-testid="stPasswordInput"] button {
                 background-color: #1a365d !important;
                 border-radius: 0 !important;
