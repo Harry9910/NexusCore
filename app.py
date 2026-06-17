@@ -308,7 +308,7 @@ if not st.session_state["autenticado"]:
             margin-bottom: 16px; text-transform: uppercase; letter-spacing: 0.5px;
         }
         .fila-logos { display: flex; justify-content: space-around; align-items: center; flex-wrap: wrap; gap: 10px; }
-        .logo-soporte { height: 44px !important; width: auto !important; object-fit: contain; max-width: 130px !important; }
+        .logo-soporte { height: 90px !important; width: auto !important; object-fit: contain; max-width: 220px !important; }
 
         /* ── Responsive móvil ── */
         @media (max-width: 768px) {
@@ -370,20 +370,38 @@ if not st.session_state["autenticado"]:
                 background: transparent !important;
             }
 
-            /* ══ OJO ══
-               El input de password tiene: [input_div][button][extra_div_negro]
-               Ponemos el contenedor en overflow:hidden y el div extra en blanco */
+            /* ══ OJO ══ botón azul + quitar negro con width 0 en el div extra */
             div[data-testid="stPasswordInput"] [data-baseweb="base-input"] {
                 overflow: hidden !important;
                 border-radius: 8px !important;
                 background-color: #f8fafc !important;
+                display: flex !important;
+                align-items: stretch !important;
             }
-            /* Todos los divs hijos del base-input → fondo transparente/blanco */
-            div[data-testid="stPasswordInput"] [data-baseweb="base-input"] > div {
+            /* input ocupa todo el espacio disponible */
+            div[data-testid="stPasswordInput"] [data-baseweb="base-input"] input {
+                flex: 1 !important;
                 background-color: #f8fafc !important;
-                border: none !important;
+                min-width: 0 !important;
+            }
+            /* div contenedor del botón: sin padding/margin extra */
+            div[data-testid="stPasswordInput"] [data-baseweb="base-input"] > div:not(:first-child) {
+                background-color: #f8fafc !important;
                 padding: 0 !important;
                 margin: 0 !important;
+                border: none !important;
+                width: auto !important;
+                flex-shrink: 0 !important;
+            }
+            /* El div negro extra que aparece DESPUÉS del botón → ancho 0 */
+            div[data-testid="stPasswordInput"] [data-baseweb="base-input"] > div:last-child:not(:has(button)) {
+                width: 0 !important;
+                min-width: 0 !important;
+                max-width: 0 !important;
+                padding: 0 !important;
+                margin: 0 !important;
+                overflow: hidden !important;
+                background-color: #f8fafc !important;
             }
             /* El botón del ojo */
             div[data-testid="stPasswordInput"] button {
