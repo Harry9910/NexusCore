@@ -16,6 +16,7 @@ from oauth2client.service_account import ServiceAccountCredentials
 # ==========================================================
 SCOPE = ['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/auth/drive']
 SHEET_ID = "1SSAS4NLafR3p8K3nIlBoHp0AKklO5JNfWwQbSfNdbGU"
+ADMIN_USER = "admin"  # Usuario con privilegios de administrador
 
 # ==========================================================
 # FUNCIONES DE CONEXIÓN Y AUTENTICACIÓN
@@ -35,14 +36,12 @@ def validar_usuario(usuario, password):
         doc = client.open_by_key(SHEET_ID)
         sheet_users = doc.worksheet("Usuarios")
         datos_usuarios = sheet_users.get_all_records()
-
         for fila in datos_usuarios:
             usuario_db = str(fila.get('usuario', '')).strip()
             pass_db = str(fila.get('contraseña', '')).strip()
             if usuario_db == usuario.strip() and pass_db == password.strip():
                 return True
         return False
-
     except Exception as e:
         st.error(f"Error técnico de conexión: {e}")
         return False
@@ -74,6 +73,70 @@ def registrar_log(usuario, busqueda, cantidad_resultados):
         sheet_logs.append_row([timestamp, usuario, busqueda, cantidad_resultados])
     except Exception as e:
         st.error(f"Error al guardar log: {e}")
+
+# ==========================================================
+# FUNCIONES DE GESTIÓN DE USUARIOS (SOLO ADMIN)
+# ==========================================================
+
+def obtener_usuarios():
+    """Obtiene la lista de usuarios desde Google Sheets."""
+    try:
+        client = get_gspread_client()
+        doc = client.open_by_key(SHEET_ID)
+        sheet_users = doc.worksheet("Usuarios")
+        datos = sheet_users.get_all_records()
+        return datos, sheet_users
+    except Exception as e:
+        st.error(f"Error al obtener usuarios: {e}")
+        return [], None
+
+def agregar_usuario(nuevo_usuario, nueva_password):
+    """Agrega un nuevo usuario a la hoja 'Usuarios'."""
+    try:
+        client = get_gspread_client()
+        doc = client.open_by_key(SHEET_ID)
+        sheet_users = doc.worksheet("Usuarios")
+        datos = sheet_users.get_all_records()
+        # Verificar que no exista
+        for fila in datos:
+            if str(fila.get('usuario', '')).strip().lower() == nuevo_usuario.strip().lower():
+                return False, "El usuario ya existe."
+        sheet_users.append_row([nuevo_usuario.strip(), nueva_password.strip()])
+        return True, "Usuario creado correctamente."
+    except Exception as e:
+        return False, f"Error: {e}"
+
+def eliminar_usuario(usuario_a_eliminar):
+    """Elimina un usuario de la hoja 'Usuarios'."""
+    try:
+        if usuario_a_eliminar.strip().lower() == ADMIN_USER.lower():
+            return False, "No se puede eliminar al administrador."
+        client = get_gspread_client()
+        doc = client.open_by_key(SHEET_ID)
+        sheet_users = doc.worksheet("Usuarios")
+        datos = sheet_users.get_all_values()  # incluye cabecera
+        for i, fila in enumerate(datos):
+            if len(fila) > 0 and str(fila[0]).strip() == usuario_a_eliminar.strip():
+                sheet_users.delete_rows(i + 1)
+                return True, f"Usuario '{usuario_a_eliminar}' eliminado."
+        return False, "Usuario no encontrado."
+    except Exception as e:
+        return False, f"Error: {e}"
+
+def cambiar_password(usuario_objetivo, nueva_password):
+    """Cambia la contraseña de un usuario."""
+    try:
+        client = get_gspread_client()
+        doc = client.open_by_key(SHEET_ID)
+        sheet_users = doc.worksheet("Usuarios")
+        datos = sheet_users.get_all_values()  # incluye cabecera
+        for i, fila in enumerate(datos):
+            if len(fila) > 0 and str(fila[0]).strip() == usuario_objetivo.strip():
+                sheet_users.update_cell(i + 1, 2, nueva_password.strip())
+                return True, f"Contraseña actualizada para '{usuario_objetivo}'."
+        return False, "Usuario no encontrado."
+    except Exception as e:
+        return False, f"Error: {e}"
 
 # ==========================================================
 # FUNCIONES AUXILIARES DE IMAGEN
@@ -110,6 +173,58 @@ if "autenticado"         not in st.session_state: st.session_state["autenticado"
 if "usuario_guardado"    not in st.session_state: st.session_state["usuario_guardado"]    = ""
 if "usuario_activo_real" not in st.session_state: st.session_state["usuario_activo_real"] = ""
 if "seccion_activa"      not in st.session_state: st.session_state["seccion_activa"]      = "Inicio"
+
+# ==========================================================
+# CSS GLOBAL (compartido login + app)
+# ==========================================================
+CSS_GLOBAL = """
+<style>
+/* ── TABLAS / DATAFRAMES: fondo gris muy claro, texto oscuro ── */
+[data-testid="stDataFrame"] div,
+[data-testid="stDataFrame"] table,
+[data-testid="stDataFrame"] thead,
+[data-testid="stDataFrame"] tbody,
+[data-testid="stDataFrame"] tr,
+[data-testid="stDataFrame"] td,
+[data-testid="stDataFrame"] th {
+    background-color: #f8f9fb !important;
+    color: #1a1a2e !important;
+}
+/* ── SELECTBOX / INPUTS: fondo claro ── */
+div[data-baseweb="select"] > div,
+div[data-baseweb="input"]  > div,
+input, textarea {
+    background-color: #f8f9fb !important;
+    color: #1a1a2e !important;
+}
+/* ── DATE INPUT ── */
+div[data-testid="stDateInput"] input {
+    background-color: #f8f9fb !important;
+    color: #1a1a2e !important;
+}
+/* ── MÉTRICAS ── */
+[data-testid="stMetric"] {
+    background-color: #f0f4ff !important;
+    border-radius: 10px;
+    padding: 14px 18px !important;
+    border: 1px solid #dce4f5 !important;
+}
+[data-testid="stMetricLabel"] p,
+[data-testid="stMetricValue"]   { color: #0b1d3a !important; }
+/* ── FILE UPLOADER ── */
+[data-testid="stFileUploadDropzone"] {
+    background-color: #f0f4ff !important;
+    border: 2px dashed #1e40af !important;
+    color: #1a1a2e !important;
+}
+/* ── INFO / WARNING / SUCCESS / ERROR boxes ── */
+div[data-testid="stAlert"] {
+    background-color: #f0f4ff !important;
+    color: #1a1a2e !important;
+}
+</style>
+"""
+st.markdown(CSS_GLOBAL, unsafe_allow_html=True)
 
 # ==========================================================
 # PANTALLA DE LOGIN
@@ -151,25 +266,14 @@ if not st.session_state["autenticado"]:
             .logo-gudid-libre   { width: 130px !important; height: auto !important; object-fit: contain; }
             .logo-eudamed-libre { width: 120px !important; height: auto !important; object-fit: contain; }
             .logo-gmdn-libre    { width: 135px !important; height: auto !important; object-fit: contain; }
-
-            /* ── RESPONSIVE MÓVIL ── */
             @media (max-width: 768px) {
-                div[data-testid="stForm"] {
-                    padding: 25px 18px !important;
-                    margin: 0 8px !important;
-                }
+                div[data-testid="stForm"] { padding: 25px 18px !important; margin: 0 8px !important; }
                 .contenedor-logos-principales { gap: 12px !important; height: 55px !important; }
                 .logo-header-invima { height: 42px !important; }
                 .logo-header-fda    { height: 32px !important; }
                 .login-title { font-size: 20px !important; }
-                .fila-logos-soporte {
-                    flex-direction: column !important;
-                    gap: 12px !important;
-                    align-items: center !important;
-                }
-                .logo-gudid-libre, .logo-eudamed-libre, .logo-gmdn-libre {
-                    width: 100px !important;
-                }
+                .fila-logos-soporte { flex-direction: column !important; gap: 12px !important; align-items: center !important; }
+                .logo-gudid-libre, .logo-eudamed-libre, .logo-gmdn-libre { width: 100px !important; }
             }
         </style>""", unsafe_allow_html=True)
 
@@ -178,7 +282,6 @@ if not st.session_state["autenticado"]:
 
     with col_centro:
         with st.form("formulario_login", clear_on_submit=False):
-            # Logos superiores
             html_cabecera = '<div class="contenedor-logos-principales">'
             if b64_invima: html_cabecera += f'<img class="logo-header-invima" src="data:image/png;base64,{b64_invima}">'
             html_cabecera += '<div class="barra-separadora-vertical-azul"></div>'
@@ -194,7 +297,6 @@ if not st.session_state["autenticado"]:
             recordar   = st.checkbox("Recordar mi usuario en este equipo", value=(st.session_state["usuario_guardado"] != ""))
             boton_ingresar = st.form_submit_button("Acceder")
 
-            # Logos inferiores
             html_soporte = '<div class="contenedor-soporte-inferior"><div class="titulo-soporte">Bases de datos vinculadas:</div><div class="fila-logos-soporte">'
             if b64_gudid:   html_soporte += f'<img class="logo-gudid-libre"   src="data:image/png;base64,{b64_gudid}">'
             if b64_eudamed: html_soporte += f'<img class="logo-eudamed-libre" src="data:image/png;base64,{b64_eudamed}">'
@@ -220,9 +322,11 @@ if not st.session_state["autenticado"]:
 # INTERFAZ INTERNA (usuario autenticado)
 # ==========================================================
 else:
+    es_admin = st.session_state["usuario_activo_real"].strip().lower() == ADMIN_USER.lower()
+
     st.markdown("""
         <style>
-            .stApp { background-image: none !important; background-color: #f4f6f9 !important; }
+            .stApp { background-image: none !important; background-color: #f0f2f6 !important; }
             header, footer, #MainMenu { visibility: hidden !important; display: none !important; }
             [data-testid="stSidebar"] {
                 visibility: visible !important;
@@ -240,17 +344,17 @@ else:
                 border-radius: 6px !important; padding: 10px !important;
             }
             [data-testid="stSidebar"] button:hover { background-color: #2a4d7c !important; }
+            /* barra de progreso */
             .custom-progress-container {
-                width: 100%; background-color: #ffffff; border: 2px solid #1e40af;
+                width: 100%; background-color: #e8ecf4; border: 2px solid #1e40af;
                 border-radius: 8px; padding: 3px; height: 32px; overflow: hidden; margin: 15px 0;
             }
             .custom-progress-bar {
                 height: 100%; border-radius: 4px;
-                background-image: repeating-linear-gradient(-45deg, #1e40af, #1e40af 12px, #ffffff 12px, #ffffff 18px);
+                background-image: repeating-linear-gradient(-45deg, #1e40af, #1e40af 12px, #e8ecf4 12px, #e8ecf4 18px);
                 transition: width 0.2s ease-in-out;
             }
-
-            /* ── HEADER ── */
+            /* header */
             .header-oficina-virtual {
                 background-color: #ffffff !important;
                 padding: 15px 30px; border-radius: 10px;
@@ -265,8 +369,13 @@ else:
                 border-radius: 20px; border: 1px solid #bfdbfe !important; font-weight: 500;
                 white-space: nowrap;
             }
-
-            /* ── CARDS MENÚ ── */
+            .admin-badge {
+                font-size: 11px; color: #ffffff !important;
+                background-color: #dc2626 !important; padding: 3px 10px;
+                border-radius: 12px; font-weight: 700; margin-left: 8px;
+                vertical-align: middle; letter-spacing: 0.5px;
+            }
+            /* cards menú */
             .card-menu-principal {
                 background-color: #ffffff !important;
                 padding: 25px; border-radius: 12px;
@@ -274,38 +383,43 @@ else:
                 border-left: 5px solid #0b1d3a;
                 margin-bottom: 20px;
             }
-            .card-menu-principal h4 {
-                color: #0b1d3a !important;
-                font-size: 16px !important;
-                margin: 0 0 8px 0 !important;
-                font-weight: 700 !important;
-            }
-            .card-menu-principal p {
-                color: #374151 !important;
-                font-size: 14px !important;
-                margin: 0 !important;
-            }
-            .card-menu-secundaria {
-                background-color: #ffffff !important;
+            .card-menu-principal h4 { color: #0b1d3a !important; font-size: 16px !important; margin: 0 0 8px 0 !important; font-weight: 700 !important; }
+            .card-menu-principal p  { color: #374151 !important; font-size: 14px !important; margin: 0 !important; }
+            .card-menu-admin {
+                background-color: #fff5f5 !important;
                 padding: 25px; border-radius: 12px;
                 box-shadow: 0px 4px 12px rgba(0,0,0,0.05);
-                border-left: 5px solid #6b7280;
+                border-left: 5px solid #dc2626;
                 margin-bottom: 20px;
-                opacity: 0.65;
             }
-            .card-menu-secundaria h4 {
-                color: #4b5563 !important;
-                font-size: 16px !important;
-                margin: 0 0 8px 0 !important;
-                font-weight: 700 !important;
+            .card-menu-admin h4 { color: #991b1b !important; font-size: 16px !important; margin: 0 0 8px 0 !important; font-weight: 700 !important; }
+            .card-menu-admin p  { color: #374151 !important; font-size: 14px !important; margin: 0 !important; }
+            /* panel admin */
+            .admin-section-card {
+                background-color: #ffffff !important;
+                border-radius: 12px;
+                padding: 24px;
+                box-shadow: 0px 3px 10px rgba(0,0,0,0.07);
+                border-top: 4px solid #dc2626;
+                margin-bottom: 24px;
             }
-            .card-menu-secundaria p {
-                color: #4b5563 !important;
-                font-size: 14px !important;
-                margin: 0 !important;
+            .admin-section-card h4 { color: #991b1b !important; font-size: 15px !important; font-weight: 700 !important; margin-bottom: 16px !important; }
+            /* tabla usuarios */
+            .tabla-usuarios {
+                width: 100%; border-collapse: collapse; margin-top: 8px;
+                background-color: #f8f9fb !important;
+                border-radius: 8px; overflow: hidden;
             }
-
-            /* ── FOOTER ── */
+            .tabla-usuarios th {
+                background-color: #0b1d3a !important; color: #ffffff !important;
+                padding: 10px 14px; font-size: 13px; text-align: left;
+            }
+            .tabla-usuarios td {
+                padding: 9px 14px; font-size: 13px; color: #1a1a2e !important;
+                border-bottom: 1px solid #e5e7eb; background-color: #f8f9fb !important;
+            }
+            .tabla-usuarios tr:last-child td { border-bottom: none; }
+            /* footer */
             .footer-institucional {
                 margin-top: 60px; padding: 25px 0;
                 border-top: 1px solid #e5e7eb;
@@ -313,21 +427,12 @@ else:
             }
             .footer-links { display: flex; justify-content: center; gap: 30px; margin-bottom: 10px; flex-wrap: wrap; }
             .footer-links a { color: #0b1d3a !important; text-decoration: none; font-weight: 500; }
-
-            /* ── RESPONSIVE MÓVIL ── */
+            /* responsive */
             @media (max-width: 768px) {
-                .header-oficina-virtual {
-                    flex-direction: column !important;
-                    gap: 8px !important;
-                    text-align: center !important;
-                    padding: 12px 15px !important;
-                }
+                .header-oficina-virtual { flex-direction: column !important; gap: 8px !important; text-align: center !important; padding: 12px 15px !important; }
                 .header-title { font-size: 16px !important; }
                 .user-tag { font-size: 12px !important; padding: 6px 12px !important; }
-                .card-menu-principal, .card-menu-secundaria { padding: 15px !important; }
-                .card-menu-principal h4, .card-menu-secundaria h4 { font-size: 14px !important; }
-                .card-menu-principal p,  .card-menu-secundaria p  { font-size: 12px !important; }
-                .footer-links { gap: 15px !important; }
+                .card-menu-principal, .card-menu-admin { padding: 15px !important; }
             }
         </style>""", unsafe_allow_html=True)
 
@@ -343,16 +448,25 @@ else:
         st.sidebar.markdown("<div style='margin-top:10px;'></div>", unsafe_allow_html=True)
         if st.sidebar.button("📋 Historiales y Reportes", use_container_width=True):
             st.session_state["seccion_activa"] = "Historiales"; st.rerun()
+
+        # Botón admin solo visible para admin
+        if es_admin:
+            st.sidebar.markdown("<div style='margin-top:10px;'></div>", unsafe_allow_html=True)
+            st.sidebar.markdown("<p style='color:#fca5a5; font-size:11px; text-transform:uppercase; font-weight:bold; margin-left:5px; margin-bottom:8px;'>Administración</p>", unsafe_allow_html=True)
+            if st.sidebar.button("👥 Panel de Administración", use_container_width=True):
+                st.session_state["seccion_activa"] = "Admin"; st.rerun()
+
         st.sidebar.markdown("<br><br><br>", unsafe_allow_html=True)
         if st.sidebar.button("🚪 Cerrar Sesión Segura", use_container_width=True):
             st.session_state["autenticado"] = False; st.rerun()
 
     # --- ENCABEZADO ---
     usuario_sesion = st.session_state["usuario_activo_real"]
+    badge_admin = '<span class="admin-badge">ADMIN</span>' if es_admin else ""
     st.markdown(f"""
         <div class="header-oficina-virtual">
             <div class="header-title">Oficina Virtual de Dispositivos Médicos</div>
-            <div class="user-tag">👤 <b>Usuario activo:</b> {usuario_sesion}</div>
+            <div class="user-tag">👤 <b>Usuario activo:</b> {usuario_sesion}{badge_admin}</div>
         </div>""", unsafe_allow_html=True)
 
     # ==========================================================
@@ -367,7 +481,6 @@ else:
                 <h4>1. Módulo Automatizado de Extracción Masiva</h4>
                 <p>Carga masiva de archivos Excel para cruce con AccessGUDID (FDA), identificación de códigos GMDN y agencias emisoras.</p>
             </div>""", unsafe_allow_html=True)
-
         if st.button("🚀 Ingresar al Módulo de Extracción", key="btn_ir_ext", use_container_width=True):
             st.session_state["seccion_activa"] = "Extraccion"; st.rerun()
 
@@ -376,9 +489,17 @@ else:
                 <h4>2. Consulta de Historiales y Reportes</h4>
                 <p>Consulta el historial de referencias buscadas por usuario, con fecha y cantidad de resultados obtenidos.</p>
             </div>""", unsafe_allow_html=True)
-
         if st.button("📋 Ver Historiales y Reportes", key="btn_ir_hist", use_container_width=True):
             st.session_state["seccion_activa"] = "Historiales"; st.rerun()
+
+        if es_admin:
+            st.markdown("""
+                <div class="card-menu-admin">
+                    <h4>🔐 3. Panel de Administración (Solo Admin)</h4>
+                    <p>Gestión completa de usuarios: agregar, eliminar, cambiar contraseñas y visualizar lista de accesos.</p>
+                </div>""", unsafe_allow_html=True)
+            if st.button("👥 Ir al Panel de Administración", key="btn_ir_admin", use_container_width=True):
+                st.session_state["seccion_activa"] = "Admin"; st.rerun()
 
     # ==========================================================
     # VISTA 2: PANEL DE EXTRACCIÓN MASIVA
@@ -454,7 +575,6 @@ else:
                                     texto = soup2.get_text()
                                     lineas = [l.strip() for l in texto.split('\n') if l.strip()]
 
-                                    # Company Name
                                     company = "No encontrado"
                                     for i, l in enumerate(lineas):
                                         if "Company Name" in l:
@@ -465,13 +585,11 @@ else:
                                     if company_name_filtro and company_name_filtro.upper() not in company.upper():
                                         continue
 
-                                    # GMDN Code
                                     gmdn_code = "No encontrado"
                                     for p in texto.replace(':',' ').replace('(',' ').replace(')',' ').split():
                                         if p.isdigit() and len(p) == 5:
                                             gmdn_code = p; break
 
-                                    # GMDN Definition & Status
                                     gmdn_def, gmdn_status = "No encontrado", "No encontrado"
                                     for i, l in enumerate(lineas):
                                         if "GMDN Term Definition" in l:
@@ -487,7 +605,6 @@ else:
                                                 gmdn_def = candidatos[0]
                                             break
 
-                                    # Traducción GMDN Definition
                                     diccionario_estados = {"active":"Activo","obsolete":"Obsoleto","no encontrado":"No encontrado"}
                                     gmdn_status = diccionario_estados.get(gmdn_status.lower(), gmdn_status)
 
@@ -502,7 +619,6 @@ else:
                                                 else:
                                                     parte_actual.append(palabra); cuenta += len(palabra)+1
                                             if parte_actual: partes.append(" ".join(parte_actual))
-
                                             for parte in partes:
                                                 r_t = requests.get(f"https://api.mymemory.translated.net/get?q={urllib.parse.quote(parte)}&langpair=en|es", timeout=5)
                                                 if r_t.status_code == 200:
@@ -514,7 +630,6 @@ else:
                                         except:
                                             pass
 
-                                    # Issuing Agency
                                     issuing = "No encontrado"
                                     for i, l in enumerate(lineas):
                                         if "Issuing Agency" in l:
@@ -551,11 +666,9 @@ else:
                     tabla_viva.dataframe(pd.DataFrame(lista_resultados), use_container_width=True)
                     time.sleep(0.8)
 
-                # --- FINALIZACIÓN ---
                 texto_estado.empty()
                 barra_custom.empty()
                 st.success("✨ ¡Extracción completada al 100%!")
-
                 registrar_log(st.session_state["usuario_activo_real"], f"Extracción masiva ({total_refs} refs)", len(lista_resultados))
 
                 df_final = pd.DataFrame(lista_resultados)
@@ -587,22 +700,17 @@ else:
         if df_logs.empty:
             st.info("No hay registros de búsquedas aún.")
         else:
-            # --- FILTROS ---
             col_f1, col_f2, col_f3 = st.columns([1, 1, 1])
-
             with col_f1:
                 usuarios_disponibles = ["Todos"] + sorted(df_logs["Usuario"].dropna().unique().tolist())
                 filtro_usuario = st.selectbox("👤 Filtrar por usuario", usuarios_disponibles)
-
             with col_f2:
                 fecha_min = df_logs["Fecha"].min().date() if not df_logs["Fecha"].isna().all() else datetime.date.today()
                 fecha_max = df_logs["Fecha"].max().date() if not df_logs["Fecha"].isna().all() else datetime.date.today()
                 filtro_fecha_ini = st.date_input("📅 Desde", value=fecha_min)
-
             with col_f3:
                 filtro_fecha_fin = st.date_input("📅 Hasta", value=fecha_max)
 
-            # --- APLICAR FILTROS ---
             df_filtrado = df_logs.copy()
             if filtro_usuario != "Todos":
                 df_filtrado = df_filtrado[df_filtrado["Usuario"] == filtro_usuario]
@@ -611,22 +719,18 @@ else:
                 (df_filtrado["Fecha"].dt.date <= filtro_fecha_fin)
             ]
 
-            # --- MÉTRICAS RESUMEN ---
             st.markdown("<br>", unsafe_allow_html=True)
             m1, m2, m3 = st.columns(3)
             m1.metric("📊 Total de búsquedas", len(df_filtrado))
             m2.metric("👥 Usuarios activos", df_filtrado["Usuario"].nunique())
             total_resultados = pd.to_numeric(df_filtrado["Resultados"], errors="coerce").sum()
             m3.metric("🔬 Referencias procesadas", int(total_resultados) if not pd.isna(total_resultados) else 0)
-
             st.markdown("<br>", unsafe_allow_html=True)
 
-            # --- TABLA ---
             df_mostrar = df_filtrado.copy()
             df_mostrar["Fecha"] = df_mostrar["Fecha"].dt.strftime("%Y-%m-%d %H:%M")
             st.dataframe(df_mostrar, use_container_width=True, hide_index=True)
 
-            # --- DESCARGA ---
             output_logs = io.BytesIO()
             with pd.ExcelWriter(output_logs, engine='openpyxl') as writer:
                 df_mostrar.to_excel(writer, index=False)
@@ -640,6 +744,137 @@ else:
             )
 
     # ==========================================================
+    # VISTA 4: PANEL DE ADMINISTRACIÓN (solo admin)
+    # ==========================================================
+    elif st.session_state["seccion_activa"] == "Admin":
+        if not es_admin:
+            st.error("🔒 Acceso denegado. Solo el administrador puede ver esta sección.")
+            st.stop()
+
+        st.markdown("<h3 style='color:#991b1b;'>👥 Panel de Administración de Usuarios</h3>", unsafe_allow_html=True)
+        st.markdown("<p style='color:#374151;'>Gestión completa de cuentas de acceso a la plataforma.</p>", unsafe_allow_html=True)
+
+        # ── FILA SUPERIOR: Lista de usuarios + Agregar usuario ──
+        col_lista, col_agregar = st.columns([1.4, 1])
+
+        # --- LISTA DE USUARIOS ---
+        with col_lista:
+            st.markdown('<div class="admin-section-card">', unsafe_allow_html=True)
+            st.markdown("<h4>📋 Lista de Usuarios Registrados</h4>", unsafe_allow_html=True)
+
+            with st.spinner("Cargando usuarios..."):
+                datos_usuarios, _ = obtener_usuarios()
+
+            if datos_usuarios:
+                filas_html = ""
+                for u in datos_usuarios:
+                    nombre = str(u.get('usuario', '')).strip()
+                    es_adm = "🔴 Admin" if nombre.lower() == ADMIN_USER.lower() else "🟢 Usuario"
+                    filas_html += f"<tr><td>{nombre}</td><td>{es_adm}</td></tr>"
+
+                st.markdown(f"""
+                    <table class="tabla-usuarios">
+                        <thead><tr><th>Usuario</th><th>Rol</th></tr></thead>
+                        <tbody>{filas_html}</tbody>
+                    </table>""", unsafe_allow_html=True)
+                st.markdown(f"<p style='color:#6b7280; font-size:12px; margin-top:10px;'>Total: {len(datos_usuarios)} usuario(s) registrado(s)</p>", unsafe_allow_html=True)
+            else:
+                st.info("No se encontraron usuarios.")
+            st.markdown('</div>', unsafe_allow_html=True)
+
+        # --- AGREGAR USUARIO ---
+        with col_agregar:
+            st.markdown('<div class="admin-section-card">', unsafe_allow_html=True)
+            st.markdown("<h4>➕ Agregar Nuevo Usuario</h4>", unsafe_allow_html=True)
+
+            nuevo_usr = st.text_input("Nombre de usuario", key="nuevo_usr", placeholder="Ej: usuario_nuevo")
+            nuevo_pwd = st.text_input("Contraseña", type="password", key="nuevo_pwd", placeholder="Contraseña segura")
+            nuevo_pwd2 = st.text_input("Confirmar contraseña", type="password", key="nuevo_pwd2", placeholder="Repita la contraseña")
+
+            if st.button("✅ Crear Usuario", key="btn_crear", use_container_width=True):
+                if not nuevo_usr or not nuevo_pwd:
+                    st.warning("Complete todos los campos.")
+                elif nuevo_pwd != nuevo_pwd2:
+                    st.error("Las contraseñas no coinciden.")
+                elif len(nuevo_pwd) < 4:
+                    st.warning("La contraseña debe tener al menos 4 caracteres.")
+                else:
+                    ok, msg = agregar_usuario(nuevo_usr, nuevo_pwd)
+                    if ok:
+                        st.success(f"✔ {msg}")
+                        registrar_log(usuario_sesion, f"[ADMIN] Creó usuario: {nuevo_usr}", "-")
+                        time.sleep(0.5); st.rerun()
+                    else:
+                        st.error(f"❌ {msg}")
+            st.markdown('</div>', unsafe_allow_html=True)
+
+        # ── FILA INFERIOR: Eliminar usuario + Cambiar contraseña ──
+        col_elim, col_pwd = st.columns(2)
+
+        # --- ELIMINAR USUARIO ---
+        with col_elim:
+            st.markdown('<div class="admin-section-card">', unsafe_allow_html=True)
+            st.markdown("<h4>🗑️ Eliminar Usuario</h4>", unsafe_allow_html=True)
+
+            nombres_disponibles = [
+                str(u.get('usuario', '')).strip()
+                for u in datos_usuarios
+                if str(u.get('usuario', '')).strip().lower() != ADMIN_USER.lower()
+            ] if datos_usuarios else []
+
+            if nombres_disponibles:
+                usuario_a_eliminar = st.selectbox("Seleccionar usuario a eliminar", nombres_disponibles, key="sel_eliminar")
+                confirmar_elim = st.checkbox(f"Confirmo que deseo eliminar a **{usuario_a_eliminar}**", key="chk_elim")
+                if st.button("🗑️ Eliminar Usuario", key="btn_eliminar", use_container_width=True):
+                    if not confirmar_elim:
+                        st.warning("Marque la casilla de confirmación antes de eliminar.")
+                    else:
+                        ok, msg = eliminar_usuario(usuario_a_eliminar)
+                        if ok:
+                            st.success(f"✔ {msg}")
+                            registrar_log(usuario_sesion, f"[ADMIN] Eliminó usuario: {usuario_a_eliminar}", "-")
+                            time.sleep(0.5); st.rerun()
+                        else:
+                            st.error(f"❌ {msg}")
+            else:
+                st.info("No hay usuarios disponibles para eliminar.")
+            st.markdown('</div>', unsafe_allow_html=True)
+
+        # --- CAMBIAR CONTRASEÑA ---
+        with col_pwd:
+            st.markdown('<div class="admin-section-card">', unsafe_allow_html=True)
+            st.markdown("<h4>🔑 Cambiar Contraseña de Usuario</h4>", unsafe_allow_html=True)
+
+            todos_usuarios = [
+                str(u.get('usuario', '')).strip()
+                for u in datos_usuarios
+            ] if datos_usuarios else []
+
+            if todos_usuarios:
+                usuario_cambio_pwd = st.selectbox("Seleccionar usuario", todos_usuarios, key="sel_pwd")
+                nueva_pwd_1 = st.text_input("Nueva contraseña", type="password", key="npwd1", placeholder="Nueva contraseña")
+                nueva_pwd_2 = st.text_input("Confirmar nueva contraseña", type="password", key="npwd2", placeholder="Repita la contraseña")
+
+                if st.button("🔑 Actualizar Contraseña", key="btn_cambiar_pwd", use_container_width=True):
+                    if not nueva_pwd_1:
+                        st.warning("Ingrese la nueva contraseña.")
+                    elif nueva_pwd_1 != nueva_pwd_2:
+                        st.error("Las contraseñas no coinciden.")
+                    elif len(nueva_pwd_1) < 4:
+                        st.warning("La contraseña debe tener al menos 4 caracteres.")
+                    else:
+                        ok, msg = cambiar_password(usuario_cambio_pwd, nueva_pwd_1)
+                        if ok:
+                            st.success(f"✔ {msg}")
+                            registrar_log(usuario_sesion, f"[ADMIN] Cambió contraseña de: {usuario_cambio_pwd}", "-")
+                            time.sleep(0.5); st.rerun()
+                        else:
+                            st.error(f"❌ {msg}")
+            else:
+                st.info("No hay usuarios disponibles.")
+            st.markdown('</div>', unsafe_allow_html=True)
+
+    # ==========================================================
     # PIE DE PÁGINA
     # ==========================================================
     st.markdown("""
@@ -649,5 +884,5 @@ else:
                 <a href="#">Tratamiento de datos</a>
                 <a href="#">Mesa de Ayuda</a>
             </div>
-            <div>v 1.0.26 © Invima 2026. Todos los derechos reservados.</div>
+            <div>v 1.1.26 © Invima 2026. Todos los derechos reservados.</div>
         </div>""", unsafe_allow_html=True)
