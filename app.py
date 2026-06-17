@@ -160,6 +160,7 @@ if "autenticado"         not in st.session_state: st.session_state["autenticado"
 if "usuario_guardado"    not in st.session_state: st.session_state["usuario_guardado"]    = ""
 if "usuario_activo_real" not in st.session_state: st.session_state["usuario_activo_real"] = ""
 if "seccion_activa"      not in st.session_state: st.session_state["seccion_activa"]      = "Inicio"
+if "lista_filtros_company" not in st.session_state: st.session_state["lista_filtros_company"] = [""]
 
 # ==========================================================
 # PANTALLA DE LOGIN
@@ -1074,7 +1075,40 @@ else:
                 border-style: solid !important;
             }
             </style>''', unsafe_allow_html=True)
-            company_name_filtro = st.text_input("Filtrar por Company Name (Opcional)", "").strip()
+
+            # ──────────────────────────────────────────────
+            # FILTRO DINÁMICO: VARIOS "Company Name"
+            # ──────────────────────────────────────────────
+            st.markdown("<p style='font-weight:500; color:#374151; margin-bottom:4px; font-size:14px;'>Filtrar por Company Name (Opcional)</p>", unsafe_allow_html=True)
+            st.caption("Puede agregar varios fabricantes; se incluirá cualquier coincidencia con al menos uno de ellos.")
+
+            for i in range(len(st.session_state["lista_filtros_company"])):
+                col_campo, col_quitar = st.columns([5, 1])
+                with col_campo:
+                    valor_actual = st.text_input(
+                        f"Fabricante #{i+1}",
+                        value=st.session_state["lista_filtros_company"][i],
+                        key=f"company_filtro_{i}",
+                        placeholder="Ej: MEDTRONIC",
+                        label_visibility="collapsed"
+                    )
+                    st.session_state["lista_filtros_company"][i] = valor_actual
+                with col_quitar:
+                    if len(st.session_state["lista_filtros_company"]) > 1:
+                        if st.button("✖", key=f"quitar_company_{i}", use_container_width=True):
+                            st.session_state["lista_filtros_company"].pop(i)
+                            st.rerun()
+
+            if st.button("➕ Agregar otro fabricante", key="btn_agregar_company", use_container_width=True):
+                st.session_state["lista_filtros_company"].append("")
+                st.rerun()
+
+            # Lista final de filtros (limpios, sin vacíos, en mayúsculas) usada en la búsqueda
+            company_names_filtro = [
+                c.strip().upper() for c in st.session_state["lista_filtros_company"] if c.strip()
+            ]
+
+            st.markdown("<div style='margin-top:14px'></div>", unsafe_allow_html=True)
             conectar_boton      = st.button("🚀 Iniciar Extracción Masiva", disabled=(archivo_cargado is None), use_container_width=True)
 
         with col_der:
@@ -1092,6 +1126,8 @@ else:
                     st.error(f"Error al abrir el archivo de Excel: {e}"); st.stop()
 
                 st.success(f"📋 Referencias encontradas: {total_refs}")
+                if company_names_filtro:
+                    st.info(f"🔎 Filtrando por fabricantes: {', '.join(company_names_filtro)}")
                 texto_estado = st.empty(); barra_custom = st.empty(); tabla_viva = st.empty()
                 lista_resultados = []; session = requests.Session()
 
@@ -1124,7 +1160,8 @@ else:
                                             company = lineas[i+1] if l.replace(":","").strip() == "Company Name" and i+1 < len(lineas) else l.replace("Company Name","").replace(":","").strip()
                                             break
                                     company = " ".join(company.split()).strip() or "No encontrado"
-                                    if company_name_filtro and company_name_filtro.upper() not in company.upper(): continue
+                                    if company_names_filtro and not any(nombre in company.upper() for nombre in company_names_filtro):
+                                        continue
                                     gmdn_code = "No encontrado"
                                     for p in texto.replace(':',' ').replace('(',' ').replace(')',' ').split():
                                         if p.isdigit() and len(p) == 5: gmdn_code = p; break
@@ -1323,3 +1360,6 @@ else:
             </div>
             <p>v 1.1.26 © Invima 2026. Todos los derechos reservados.</p>
         </div>""", unsafe_allow_html=True)
+PYEOF_MARKER_UNIQUE_12345
+echo "Archivo escrito"
+wc -l /home/claude/work/app.py
