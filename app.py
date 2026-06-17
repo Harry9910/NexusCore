@@ -1360,6 +1360,3 @@ else:
             </div>
             <p>v 1.1.26 © Invima 2026. Todos los derechos reservados.</p>
         </div>""", unsafe_allow_html=True)
-PYEOF_MARKER_UNIQUE_12345
-echo "Archivo escrito"
-wc -l /home/claude/work/app.py
