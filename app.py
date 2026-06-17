@@ -628,6 +628,106 @@ else:
         /* ── Scrollbar ── */
         ::-webkit-scrollbar { width: 5px; height: 5px; }
         ::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 3px; }
+
+        /* ══ FORZAR FONDO BLANCO EN TODOS LOS INPUTS / SELECTS / DATES ══ */
+
+        /* Inputs de texto */
+        [data-testid="stTextInput"] > div,
+        [data-testid="stTextInput"] > div > div,
+        [data-testid="stTextInput"] input {
+            background-color: #ffffff !important;
+            color: #1e293b !important;
+        }
+        [data-testid="stTextInput"] input::placeholder { color: #94a3b8 !important; }
+
+        /* Selectbox */
+        [data-testid="stSelectbox"] > div > div,
+        [data-testid="stSelectbox"] > div > div > div {
+            background-color: #ffffff !important;
+            color: #1e293b !important;
+        }
+        [data-baseweb="select"] > div {
+            background-color: #ffffff !important;
+            color: #1e293b !important;
+            border-color: #cbd5e1 !important;
+        }
+        [data-baseweb="select"] div[role="combobox"],
+        [data-baseweb="select"] div[role="option"] {
+            background-color: #ffffff !important;
+            color: #1e293b !important;
+        }
+
+        /* Date inputs */
+        [data-testid="stDateInput"] > div,
+        [data-testid="stDateInput"] > div > div,
+        [data-testid="stDateInput"] input {
+            background-color: #ffffff !important;
+            color: #1e293b !important;
+            border-color: #cbd5e1 !important;
+        }
+
+        /* Base inputs (contenedor genérico de Streamlit) */
+        [data-baseweb="base-input"],
+        [data-baseweb="base-input"] > div,
+        [data-baseweb="input"],
+        [data-baseweb="input"] > div {
+            background-color: #ffffff !important;
+            color: #1e293b !important;
+            border-color: #cbd5e1 !important;
+        }
+        [data-baseweb="base-input"] input,
+        [data-baseweb="input"] input {
+            background-color: #ffffff !important;
+            color: #1e293b !important;
+        }
+
+        /* Dropdown del selectbox (opciones desplegadas) */
+        [data-baseweb="popover"],
+        [data-baseweb="popover"] > div,
+        [data-baseweb="menu"],
+        [data-baseweb="menu"] ul,
+        [data-baseweb="menu"] li {
+            background-color: #ffffff !important;
+            color: #1e293b !important;
+        }
+        [data-baseweb="option"]:hover {
+            background-color: #eff6ff !important;
+        }
+
+        /* File uploader — el botón "Upload" no debe ser negro */
+        [data-testid="stFileUploadDropzone"] button,
+        [data-testid="baseButton-secondary"] {
+            background-color: #1a365d !important;
+            color: #ffffff !important;
+            border: none !important;
+            border-radius: 6px !important;
+        }
+        [data-testid="stFileUploadDropzone"] {
+            background-color: #eef2ff !important;
+            border: 2px dashed #1a365d !important;
+            border-radius: 8px !important;
+            color: #374151 !important;
+        }
+
+        /* Checkbox cuadro */
+        [data-baseweb="checkbox"] > div:first-child {
+            background-color: #ffffff !important;
+            border-color: #94a3b8 !important;
+        }
+        [data-baseweb="checkbox"] [data-checked="true"] > div:first-child {
+            background-color: #1a365d !important;
+            border-color: #1a365d !important;
+        }
+
+        /* Labels de todos los inputs */
+        [data-testid="stTextInput"] label,
+        [data-testid="stSelectbox"] label,
+        [data-testid="stDateInput"] label,
+        [data-testid="stFileUploader"] label {
+            color: #374151 !important;
+            font-weight: 500 !important;
+        }
+
     </style>
     """, unsafe_allow_html=True)
 
