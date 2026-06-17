@@ -209,42 +209,59 @@ if not st.session_state["autenticado"]:
         }
 
         /* ════════════════════════════════════════════════
-           BOTÓN OJO — solo su celda en azul, sin negro
+           BOTÓN OJO — icono visible, sin bloque negro
         ════════════════════════════════════════════════ */
+
+        /* Contenedor del input: borde redondeado, sin overflow hidden
+           para que el ojo no quede aplastado */
         div[data-testid="stForm"] [data-baseweb="base-input"] {
-            overflow: hidden !important;
             border-radius: 8px !important;
+            overflow: visible !important;
+            background-color: #f8fafc !important;
+            border: 1.5px solid #cbd5e1 !important;
         }
-        div[data-testid="stForm"] [data-baseweb="base-input"] button,
-        div[data-testid="stForm"] [data-baseweb="input"] button {
+
+        /* El div que envuelve el botón ojo — eliminar fondo negro */
+        div[data-testid="stForm"] [data-baseweb="base-input"] > div:last-child {
+            background-color: transparent !important;
+            border-radius: 0 6px 6px 0 !important;
+            overflow: hidden !important;
+        }
+
+        /* El botón ojo en sí */
+        div[data-testid="stForm"] [data-baseweb="base-input"] button {
             background-color: #1a365d !important;
-            background: #1a365d !important;
             border: none !important;
             box-shadow: none !important;
-            width: 42px !important;
-            min-width: 42px !important;
-            max-width: 42px !important;
-            height: 100% !important;
+            width: 40px !important;
+            min-width: 40px !important;
+            height: 36px !important;
             padding: 0 !important;
             margin: 0 !important;
-            border-radius: 0 !important;
+            border-radius: 0 6px 6px 0 !important;
             display: flex !important;
             align-items: center !important;
             justify-content: center !important;
+            cursor: pointer !important;
         }
-        div[data-testid="stForm"] [data-baseweb="base-input"] button svg,
-        div[data-testid="stForm"] [data-baseweb="input"] button svg {
-            fill: #ffffff !important;
-            width: 17px !important;
-            height: 17px !important;
-        }
-        div[data-testid="stForm"] [data-baseweb="base-input"] button *,
-        div[data-testid="stForm"] [data-baseweb="input"] button * {
-            color: #ffffff !important;
-        }
-        div[data-testid="stForm"] [data-baseweb="base-input"] button:hover,
-        div[data-testid="stForm"] [data-baseweb="input"] button:hover {
+        div[data-testid="stForm"] [data-baseweb="base-input"] button:hover {
             background-color: #2a4d7c !important;
+        }
+
+        /* El SVG del ojo — blanco y visible */
+        div[data-testid="stForm"] [data-baseweb="base-input"] button svg {
+            fill: #ffffff !important;
+            stroke: #ffffff !important;
+            color: #ffffff !important;
+            width: 18px !important;
+            height: 18px !important;
+            display: block !important;
+            visibility: visible !important;
+            opacity: 1 !important;
+        }
+        div[data-testid="stForm"] [data-baseweb="base-input"] button svg path {
+            fill: #ffffff !important;
+            stroke: #ffffff !important;
         }
 
         /* ════════════════════════════════════════════════
@@ -283,22 +300,32 @@ if not st.session_state["autenticado"]:
         }
 
         /* ════════════════════════════════════════════════
-           CHECKBOX — fondo blanco, borde azul
+           CHECKBOX — fondo BLANCO, borde AZUL
         ════════════════════════════════════════════════ */
-        div[data-testid="stForm"] [data-baseweb="checkbox"] label > div:first-child,
-        div[data-testid="stForm"] [data-baseweb="checkbox"] > label > span:first-child,
-        div[data-testid="stForm"] [data-baseweb="checkbox"] span[role="checkbox"] {
+
+        /* El cuadrito del checkbox — todos los selectores posibles */
+        div[data-testid="stForm"] [data-baseweb="checkbox"] [data-testid="stCheckbox"] span,
+        div[data-testid="stForm"] [data-baseweb="checkbox"] label span:first-of-type,
+        div[data-testid="stForm"] [data-baseweb="checkbox"] > label > div,
+        div[data-testid="stForm"] [data-baseweb="checkbox"] > label > div:first-child,
+        div[data-testid="stForm"] [data-baseweb="checkbox"] div[role="checkbox"],
+        div[data-testid="stForm"] [data-baseweb="checkbox"] span[role="checkbox"],
+        div[data-testid="stCheckbox"] label span:first-child,
+        div[data-testid="stCheckbox"] [data-baseweb="checkbox"] > label > span:first-child {
             background-color: #ffffff !important;
+            background: #ffffff !important;
             border: 2px solid #1a365d !important;
             border-radius: 4px !important;
         }
-        /* Cuando está marcado → fondo azul */
-        div[data-testid="stForm"] [data-baseweb="checkbox"] input:checked ~ span,
+        /* Marcado → azul */
+        div[data-testid="stForm"] [data-baseweb="checkbox"] input[type="checkbox"]:checked + label span:first-of-type,
+        div[data-testid="stForm"] [data-baseweb="checkbox"] [aria-checked="true"] > div,
         div[data-testid="stForm"] [data-baseweb="checkbox"] [aria-checked="true"] span:first-child {
             background-color: #1a365d !important;
             border-color: #1a365d !important;
         }
-        div[data-testid="stForm"] [data-baseweb="checkbox"] p {
+        div[data-testid="stForm"] [data-baseweb="checkbox"] p,
+        div[data-testid="stForm"] [data-baseweb="checkbox"] label {
             color: #374151 !important;
         }
 
@@ -358,6 +385,50 @@ if not st.session_state["autenticado"]:
             contraseña = st.text_input("Contraseña", type="password", placeholder="Introduzca su contraseña")
             recordar   = st.checkbox("Recordar mi usuario en este equipo", value=(st.session_state["usuario_guardado"] != ""))
             boton_ingresar = st.form_submit_button("Acceder", use_container_width=True)
+
+            # ── CSS nuclear: checkbox blanco + ojo sin bloque negro ──
+            st.markdown("""
+            <style>
+            /* CHECKBOX — fondo blanco, borde azul */
+            div[data-testid="stForm"] label[data-baseweb="checkbox"] > div,
+            div[data-testid="stForm"] [data-baseweb="checkbox"] label > div {
+                background-color: #ffffff !important;
+                background: #ffffff !important;
+                border: 2px solid #1a365d !important;
+                border-radius: 4px !important;
+                min-width: 16px !important;
+                min-height: 16px !important;
+            }
+            /* OJO — quitar div negro extra */
+            div[data-testid="stPasswordInput"] [data-baseweb="base-input"] > div {
+                background-color: transparent !important;
+                padding: 0 !important;
+            }
+            div[data-testid="stPasswordInput"] button {
+                background-color: #1a365d !important;
+                border-radius: 0 6px 6px 0 !important;
+                width: 40px !important;
+                min-width: 40px !important;
+                height: 38px !important;
+                border: none !important;
+                padding: 0 !important;
+                margin: 0 !important;
+                display: flex !important;
+                align-items: center !important;
+                justify-content: center !important;
+            }
+            div[data-testid="stPasswordInput"] button svg {
+                fill: #ffffff !important;
+                width: 18px !important;
+                height: 18px !important;
+                display: block !important;
+                opacity: 1 !important;
+            }
+            div[data-testid="stPasswordInput"] button svg path {
+                fill: #ffffff !important;
+            }
+            </style>
+            """, unsafe_allow_html=True)
 
             # Logos inferiores
             html_sop = '<div class="soporte-inferior"><div class="soporte-titulo">Bases de datos vinculadas</div><div class="fila-logos">'
