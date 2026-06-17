@@ -208,33 +208,51 @@ if not st.session_state["autenticado"]:
             border-color: #cbd5e1 !important;
         }
 
-        /* ── Botón OJO del login — TRANSPARENTE, sin fondo negro ── */
+        /* ════════════════════════════════════════════════
+           BOTÓN OJO — solo su celda en azul, sin negro
+        ════════════════════════════════════════════════ */
+        div[data-testid="stForm"] [data-baseweb="base-input"] {
+            overflow: hidden !important;
+            border-radius: 8px !important;
+        }
         div[data-testid="stForm"] [data-baseweb="base-input"] button,
         div[data-testid="stForm"] [data-baseweb="input"] button {
-            background-color: transparent !important;
-            background: transparent !important;
+            background-color: #1a365d !important;
+            background: #1a365d !important;
             border: none !important;
             box-shadow: none !important;
-            width: 30px !important;
-            min-width: 30px !important;
-            max-width: 30px !important;
-            padding: 0 4px !important;
+            width: 42px !important;
+            min-width: 42px !important;
+            max-width: 42px !important;
+            height: 100% !important;
+            padding: 0 !important;
             margin: 0 !important;
-            color: #64748b !important;
+            border-radius: 0 !important;
+            display: flex !important;
+            align-items: center !important;
+            justify-content: center !important;
         }
         div[data-testid="stForm"] [data-baseweb="base-input"] button svg,
         div[data-testid="stForm"] [data-baseweb="input"] button svg {
-            fill: #64748b !important;
-            width: 16px !important;
-            height: 16px !important;
+            fill: #ffffff !important;
+            width: 17px !important;
+            height: 17px !important;
         }
         div[data-testid="stForm"] [data-baseweb="base-input"] button *,
         div[data-testid="stForm"] [data-baseweb="input"] button * {
-            color: #64748b !important;
+            color: #ffffff !important;
+        }
+        div[data-testid="stForm"] [data-baseweb="base-input"] button:hover,
+        div[data-testid="stForm"] [data-baseweb="input"] button:hover {
+            background-color: #2a4d7c !important;
         }
 
-        /* ── Botón Acceder — azul, nunca negro ── */
-        div[data-testid="stForm"] button {
+        /* ════════════════════════════════════════════════
+           BOTÓN ACCEDER — azul oscuro, texto BLANCO
+        ════════════════════════════════════════════════ */
+        div[data-testid="stForm"] button[kind="primaryFormSubmit"],
+        div[data-testid="stForm"] button[data-testid="baseButton-primaryFormSubmit"],
+        div[data-testid="stForm"] > div button:not([data-baseweb]) {
             background-color: #1a365d !important;
             color: #ffffff !important;
             border: none !important;
@@ -243,36 +261,46 @@ if not st.session_state["autenticado"]:
             font-size: 15px !important;
             padding: 10px 24px !important;
         }
-        div[data-testid="stForm"] button:hover {
-            background-color: #2a4d7c !important;
+        /* Forzar blanco en cualquier hijo del botón Acceder */
+        div[data-testid="stForm"] button[kind="primaryFormSubmit"] *,
+        div[data-testid="stForm"] button[kind="primaryFormSubmit"] p,
+        div[data-testid="stForm"] button[kind="primaryFormSubmit"] span,
+        div[data-testid="stForm"] button[data-testid="baseButton-primaryFormSubmit"] *,
+        div[data-testid="stForm"] button[data-testid="baseButton-primaryFormSubmit"] p,
+        div[data-testid="stForm"] button[data-testid="baseButton-primaryFormSubmit"] span {
             color: #ffffff !important;
         }
-        div[data-testid="stForm"] button:focus,
-        div[data-testid="stForm"] button:active {
+        /* Selector nuclear de último recurso para el botón submit */
+        div[data-testid="stForm"] div[data-testid="stFormSubmitButton"] button,
+        div[data-testid="stForm"] div[data-testid="stFormSubmitButton"] button p,
+        div[data-testid="stForm"] div[data-testid="stFormSubmitButton"] button span {
             background-color: #1a365d !important;
             color: #ffffff !important;
+            font-weight: 700 !important;
         }
-        /* Excepción: botón ojo — siempre transparente */
-        div[data-testid="stForm"] [data-baseweb="base-input"] button,
-        div[data-testid="stForm"] [data-baseweb="input"] button {
-            background-color: transparent !important;
-            background: none !important;
-            color: #64748b !important;
-            border: none !important;
-            box-shadow: none !important;
-            padding: 0 4px !important;
-            width: 30px !important;
-            min-width: 30px !important;
-        }
-        div[data-testid="stForm"] [data-baseweb="base-input"] button:hover,
-        div[data-testid="stForm"] [data-baseweb="input"] button:hover {
-            background-color: transparent !important;
-            color: #374151 !important;
+        div[data-testid="stForm"] div[data-testid="stFormSubmitButton"] button:hover {
+            background-color: #2a4d7c !important;
         }
 
-        /* ── Checkbox ── */
-        div[data-testid="stForm"] [data-baseweb="checkbox"] span { border-color: #94a3b8 !important; }
-        div[data-testid="stForm"] [data-baseweb="checkbox"] p { color: #374151 !important; }
+        /* ════════════════════════════════════════════════
+           CHECKBOX — fondo blanco, borde azul
+        ════════════════════════════════════════════════ */
+        div[data-testid="stForm"] [data-baseweb="checkbox"] label > div:first-child,
+        div[data-testid="stForm"] [data-baseweb="checkbox"] > label > span:first-child,
+        div[data-testid="stForm"] [data-baseweb="checkbox"] span[role="checkbox"] {
+            background-color: #ffffff !important;
+            border: 2px solid #1a365d !important;
+            border-radius: 4px !important;
+        }
+        /* Cuando está marcado → fondo azul */
+        div[data-testid="stForm"] [data-baseweb="checkbox"] input:checked ~ span,
+        div[data-testid="stForm"] [data-baseweb="checkbox"] [aria-checked="true"] span:first-child {
+            background-color: #1a365d !important;
+            border-color: #1a365d !important;
+        }
+        div[data-testid="stForm"] [data-baseweb="checkbox"] p {
+            color: #374151 !important;
+        }
 
         /* ── Clases custom login ── */
         .contenedor-logos-principales {
@@ -436,25 +464,40 @@ else:
         .stButton > button p,
         .stButton > button span { color: #ffffff !important; }
 
-        /* ── Botón OJO en contenido principal — transparente ── */
+        /* ── Botón OJO en contenido principal — azul solo en su celda ── */
+        section.main [data-baseweb="base-input"] {
+            overflow: hidden !important;
+            border-radius: 7px !important;
+        }
         section.main [data-baseweb="base-input"] button,
         section.main [data-baseweb="input"] button {
-            background-color: transparent !important;
-            background: none !important;
+            background-color: #1a365d !important;
+            background: #1a365d !important;
             border: none !important;
             box-shadow: none !important;
-            width: 30px !important;
-            min-width: 30px !important;
-            padding: 0 4px !important;
-            color: #64748b !important;
+            width: 42px !important;
+            min-width: 42px !important;
+            max-width: 42px !important;
+            height: 100% !important;
+            padding: 0 !important;
+            margin: 0 !important;
+            border-radius: 0 !important;
+            display: flex !important;
+            align-items: center !important;
+            justify-content: center !important;
         }
         section.main [data-baseweb="base-input"] button svg,
         section.main [data-baseweb="input"] button svg {
-            fill: #64748b !important;
-            width: 16px !important; height: 16px !important;
+            fill: #ffffff !important;
+            width: 17px !important;
+            height: 17px !important;
         }
         section.main [data-baseweb="base-input"] button *,
-        section.main [data-baseweb="input"] button * { color: #64748b !important; }
+        section.main [data-baseweb="input"] button * { color: #ffffff !important; }
+        section.main [data-baseweb="base-input"] button:hover,
+        section.main [data-baseweb="input"] button:hover {
+            background-color: #2a4d7c !important;
+        }
 
         /* ── Inputs contenido principal ── */
         section.main input[type="text"],
@@ -630,8 +673,6 @@ else:
         ::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 3px; }
 
         /* ══ FORZAR FONDO BLANCO EN TODOS LOS INPUTS / SELECTS / DATES ══ */
-
-        /* Inputs de texto */
         [data-testid="stTextInput"] > div,
         [data-testid="stTextInput"] > div > div,
         [data-testid="stTextInput"] input {
@@ -640,7 +681,6 @@ else:
         }
         [data-testid="stTextInput"] input::placeholder { color: #94a3b8 !important; }
 
-        /* Selectbox — fondo blanco en todos los estados */
         [data-testid="stSelectbox"],
         [data-testid="stSelectbox"] > div,
         [data-testid="stSelectbox"] > div > div,
@@ -659,10 +699,8 @@ else:
             color: #1e293b !important;
             border-color: #cbd5e1 !important;
         }
-        /* Flecha del selectbox */
         [data-baseweb="select"] svg { fill: #374151 !important; }
 
-        /* Date inputs */
         [data-testid="stDateInput"] > div,
         [data-testid="stDateInput"] > div > div,
         [data-testid="stDateInput"] input {
@@ -671,7 +709,6 @@ else:
             border-color: #cbd5e1 !important;
         }
 
-        /* Base inputs (contenedor genérico de Streamlit) */
         [data-baseweb="base-input"],
         [data-baseweb="base-input"] > div,
         [data-baseweb="input"],
@@ -686,7 +723,6 @@ else:
             color: #1e293b !important;
         }
 
-        /* Dropdown del selectbox (opciones desplegadas) */
         [data-baseweb="popover"],
         [data-baseweb="popover"] > div,
         [data-baseweb="menu"],
@@ -699,7 +735,6 @@ else:
             background-color: #eff6ff !important;
         }
 
-        /* File uploader — nunca negro */
         [data-testid="stFileUploadDropzone"],
         [data-testid="stFileUploadDropzone"] > div,
         [data-testid="stFileUploaderDropzoneInstructions"],
@@ -726,7 +761,6 @@ else:
             color: #374151 !important;
         }
 
-        /* Checkbox cuadro */
         [data-baseweb="checkbox"] > div:first-child {
             background-color: #ffffff !important;
             border-color: #94a3b8 !important;
@@ -736,7 +770,6 @@ else:
             border-color: #1a365d !important;
         }
 
-        /* Labels de todos los inputs */
         [data-testid="stTextInput"] label,
         [data-testid="stSelectbox"] label,
         [data-testid="stDateInput"] label,
@@ -748,12 +781,10 @@ else:
     </style>
     """, unsafe_allow_html=True)
 
-    # CSS nuclear para inputs, selects, file uploader — inyectado por separado
+    # CSS nuclear para inputs, selects, file uploader
     st.markdown("""
     <style>
     /* ===== NUCLEAR OVERRIDE — FONDO BLANCO EN TODO ===== */
-
-    /* Todos los divs dentro de inputs de Streamlit */
     div[data-baseweb="base-input"] {
         background-color: white !important;
     }
@@ -765,7 +796,6 @@ else:
         color: #1e293b !important;
     }
 
-    /* Select / dropdown */
     div[data-baseweb="select"] > div:first-child {
         background-color: white !important;
         border-color: #cbd5e1 !important;
@@ -778,7 +808,6 @@ else:
         color: #1e293b !important;
     }
 
-    /* File uploader dropzone */
     div[data-testid="stFileUploadDropzone"] {
         background-color: #eef2ff !important;
         border: 2px dashed #1a365d !important;
@@ -799,7 +828,6 @@ else:
         color: white !important;
     }
 
-    /* Date inputs */
     div[data-testid="stDateInput"] > div {
         background-color: white !important;
     }
@@ -808,13 +836,11 @@ else:
         color: #1e293b !important;
     }
 
-    /* Tabla admin — celdas blancas */
     .tabla-usr td {
         background-color: white !important;
         color: #1e293b !important;
     }
 
-    /* Popover / menu desplegable del select */
     div[data-baseweb="popover"] div {
         background-color: white !important;
         color: #1e293b !important;
@@ -830,7 +856,6 @@ else:
         background-color: #eff6ff !important;
     }
 
-    /* Checkbox cuadro — blanco */
     label[data-baseweb="checkbox"] > div:first-child {
         background-color: white !important;
         border-color: #94a3b8 !important;
@@ -839,7 +864,7 @@ else:
     </style>
     """, unsafe_allow_html=True)
 
-        # --- SIDEBAR ---
+    # --- SIDEBAR ---
     with st.sidebar:
         st.markdown('<div class="sidebar-header">⚙️ Opciones del Sistema</div>', unsafe_allow_html=True)
         st.markdown("<p style='color:#94a3b8; font-size:10px; text-transform:uppercase; font-weight:700; margin:0 0 10px 5px; letter-spacing:0.5px;'>Navegación</p>", unsafe_allow_html=True)
@@ -917,7 +942,6 @@ else:
             st.info("⚙ Configuración de Parámetros")
             archivo_cargado     = st.file_uploader("Sube tu archivo de Excel (.xlsx)", type=["xlsx"])
             st.markdown('''<style>
-            /* file uploader fondo claro */
             [data-testid="stFileUploader"] > div:last-child,
             [data-testid="stFileUploader"] > div:last-child > div,
             [data-testid="stFileUploadDropzone"] {
@@ -932,7 +956,6 @@ else:
                 border-radius: 6px !important;
             }
             [data-testid="stFileUploadDropzone"] button * { color: white !important; }
-            /* checkbox cuadro blanco */
             [data-baseweb="checkbox"] span:first-child {
                 background-color: white !important;
                 border-color: #94a3b8 !important;
