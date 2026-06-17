@@ -748,7 +748,98 @@ else:
     </style>
     """, unsafe_allow_html=True)
 
-    # --- SIDEBAR ---
+    # CSS nuclear para inputs, selects, file uploader — inyectado por separado
+    st.markdown("""
+    <style>
+    /* ===== NUCLEAR OVERRIDE — FONDO BLANCO EN TODO ===== */
+
+    /* Todos los divs dentro de inputs de Streamlit */
+    div[data-baseweb="base-input"] {
+        background-color: white !important;
+    }
+    div[data-baseweb="base-input"] > div {
+        background-color: white !important;
+    }
+    div[data-baseweb="base-input"] input {
+        background-color: white !important;
+        color: #1e293b !important;
+    }
+
+    /* Select / dropdown */
+    div[data-baseweb="select"] > div:first-child {
+        background-color: white !important;
+        border-color: #cbd5e1 !important;
+    }
+    div[data-baseweb="select"] div {
+        background-color: white !important;
+        color: #1e293b !important;
+    }
+    div[data-baseweb="select"] span {
+        color: #1e293b !important;
+    }
+
+    /* File uploader dropzone */
+    div[data-testid="stFileUploadDropzone"] {
+        background-color: #eef2ff !important;
+        border: 2px dashed #1a365d !important;
+    }
+    div[data-testid="stFileUploadDropzone"] > div {
+        background-color: #eef2ff !important;
+    }
+    div[data-testid="stFileUploadDropzone"] * {
+        color: #374151 !important;
+    }
+    div[data-testid="stFileUploadDropzone"] button {
+        background-color: #1a365d !important;
+        color: white !important;
+        border-radius: 6px !important;
+        border: none !important;
+    }
+    div[data-testid="stFileUploadDropzone"] button * {
+        color: white !important;
+    }
+
+    /* Date inputs */
+    div[data-testid="stDateInput"] > div {
+        background-color: white !important;
+    }
+    div[data-testid="stDateInput"] input {
+        background-color: white !important;
+        color: #1e293b !important;
+    }
+
+    /* Tabla admin — celdas blancas */
+    .tabla-usr td {
+        background-color: white !important;
+        color: #1e293b !important;
+    }
+
+    /* Popover / menu desplegable del select */
+    div[data-baseweb="popover"] div {
+        background-color: white !important;
+        color: #1e293b !important;
+    }
+    ul[role="listbox"] {
+        background-color: white !important;
+    }
+    li[role="option"] {
+        background-color: white !important;
+        color: #1e293b !important;
+    }
+    li[role="option"]:hover {
+        background-color: #eff6ff !important;
+    }
+
+    /* Checkbox cuadro — blanco */
+    label[data-baseweb="checkbox"] > div:first-child {
+        background-color: white !important;
+        border-color: #94a3b8 !important;
+    }
+
+    </style>
+    """, unsafe_allow_html=True)
+
+        # --- SIDEBAR ---
     with st.sidebar:
         st.markdown('<div class="sidebar-header">⚙️ Opciones del Sistema</div>', unsafe_allow_html=True)
         st.markdown("<p style='color:#94a3b8; font-size:10px; text-transform:uppercase; font-weight:700; margin:0 0 10px 5px; letter-spacing:0.5px;'>Navegación</p>", unsafe_allow_html=True)
