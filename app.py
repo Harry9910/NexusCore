@@ -916,6 +916,30 @@ else:
         with col_izq:
             st.info("⚙ Configuración de Parámetros")
             archivo_cargado     = st.file_uploader("Sube tu archivo de Excel (.xlsx)", type=["xlsx"])
+            st.markdown('''<style>
+            /* file uploader fondo claro */
+            [data-testid="stFileUploader"] > div:last-child,
+            [data-testid="stFileUploader"] > div:last-child > div,
+            [data-testid="stFileUploadDropzone"] {
+                background: #eef2ff !important;
+                background-color: #eef2ff !important;
+                border: 2px dashed #1a365d !important;
+            }
+            [data-testid="stFileUploadDropzone"] * { color: #374151 !important; }
+            [data-testid="stFileUploadDropzone"] button {
+                background-color: #1a365d !important;
+                color: white !important;
+                border-radius: 6px !important;
+            }
+            [data-testid="stFileUploadDropzone"] button * { color: white !important; }
+            /* checkbox cuadro blanco */
+            [data-baseweb="checkbox"] span:first-child {
+                background-color: white !important;
+                border-color: #94a3b8 !important;
+                border-width: 2px !important;
+                border-style: solid !important;
+            }
+            </style>''', unsafe_allow_html=True)
             company_name_filtro = st.text_input("Filtrar por Company Name (Opcional)", "").strip()
             conectar_boton      = st.button("🚀 Iniciar Extracción Masiva", disabled=(archivo_cargado is None), use_container_width=True)
 
