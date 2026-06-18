@@ -240,13 +240,15 @@ def _clic_js(driver, elemento):
     driver.execute_script("arguments[0].click();", elemento)
 
 
-def _aceptar_cookies_eudamed(driver):
+def _aceptar_cookies_eudamed(driver, espera=6):
     """Si aparece el aviso de cookies de la UE ('This site uses cookies...'),
     lo cierra aceptando las cookies. Ese banner es lo que estaba bloqueando
     el clic sobre la tarjeta 'Devices, Systems, Procedure packs'
-    (error 'element click intercepted'). Si no aparece, sigue sin problema."""
+    (error 'element click intercepted'). Si no aparece, sigue sin problema.
+    Puede reaparecer al navegar entre pantallas de la SPA, por eso se llama
+    en varios puntos del flujo con tiempos de espera distintos."""
     try:
-        boton_cookies = WebDriverWait(driver, 6).until(
+        boton_cookies = WebDriverWait(driver, espera).until(
             EC.element_to_be_clickable((
                 By.XPATH,
                 "//button[normalize-space(text())='Accept all cookies'] "
@@ -406,6 +408,10 @@ def _iniciar_busqueda_eudamed(driver, referencia, primera_vez):
         EC.presence_of_element_located((By.XPATH, "//label[contains(., 'Reference') and contains(., 'Catalogue')]"))
     )
 
+    # El aviso de cookies puede reaparecer al navegar entre pantallas de la
+    # SPA; lo volvemos a comprobar (es rápido si ya no está presente).
+    _aceptar_cookies_eudamed(driver, espera=3)
+
     _poner_status_all_eudamed(driver)
 
     campo_ref = _esperar_eudamed(driver, 15).until(
@@ -417,7 +423,14 @@ def _iniciar_busqueda_eudamed(driver, referencia, primera_vez):
     campo_ref.clear()
     campo_ref.send_keys(referencia)
 
-    boton_buscar = driver.find_element(By.XPATH, "//button[normalize-space(text())='Search']")
+    boton_buscar = _esperar_eudamed(driver, 10).until(
+        EC.presence_of_element_located((
+            By.XPATH,
+            "//button[normalize-space(.)='Search'] "
+            "| //button[.//*[normalize-space(text())='Search']] "
+            "| //*[self::button or self::a][contains(@class,'search') and normalize-space(.)='Search']"
+        ))
+    )
     _clic_js(driver, boton_buscar)
 
     _esperar_eudamed(driver, 30).until(
