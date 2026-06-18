@@ -230,6 +230,26 @@ URL_EUDAMED_BUSQUEDA = "https://ec.europa.eu/tools/eudamed/#/screen/search-devic
 LIMITE_RESULTADOS_POR_REFERENCIA_EUDAMED = 15
 
 
+def _aceptar_cookies_eudamed(driver):
+    """Si aparece el aviso de cookies de la UE ('This site uses cookies...'),
+    lo cierra aceptando las cookies. Ese banner es lo que estaba bloqueando
+    el clic sobre la tarjeta 'Devices, Systems, Procedure packs'
+    (error 'element click intercepted'). Si no aparece, sigue sin problema."""
+    try:
+        boton_cookies = WebDriverWait(driver, 6).until(
+            EC.element_to_be_clickable((
+                By.XPATH,
+                "//button[normalize-space(text())='Accept all cookies'] "
+                "| //button[normalize-space(text())='Accept only essential cookies'] "
+                "| //button[contains(normalize-space(text()),'Accept')]"
+            ))
+        )
+        boton_cookies.click()
+        time.sleep(0.5)
+    except Exception:
+        pass
+
+
 def _abrir_pantalla_busqueda_eudamed(driver):
     """Entra a la página de inicio de Eudamed y hace clic en la tarjeta
     'Devices, Systems, Procedure packs' para llegar al formulario de
@@ -237,6 +257,7 @@ def _abrir_pantalla_busqueda_eudamed(driver):
     del formulario) porque así es como funciona de forma confiable en
     el navegador real, según se confirmó probándolo manualmente."""
     driver.get(URL_EUDAMED_HOME)
+    _aceptar_cookies_eudamed(driver)
     enlace_devices = _esperar_eudamed(driver, 30).until(
         EC.element_to_be_clickable((
             By.XPATH,
