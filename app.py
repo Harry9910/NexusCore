@@ -230,6 +230,16 @@ URL_EUDAMED_BUSQUEDA = "https://ec.europa.eu/tools/eudamed/#/screen/search-devic
 LIMITE_RESULTADOS_POR_REFERENCIA_EUDAMED = 15
 
 
+def _clic_js(driver, elemento):
+    """Hace clic usando JavaScript directo sobre el elemento, en vez del
+    clic 'físico' normal de Selenium. Esto evita el error 'element click
+    intercepted' que ocurre cuando otro elemento (p. ej. el banner de
+    cookies, o algo aún animándose) se solapa visualmente con el elemento
+    que se quiere clickear, aunque ya no debería estar ahí."""
+    driver.execute_script("arguments[0].scrollIntoView({block:'center'});", elemento)
+    driver.execute_script("arguments[0].click();", elemento)
+
+
 def _aceptar_cookies_eudamed(driver):
     """Si aparece el aviso de cookies de la UE ('This site uses cookies...'),
     lo cierra aceptando las cookies. Ese banner es lo que estaba bloqueando
@@ -244,8 +254,16 @@ def _aceptar_cookies_eudamed(driver):
                 "| //button[contains(normalize-space(text()),'Accept')]"
             ))
         )
-        boton_cookies.click()
-        time.sleep(0.5)
+        _clic_js(driver, boton_cookies)
+        # Espera a que el banner deje de existir/ser visible antes de seguir
+        try:
+            WebDriverWait(driver, 6).until(
+                EC.invisibility_of_element_located((
+                    By.XPATH, "//*[contains(text(),'This site uses cookies')]"
+                ))
+            )
+        except Exception:
+            time.sleep(1.5)
     except Exception:
         pass
 
@@ -265,7 +283,7 @@ def _abrir_pantalla_busqueda_eudamed(driver):
             "| //*[normalize-space(text())='Devices, Systems, Procedure packs']"
         ))
     )
-    enlace_devices.click()
+    _clic_js(driver, enlace_devices)
 
 
 def _crear_driver_eudamed():
@@ -327,14 +345,14 @@ def _poner_status_all_eudamed(driver):
             ".//*[self::div or self::span or self::button]"
             "[contains(@class,'dropdown') or contains(@class,'select') or @role='combobox']"
         )
-        control.click()
+        _clic_js(driver, control)
         opcion_all = _esperar_eudamed(driver, 8).until(
             EC.presence_of_element_located((
                 By.XPATH,
                 "//li[normalize-space(text())='All'] | //*[@role='option'][normalize-space(text())='All']"
             ))
         )
-        opcion_all.click()
+        _clic_js(driver, opcion_all)
         time.sleep(0.5)
         return True
     except Exception:
@@ -368,7 +386,7 @@ def _obtener_valor_por_etiqueta_eudamed(driver, etiqueta):
 def _ir_a_seccion_detalle_eudamed(driver, nombre_seccion):
     xp = f"//*[self::a or self::li or self::div or self::button][normalize-space(text())='{nombre_seccion}']"
     elemento = _esperar_eudamed(driver, 12).until(EC.element_to_be_clickable((By.XPATH, xp)))
-    elemento.click()
+    _clic_js(driver, elemento)
     time.sleep(1.0)
 
 
@@ -382,7 +400,7 @@ def _iniciar_busqueda_eudamed(driver, referencia, primera_vez):
         enlace_nueva = _esperar_eudamed(driver, 15).until(
             EC.element_to_be_clickable((By.XPATH, "//*[normalize-space(text())='New search']"))
         )
-        enlace_nueva.click()
+        _clic_js(driver, enlace_nueva)
 
     _esperar_eudamed(driver, 30).until(
         EC.presence_of_element_located((By.XPATH, "//label[contains(., 'Reference') and contains(., 'Catalogue')]"))
@@ -400,7 +418,7 @@ def _iniciar_busqueda_eudamed(driver, referencia, primera_vez):
     campo_ref.send_keys(referencia)
 
     boton_buscar = driver.find_element(By.XPATH, "//button[normalize-space(text())='Search']")
-    boton_buscar.click()
+    _clic_js(driver, boton_buscar)
 
     _esperar_eudamed(driver, 30).until(
         EC.any_of(
@@ -451,7 +469,7 @@ def _procesar_referencia_eudamed(driver, referencia, primera_vez):
             celda_ver = filas_tabla[indice].find_element(
                 By.XPATH, ".//td[last()]//button | .//td[last()]//a"
             )
-            celda_ver.click()
+            _clic_js(driver, celda_ver)
 
             _esperar_eudamed(driver, 25).until(
                 EC.presence_of_element_located((By.XPATH, "//*[contains(text(),'UDI-DI details')]"))
