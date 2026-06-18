@@ -426,9 +426,10 @@ def _iniciar_busqueda_eudamed(driver, referencia, primera_vez):
     boton_buscar = _esperar_eudamed(driver, 10).until(
         EC.presence_of_element_located((
             By.XPATH,
-            "//button[normalize-space(.)='Search'] "
-            "| //button[.//*[normalize-space(text())='Search']] "
-            "| //*[self::button or self::a][contains(@class,'search') and normalize-space(.)='Search']"
+            "//label[contains(., 'Reference') and contains(., 'Catalogue')]"
+            "/following::button[normalize-space(.)='Search'][1] "
+            "| //label[contains(., 'Reference') and contains(., 'Catalogue')]"
+            "/following::button[.//*[normalize-space(text())='Search']][1]"
         ))
     )
     _clic_js(driver, boton_buscar)
@@ -456,12 +457,15 @@ def _procesar_referencia_eudamed(driver, referencia, primera_vez):
     los datos de cada coincidencia encontrada (puede haber más de una)."""
     try:
         _iniciar_busqueda_eudamed(driver, referencia, primera_vez)
-    except TimeoutException:
-        return [{
-            "Referencia_Original": referencia, "Codigo_UDI_DI": "No encontrado",
-            "Agencia_Emisora": "No encontrado", "Nombre_Dispositivo": "No encontrado",
-            "Fabricante": "No encontrado"
-        }]
+    except TimeoutException as e:
+        # No se traga el error en silencio: se relanza para que la pantalla
+        # tome una captura del navegador en ese momento y se pueda ver qué
+        # pasó realmente (ayuda a ajustar selectores si algo no calzó).
+        raise RuntimeError(
+            f"Tiempo de espera agotado iniciando la búsqueda de '{referencia}' "
+            f"(no se encontró el formulario, el botón Search, o el resultado "
+            f"de la búsqueda dentro del tiempo esperado): {e}"
+        ) from e
 
     total = _contar_resultados_eudamed(driver)
     if total == 0:
