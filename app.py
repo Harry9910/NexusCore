@@ -452,6 +452,16 @@ def _contar_resultados_eudamed(driver):
         return 0
 
 
+def _mensaje_error_limpio(e):
+    """Los errores de Selenium/Chromedriver suelen traer, después del
+    mensaje real, un 'Stacktrace' nativo larguísimo (líneas con
+    direcciones de memoria tipo '#0 0x...') que no aporta nada para
+    diagnosticar y hace que el mensaje útil quede cortado en la tabla.
+    Esta función se queda solo con la parte legible."""
+    texto = str(e).split("Stacktrace:")[0].strip()
+    return texto if texto else type(e).__name__
+
+
 def _procesar_referencia_eudamed(driver, referencia, primera_vez):
     """Busca una referencia en Eudamed y devuelve una lista de filas con
     los datos de cada coincidencia encontrada (puede haber más de una)."""
@@ -525,8 +535,15 @@ def _procesar_referencia_eudamed(driver, referencia, primera_vez):
             filas_resultado.append({
                 "Referencia_Original": referencia, "Codigo_UDI_DI": "Error",
                 "Agencia_Emisora": "Error", "Nombre_Dispositivo": "Error",
-                "Fabricante": f"Error: {e}"
+                "Fabricante": f"Error: {_mensaje_error_limpio(e)}"
             })
+            try:
+                st.image(
+                    driver.get_screenshot_as_png(),
+                    caption=f"Estado del navegador al fallar el resultado #{indice+1} de '{referencia}'"
+                )
+            except Exception:
+                pass
             try:
                 driver.back()
             except Exception:
@@ -1474,7 +1491,7 @@ else:
                             filas_ref = [{
                                 "Referencia_Original": ref, "Codigo_UDI_DI": "Error de navegador",
                                 "Agencia_Emisora": "Error", "Nombre_Dispositivo": "Error",
-                                "Fabricante": f"Error: {e}"
+                                "Fabricante": f"Error: {_mensaje_error_limpio(e)}"
                             }]
                             try:
                                 captura = driver_eu.get_screenshot_as_png()
