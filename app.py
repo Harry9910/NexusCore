@@ -276,11 +276,14 @@ def _crear_driver_eudamed():
             # Si no se encuentra chromedriver en el sistema, se deja que el
             # "Selenium Manager" incorporado intente resolverlo solo.
             driver = webdriver.Chrome(options=opciones)
-    except WebDriverException as e:
+    except Exception as e:
         raise RuntimeError(
-            "No se pudo iniciar Chromium para Eudamed. Verifica que el archivo "
-            "'packages.txt' del repositorio incluya las líneas 'chromium' y "
-            "'chromium-driver', y que 'selenium' esté en requirements.txt."
+            "No se pudo iniciar Chromium para Eudamed.\n"
+            f"— Chromium detectado en: {ruta_navegador or 'NO ENCONTRADO'}\n"
+            f"— Chromedriver detectado en: {ruta_driver or 'NO ENCONTRADO'}\n"
+            f"— Error original de Selenium: {type(e).__name__}: {e}\n"
+            "Verifica que el archivo 'packages.txt' del repositorio incluya las líneas "
+            "'chromium' y 'chromium-driver', y que 'selenium' esté en requirements.txt."
         ) from e
 
     driver.set_page_load_timeout(45)
@@ -1394,10 +1397,8 @@ else:
                     with st.spinner("Abriendo navegador automatizado..."):
                         driver_eu = _crear_driver_eudamed()
                 except Exception as e:
-                    st.error(
-                        "No se pudo iniciar el navegador automatizado para Eudamed. "
-                        f"Detalle técnico: {e}"
-                    )
+                    st.error("No se pudo iniciar el navegador automatizado para Eudamed.")
+                    st.code(str(e))
                     st.info(
                         "Revisa que el archivo 'packages.txt' del repositorio tenga las líneas "
                         "'chromium' y 'chromium-driver', y que 'selenium' esté en requirements.txt."
