@@ -8,8 +8,16 @@ import os
 import time
 import io
 import base64
+import shutil
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
+
+from selenium import webdriver
+from selenium.webdriver.chrome.service import Service
+from selenium.webdriver.common.by import By
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
+from selenium.common.exceptions import TimeoutException, WebDriverException
 
 # ==========================================================
 # CONFIGURACIÓN GLOBAL
@@ -192,6 +200,262 @@ def buscar_logo(nombre_base):
         if os.path.exists(ruta):
             return obtener_base64_imagen(ruta)
     return ""
+
+# ==========================================================
+# FUNCIONES EUDAMED (NAVEGADOR AUTOMATIZADO / SELENIUM)
+# ==========================================================
+# NOTA IMPORTANTE:
+# La página de búsqueda de Eudamed (https://ec.europa.eu/tools/eudamed/...)
+# es una aplicación Angular: el HTML que entrega el servidor llega vacío,
+# todo se dibuja con JavaScript dentro del navegador. Por eso, a diferencia
+# de AccessGUDID, aquí NO sirve usar requests + BeautifulSoup: hace falta
+# controlar un navegador real (headless) con Selenium.
+#
+# Para que esto funcione en el despliegue hace falta, además de este .py:
+#   1) En requirements.txt:  selenium>=4.20.0
+#   2) Un archivo packages.txt (en la raíz del repo) con estas líneas:
+#        chromium
+#        chromium-driver
+#
+# Los selectores (XPaths) están armados con los textos visibles en las
+# capturas que compartiste (la forma más resistente de apuntar elementos
+# en una app Angular, ya que las clases CSS cambian seguido). Como no hay
+# forma de ejecutar un navegador contra el Eudamed real desde este entorno
+# para probarlo en vivo, es posible que algún selector necesite un ajuste
+# fino la primera vez que se ejecute. Si algo falla, se toma una captura
+# de pantalla del momento del error para poder diagnosticarlo rápido.
+
+URL_EUDAMED_BUSQUEDA = "https://ec.europa.eu/tools/eudamed/#/screen/search-device"
+LIMITE_RESULTADOS_POR_REFERENCIA_EUDAMED = 15
+
+
+def _crear_driver_eudamed():
+    """Crea una instancia de navegador Chromium headless para Selenium."""
+    opciones = webdriver.ChromeOptions()
+    opciones.add_argument("--headless=new")
+    opciones.add_argument("--no-sandbox")
+    opciones.add_argument("--disable-dev-shm-usage")
+    opciones.add_argument("--disable-gpu")
+    opciones.add_argument("--window-size=1440,1000")
+    opciones.add_argument("--lang=en-US")
+    opciones.add_argument(
+        "user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+    )
+
+    ruta_navegador = (
+        shutil.which("chromium") or shutil.which("chromium-browser") or shutil.which("google-chrome")
+    )
+    if ruta_navegador:
+        opciones.binary_location = ruta_navegador
+
+    ruta_driver = shutil.which("chromedriver")
+    try:
+        if ruta_driver:
+            servicio = Service(executable_path=ruta_driver)
+            driver = webdriver.Chrome(service=servicio, options=opciones)
+        else:
+            # Si no se encuentra chromedriver en el sistema, se deja que el
+            # "Selenium Manager" incorporado intente resolverlo solo.
+            driver = webdriver.Chrome(options=opciones)
+    except WebDriverException as e:
+        raise RuntimeError(
+            "No se pudo iniciar Chromium para Eudamed. Verifica que el archivo "
+            "'packages.txt' del repositorio incluya las líneas 'chromium' y "
+            "'chromium-driver', y que 'selenium' esté en requirements.txt."
+        ) from e
+
+    driver.set_page_load_timeout(45)
+    return driver
+
+
+def _esperar_eudamed(driver, segundos=20):
+    return WebDriverWait(driver, segundos)
+
+
+def _poner_status_all_eudamed(driver):
+    """Intenta cambiar el filtro 'Status' de 'On the EU market' a 'All'.
+    Si no logra encontrarlo, sigue sin romper el flujo (se buscará con
+    el filtro por defecto del sitio)."""
+    try:
+        etiqueta_status = driver.find_element(By.XPATH, "//label[normalize-space(text())='Status']")
+        contenedor = etiqueta_status.find_element(By.XPATH, "./..")
+        control = contenedor.find_element(
+            By.XPATH,
+            ".//*[self::div or self::span or self::button]"
+            "[contains(@class,'dropdown') or contains(@class,'select') or @role='combobox']"
+        )
+        control.click()
+        opcion_all = _esperar_eudamed(driver, 8).until(
+            EC.presence_of_element_located((
+                By.XPATH,
+                "//li[normalize-space(text())='All'] | //*[@role='option'][normalize-space(text())='All']"
+            ))
+        )
+        opcion_all.click()
+        time.sleep(0.5)
+        return True
+    except Exception:
+        return False
+
+
+def _obtener_valor_por_etiqueta_eudamed(driver, etiqueta):
+    """
+    Busca el valor asociado a una etiqueta de la ficha de detalle de Eudamed
+    (p. ej. 'Device name', 'Organisation name'). Se prueban varias formas
+    de ubicarlo porque no se conoce con certeza el marcado HTML exacto.
+    """
+    xpaths = [
+        f"//tr[.//td[1][normalize-space(text())='{etiqueta}']]/td[2]",
+        f"//tr[.//th[normalize-space(text())='{etiqueta}']]/td[1]",
+        f"//*[self::div or self::dt or self::span][normalize-space(text())='{etiqueta}']/following-sibling::*[1]",
+        f"//*[normalize-space(text())='{etiqueta}']/parent::*/following-sibling::*[1]",
+        f"//*[contains(normalize-space(text()),'{etiqueta}')]/ancestor::tr[1]/td[last()]",
+    ]
+    for xp in xpaths:
+        try:
+            el = driver.find_element(By.XPATH, xp)
+            texto = el.text.strip()
+            if texto and texto != etiqueta:
+                return texto
+        except Exception:
+            continue
+    return "No encontrado"
+
+
+def _ir_a_seccion_detalle_eudamed(driver, nombre_seccion):
+    xp = f"//*[self::a or self::li or self::div or self::button][normalize-space(text())='{nombre_seccion}']"
+    elemento = _esperar_eudamed(driver, 12).until(EC.element_to_be_clickable((By.XPATH, xp)))
+    elemento.click()
+    time.sleep(1.0)
+
+
+def _iniciar_busqueda_eudamed(driver, referencia, primera_vez):
+    """Abre el formulario de búsqueda (o lo reinicia con 'New search' si ya
+    había una búsqueda anterior), pone Status=All, escribe la referencia
+    en 'Reference / Catalogue number' y pulsa 'Search'."""
+    if primera_vez:
+        driver.get(URL_EUDAMED_BUSQUEDA)
+    else:
+        enlace_nueva = _esperar_eudamed(driver, 15).until(
+            EC.element_to_be_clickable((By.XPATH, "//*[normalize-space(text())='New search']"))
+        )
+        enlace_nueva.click()
+
+    _esperar_eudamed(driver, 30).until(
+        EC.presence_of_element_located((By.XPATH, "//label[contains(., 'Reference') and contains(., 'Catalogue')]"))
+    )
+
+    _poner_status_all_eudamed(driver)
+
+    campo_ref = _esperar_eudamed(driver, 15).until(
+        EC.element_to_be_clickable((
+            By.XPATH,
+            "//label[contains(., 'Reference') and contains(., 'Catalogue')]/following::input[1]"
+        ))
+    )
+    campo_ref.clear()
+    campo_ref.send_keys(referencia)
+
+    boton_buscar = driver.find_element(By.XPATH, "//button[normalize-space(text())='Search']")
+    boton_buscar.click()
+
+    _esperar_eudamed(driver, 30).until(
+        EC.any_of(
+            EC.presence_of_element_located((By.XPATH, "//*[contains(text(),'records found')]")),
+            EC.presence_of_element_located((By.XPATH, "//*[contains(text(),'No record')]")),
+            EC.presence_of_element_located((By.XPATH, "//*[contains(text(),'0 records')]")),
+        )
+    )
+
+
+def _contar_resultados_eudamed(driver):
+    try:
+        texto = driver.find_element(By.XPATH, "//*[contains(text(),'records found')]").text
+        digitos = "".join(ch for ch in texto.split()[0] if ch.isdigit())
+        return int(digitos) if digitos else 0
+    except Exception:
+        return 0
+
+
+def _procesar_referencia_eudamed(driver, referencia, primera_vez):
+    """Busca una referencia en Eudamed y devuelve una lista de filas con
+    los datos de cada coincidencia encontrada (puede haber más de una)."""
+    try:
+        _iniciar_busqueda_eudamed(driver, referencia, primera_vez)
+    except TimeoutException:
+        return [{
+            "Referencia_Original": referencia, "Codigo_UDI_DI": "No encontrado",
+            "Agencia_Emisora": "No encontrado", "Nombre_Dispositivo": "No encontrado",
+            "Fabricante": "No encontrado"
+        }]
+
+    total = _contar_resultados_eudamed(driver)
+    if total == 0:
+        return [{
+            "Referencia_Original": referencia, "Codigo_UDI_DI": "Sin resultados",
+            "Agencia_Emisora": "Sin resultados", "Nombre_Dispositivo": "Sin resultados",
+            "Fabricante": "Sin resultados"
+        }]
+
+    cantidad_a_procesar = min(total, LIMITE_RESULTADOS_POR_REFERENCIA_EUDAMED)
+    filas_resultado = []
+
+    for indice in range(cantidad_a_procesar):
+        try:
+            filas_tabla = driver.find_elements(By.XPATH, "//table//tbody/tr")
+            if indice >= len(filas_tabla):
+                break
+            celda_ver = filas_tabla[indice].find_element(
+                By.XPATH, ".//td[last()]//button | .//td[last()]//a"
+            )
+            celda_ver.click()
+
+            _esperar_eudamed(driver, 25).until(
+                EC.presence_of_element_located((By.XPATH, "//*[contains(text(),'UDI-DI details')]"))
+            )
+
+            udi_di_completo = _obtener_valor_por_etiqueta_eudamed(driver, "UDI-DI code / Issuing entity")
+            codigo_udi, agencia = udi_di_completo, ""
+            if "/" in udi_di_completo:
+                partes = [p.strip() for p in udi_di_completo.split("/")]
+                codigo_udi, agencia = partes[0], partes[-1]
+
+            _ir_a_seccion_detalle_eudamed(driver, "Basic UDI-DI details")
+            nombre_dispositivo = _obtener_valor_por_etiqueta_eudamed(driver, "Device name")
+
+            _ir_a_seccion_detalle_eudamed(driver, "Manufacturer details")
+            fabricante = _obtener_valor_por_etiqueta_eudamed(driver, "Organisation name")
+
+            filas_resultado.append({
+                "Referencia_Original": referencia,
+                "Codigo_UDI_DI": codigo_udi,
+                "Agencia_Emisora": agencia,
+                "Nombre_Dispositivo": nombre_dispositivo,
+                "Fabricante": fabricante,
+            })
+
+            driver.back()
+            try:
+                _esperar_eudamed(driver, 12).until(
+                    EC.presence_of_element_located((By.XPATH, "//table//tbody/tr"))
+                )
+            except TimeoutException:
+                # Si al volver se perdió la lista de resultados, reintenta la búsqueda
+                _iniciar_busqueda_eudamed(driver, referencia, primera_vez=False)
+
+        except Exception as e:
+            filas_resultado.append({
+                "Referencia_Original": referencia, "Codigo_UDI_DI": "Error",
+                "Agencia_Emisora": "Error", "Nombre_Dispositivo": "Error",
+                "Fabricante": f"Error: {e}"
+            })
+            try:
+                driver.back()
+            except Exception:
+                pass
+
+    return filas_resultado
 
 # ==========================================================
 # CONFIGURACIÓN DE LA PÁGINA
@@ -671,9 +935,10 @@ else:
         )
 
         nav_items = [
-            ("🏠 Menú Principal",           "Inicio"),
-            ("🚀 Extracción Masiva",         "Extraccion"),
-            ("📋 Historiales y Reportes",    "Historiales"),
+            ("🏠 Menú Principal",                  "Inicio"),
+            ("🚀 Extracción Masiva AccessGudid",     "Extraccion"),
+            ("🌍 Extracción Masiva Eudamed",         "ExtraccionEudamed"),
+            ("📋 Historiales y Reportes",            "Historiales"),
         ]
         for label, seccion in nav_items:
             if st.button(label, key=f"nav_{seccion}", use_container_width=True):
@@ -701,9 +966,6 @@ else:
             st.rerun()
 
     # ── HEADER con botones de Inicio / Mi Perfil a la derecha ───────────
-    # FIX: se agrega un botón "🏠 Inicio" directamente en el header principal.
-    # Así, aunque el sidebar no se viera por cualquier motivo (pantalla muy
-    # angosta, navegador raro, etc.), siempre hay una forma de volver al menú.
     badge = '<span class="badge-admin">ADMIN</span>' if es_admin else ""
 
     col_titulo, col_inicio_btn, col_perfil_btn = st.columns([4, 1, 1])
@@ -797,15 +1059,23 @@ else:
 
         st.markdown("""
             <div class="card-azul">
-                <h4>1. Módulo Automatizado de Extracción Masiva</h4>
+                <h4>1. Extracción Masiva AccessGudid (FDA)</h4>
                 <p>Carga masiva de archivos Excel para cruce con AccessGUDID (FDA), identificación de códigos GMDN y agencias emisoras.</p>
             </div>""", unsafe_allow_html=True)
-        if st.button("🚀 Ingresar al Módulo de Extracción", key="btn_ext", use_container_width=True):
+        if st.button("🚀 Ingresar al Módulo de Extracción AccessGudid", key="btn_ext", use_container_width=True):
             st.session_state["seccion_activa"] = "Extraccion"; st.rerun()
 
         st.markdown("""
+            <div class="card-azul" style="border-left-color:#1d4ed8;">
+                <h4>2. Extracción Masiva Eudamed (Unión Europea)</h4>
+                <p>Carga masiva de archivos Excel para cruce con Eudamed: código UDI-DI, agencia emisora, nombre del dispositivo y fabricante.</p>
+            </div>""", unsafe_allow_html=True)
+        if st.button("🌍 Ingresar al Módulo de Extracción Eudamed", key="btn_ext_eudamed", use_container_width=True):
+            st.session_state["seccion_activa"] = "ExtraccionEudamed"; st.rerun()
+
+        st.markdown("""
             <div class="card-azul" style="border-left-color:#0369a1;">
-                <h4>2. Consulta de Historiales y Reportes</h4>
+                <h4>3. Consulta de Historiales y Reportes</h4>
                 <p>Consulta el historial de referencias buscadas por usuario, con fecha y cantidad de resultados obtenidos.</p>
             </div>""", unsafe_allow_html=True)
         if st.button("📋 Ver Historiales y Reportes", key="btn_hist", use_container_width=True):
@@ -813,7 +1083,7 @@ else:
 
         st.markdown("""
             <div class="card-azul" style="border-left-color:#0b1d3a;">
-                <h4>3. Mi Perfil</h4>
+                <h4>4. Mi Perfil</h4>
                 <p>Edite su nombre, fecha de nacimiento y contraseña de acceso. Los cambios se reflejan en tiempo real.</p>
             </div>""", unsafe_allow_html=True)
         if st.button("👤 Editar mi Perfil", key="btn_perfil_inicio", use_container_width=True):
@@ -822,14 +1092,14 @@ else:
         if es_admin:
             st.markdown("""
                 <div class="card-roja">
-                    <h4>🔐 4. Panel de Administración</h4>
+                    <h4>🔐 5. Panel de Administración</h4>
                     <p>Gestión completa de usuarios: agregar, eliminar, ver/cambiar contraseñas y editar datos.</p>
                 </div>""", unsafe_allow_html=True)
             if st.button("👥 Ir al Panel de Administración", key="btn_admin", use_container_width=True):
                 st.session_state["seccion_activa"] = "Admin"; st.rerun()
 
     # ==========================================================
-    # VISTA 2: EXTRACCIÓN MASIVA
+    # VISTA 2: EXTRACCIÓN MASIVA ACCESSGUDID (FDA)
     # ==========================================================
     elif st.session_state["seccion_activa"] == "Extraccion":
         st.markdown("<h3 style='color:#0b1d3a;'>🚀 Extracción Automatizada AccessGUDID (FDA)</h3>", unsafe_allow_html=True)
@@ -1026,7 +1296,7 @@ else:
 
                 texto_estado.empty(); barra_custom.empty()
                 st.success("✨ ¡Extracción completada al 100%!")
-                registrar_log(st.session_state["usuario_activo_real"], f"Extracción masiva ({total_refs} refs)", len(lista_resultados))
+                registrar_log(st.session_state["usuario_activo_real"], f"Extracción masiva AccessGudid ({total_refs} refs)", len(lista_resultados))
 
                 df_final = pd.DataFrame(lista_resultados)
                 output = io.BytesIO()
@@ -1041,6 +1311,134 @@ else:
                 )
 
             elif not archivo_cargado:
+                st.info("👈 Cargue un archivo en el panel izquierdo para activar la monitorización.")
+
+    # ==========================================================
+    # VISTA 2-B: EXTRACCIÓN MASIVA EUDAMED (UE) — NAVEGADOR AUTOMATIZADO
+    # ==========================================================
+    elif st.session_state["seccion_activa"] == "ExtraccionEudamed":
+        st.markdown("<h3 style='color:#0b1d3a;'>🌍 Extracción Automatizada Eudamed (Unión Europea)</h3>", unsafe_allow_html=True)
+        st.markdown(
+            "<p style='color:#475569;'>Suba su archivo de Excel con las referencias / números de catálogo. "
+            "La búsqueda usa un navegador automatizado (no una simple petición web), por lo que es más lenta "
+            "que la extracción de AccessGudid: calcule entre 15 y 30 segundos por referencia.</p>",
+            unsafe_allow_html=True
+        )
+
+        col_izq_eu, col_der_eu = st.columns([1, 2])
+
+        with col_izq_eu:
+            st.info("⚙ Configuración")
+            archivo_eudamed = st.file_uploader(
+                "Sube tu archivo de Excel (.xlsx)", type=["xlsx"], key="uploader_eudamed"
+            )
+            st.caption(
+                "El archivo debe tener una sola columna con las referencias / números de "
+                "catálogo (Reference / Catalogue number), una por fila, sin encabezado."
+            )
+            st.markdown("<div style='margin-top:10px'></div>", unsafe_allow_html=True)
+            conectar_boton_eu = st.button(
+                "🌍 Iniciar Extracción Masiva Eudamed",
+                disabled=(archivo_eudamed is None),
+                use_container_width=True,
+                key="btn_iniciar_eudamed"
+            )
+
+        with col_der_eu:
+            st.warning("📊 Monitor de Procesamiento en Tiempo Real")
+
+            if archivo_eudamed and conectar_boton_eu:
+                try:
+                    bytes_data_eu = archivo_eudamed.read()
+                    df_eu = pd.read_excel(io.BytesIO(bytes_data_eu), header=None, dtype=str)
+                    df_eu[0] = df_eu[0].astype(str).str.strip()
+                    referencias_eu = [r for r in df_eu[0].tolist() if r and r != "nan"]
+                    total_refs_eu = len(referencias_eu)
+                except Exception as e:
+                    st.error(f"Error al abrir el archivo de Excel: {e}")
+                    st.stop()
+
+                st.success(f"📋 Referencias encontradas: {total_refs_eu}")
+
+                texto_estado_eu = st.empty()
+                barra_eu = st.empty()
+                tabla_viva_eu = st.empty()
+                lista_resultados_eu = []
+
+                def actualizar_barra_eu(pct):
+                    barra_eu.markdown(
+                        f'<div class="prog-wrap"><div class="prog-bar" style="width:{pct}%;"></div></div>',
+                        unsafe_allow_html=True
+                    )
+
+                driver_eu = None
+                try:
+                    with st.spinner("Abriendo navegador automatizado..."):
+                        driver_eu = _crear_driver_eudamed()
+                except Exception as e:
+                    st.error(
+                        "No se pudo iniciar el navegador automatizado para Eudamed. "
+                        f"Detalle técnico: {e}"
+                    )
+                    st.info(
+                        "Revisa que el archivo 'packages.txt' del repositorio tenga las líneas "
+                        "'chromium' y 'chromium-driver', y que 'selenium' esté en requirements.txt."
+                    )
+                    st.stop()
+
+                try:
+                    for idx, ref in enumerate(referencias_eu):
+                        texto_estado_eu.info(f"⏳ Referencia {idx+1} de {total_refs_eu} | 🔍 Buscando: {ref}...")
+                        actualizar_barra_eu(int(idx / total_refs_eu * 100))
+
+                        try:
+                            filas_ref = _procesar_referencia_eudamed(
+                                driver_eu, ref, primera_vez=(idx == 0)
+                            )
+                        except Exception as e:
+                            filas_ref = [{
+                                "Referencia_Original": ref, "Codigo_UDI_DI": "Error de navegador",
+                                "Agencia_Emisora": "Error", "Nombre_Dispositivo": "Error",
+                                "Fabricante": f"Error: {e}"
+                            }]
+                            try:
+                                captura = driver_eu.get_screenshot_as_png()
+                                st.image(captura, caption=f"Estado del navegador al fallar en: {ref}")
+                            except Exception:
+                                pass
+
+                        lista_resultados_eu.extend(filas_ref)
+                        actualizar_barra_eu(int((idx + 1) / total_refs_eu * 100))
+                        tabla_viva_eu.dataframe(pd.DataFrame(lista_resultados_eu), use_container_width=True)
+
+                finally:
+                    if driver_eu is not None:
+                        try:
+                            driver_eu.quit()
+                        except Exception:
+                            pass
+
+                texto_estado_eu.empty(); barra_eu.empty()
+                st.success("✨ ¡Extracción Eudamed completada!")
+                registrar_log(
+                    st.session_state["usuario_activo_real"],
+                    f"Extracción masiva Eudamed ({total_refs_eu} refs)",
+                    len(lista_resultados_eu)
+                )
+
+                df_final_eu = pd.DataFrame(lista_resultados_eu)
+                output_eu = io.BytesIO()
+                with pd.ExcelWriter(output_eu, engine='openpyxl') as writer:
+                    df_final_eu.to_excel(writer, index=False)
+                st.download_button(
+                    label="📥 Descargar Excel con Resultados Eudamed",
+                    data=output_eu.getvalue(),
+                    file_name="resultados_eudamed.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    use_container_width=True
+                )
+
+            elif not archivo_eudamed:
                 st.info("👈 Cargue un archivo en el panel izquierdo para activar la monitorización.")
 
     # ==========================================================
@@ -1234,5 +1632,5 @@ else:
                 <a href="#">Tratamiento de datos</a>
                 <a href="#">Mesa de Ayuda</a>
             </div>
-            <p>v 1.3.26 © Invima 2026. Todos los derechos reservados.</p>
+            <p>v 1.4.26 © Invima 2026. Todos los derechos reservados.</p>
         </div>""", unsafe_allow_html=True)
