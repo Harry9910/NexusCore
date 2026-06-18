@@ -225,8 +225,26 @@ def buscar_logo(nombre_base):
 # fino la primera vez que se ejecute. Si algo falla, se toma una captura
 # de pantalla del momento del error para poder diagnosticarlo rápido.
 
+URL_EUDAMED_HOME = "https://ec.europa.eu/tools/eudamed/eudamed"
 URL_EUDAMED_BUSQUEDA = "https://ec.europa.eu/tools/eudamed/#/screen/search-device"
 LIMITE_RESULTADOS_POR_REFERENCIA_EUDAMED = 15
+
+
+def _abrir_pantalla_busqueda_eudamed(driver):
+    """Entra a la página de inicio de Eudamed y hace clic en la tarjeta
+    'Devices, Systems, Procedure packs' para llegar al formulario de
+    búsqueda. Se hace en dos pasos (en vez de saltar directo a la URL
+    del formulario) porque así es como funciona de forma confiable en
+    el navegador real, según se confirmó probándolo manualmente."""
+    driver.get(URL_EUDAMED_HOME)
+    enlace_devices = _esperar_eudamed(driver, 30).until(
+        EC.element_to_be_clickable((
+            By.XPATH,
+            "//a[normalize-space(text())='Devices, Systems, Procedure packs'] "
+            "| //*[normalize-space(text())='Devices, Systems, Procedure packs']"
+        ))
+    )
+    enlace_devices.click()
 
 
 def _crear_driver_eudamed():
@@ -335,7 +353,7 @@ def _iniciar_busqueda_eudamed(driver, referencia, primera_vez):
     había una búsqueda anterior), pone Status=All, escribe la referencia
     en 'Reference / Catalogue number' y pulsa 'Search'."""
     if primera_vez:
-        driver.get(URL_EUDAMED_BUSQUEDA)
+        _abrir_pantalla_busqueda_eudamed(driver)
     else:
         enlace_nueva = _esperar_eudamed(driver, 15).until(
             EC.element_to_be_clickable((By.XPATH, "//*[normalize-space(text())='New search']"))
