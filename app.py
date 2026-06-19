@@ -608,19 +608,28 @@ def _llamar_gemini_api(system_prompt, mensajes, modelo=MODELO_IA_CALIDAD, max_to
         for m in mensajes
     ]
 
-    respuesta = requests.post(
-        f"https://generativelanguage.googleapis.com/v1beta/models/{modelo}:generateContent",
-        headers={
-            "x-goog-api-key": api_key,
-            "content-type": "application/json",
-        },
-        json={
-            "system_instruction": {"parts": [{"text": system_prompt}]},
-            "contents": contenidos,
-            "generationConfig": {"maxOutputTokens": max_tokens},
-        },
-        timeout=40,
-    )
+    cuerpo = {
+        "system_instruction": {"parts": [{"text": system_prompt}]},
+        "contents": contenidos,
+        "generationConfig": {"maxOutputTokens": max_tokens},
+    }
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/{modelo}:generateContent"
+    headers = {"x-goog-api-key": api_key, "content-type": "application/json"}
+
+    # Reintentos: el error 503 (modelo saturado) y el 429 (límite de tasa)
+    # del nivel gratuito suelen ser temporales y se resuelven solos unos
+    # segundos después, así que no tiene sentido fallar a la primera.
+    intentos = 3
+    respuesta = None
+    for intento in range(intentos):
+        respuesta = requests.post(url, headers=headers, json=cuerpo, timeout=40)
+        if respuesta.status_code == 200:
+            break
+        if respuesta.status_code in (503, 429) and intento < intentos - 1:
+            time.sleep(3 * (intento + 1))  # espera creciente: 3s, 6s...
+            continue
+        break
+
     if respuesta.status_code != 200:
         raise RuntimeError(
             f"Error de la API de Gemini (código {respuesta.status_code}): "
