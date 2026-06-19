@@ -571,7 +571,7 @@ def _procesar_referencia_eudamed(driver, referencia, primera_vez):
 # de romper el resto de la app.
 
 MODELO_IA_RAPIDO  = "gemini-2.5-flash"  # uso de alto volumen (traducciones)
-MODELO_IA_CALIDAD = "gemini-2.5-pro"    # chat y resúmenes (más razonamiento)
+MODELO_IA_CALIDAD = "gemini-2.5-flash"  # chat y resúmenes (Pro requiere facturación habilitada; Flash sí entra en el nivel gratuito)
 
 
 def _obtener_api_key_gemini():
