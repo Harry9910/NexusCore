@@ -1214,9 +1214,9 @@ div[data-testid="stFileUploadDropzone"] button * { color: white !important; }
 ══════════════════════════════════════════════════════════ */
 .st-key-boton_flotante_ia {
     position: fixed !important;
-    bottom: 24px;
+    bottom: 90px;
     right: 24px;
-    z-index: 99999 !important;
+    z-index: 999999 !important;
 }
 .st-key-boton_flotante_ia button {
     border-radius: 50% !important;
@@ -1229,11 +1229,11 @@ div[data-testid="stFileUploadDropzone"] button * { color: white !important; }
 
 .st-key-panel_flotante_ia {
     position: fixed !important;
-    bottom: 24px;
+    bottom: 90px;
     right: 24px;
     width: 380px !important;
     max-width: 92vw !important;
-    z-index: 99999 !important;
+    z-index: 999999 !important;
     background-color: #ffffff !important;
     border-radius: 16px !important;
     box-shadow: 0 10px 42px rgba(0,0,0,0.30) !important;
