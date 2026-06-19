@@ -1,5 +1,4 @@
 import streamlit as st
-import streamlit.components.v1 as components
 import pandas as pd
 import requests
 import urllib.parse
@@ -787,61 +786,22 @@ def _responder_chat_ia(pregunta):
     return _llamar_gemini_api(system_prompt, mensajes, modelo=MODELO_IA_CALIDAD, max_tokens=700)
 
 
-def _arreglar_posicion_flotante_ia():
-    """Streamlit envuelve el contenido en una capa interna que, en
-    algunas versiones, tiene una transformación CSS (usada para
-    animaciones). Eso hace que 'position: fixed' deje de calcularse
-    respecto a toda la ventana del navegador y en cambio quede pegado al
-    final del contenido de la página. Este script mueve nuestros
-    contenedores flotantes para que sean hijos directos de <body>, así
-    sí quedan fijos en la esquina sin importar esa estructura interna.
-    Se ejecuta dentro de un iframe invisible (de ahí el 'window.parent')
-    porque es la única forma confiable de que el <script> realmente se
-    ejecute en Streamlit (los <script> insertados vía st.markdown no se
-    ejecutan, por una limitación del navegador)."""
-    components.html(
-        """
-        <script>
-        (function() {
-            const doc = window.parent.document;
-            ["st-key-boton_flotante_ia", "st-key-panel_flotante_ia"].forEach(function(clase) {
-                const el = doc.querySelector("." + clase);
-                if (el && el.parentElement !== doc.body) {
-                    doc.body.appendChild(el);
-                }
-            });
-        })();
-        </script>
-        """,
-        height=0,
-        width=0,
+def _renderizar_asistente_sidebar_ia():
+    """Dibuja el asistente de IA como un expander dentro del sidebar.
+    A diferencia del panel 'flotante' (que dependía de cómo Streamlit
+    genera internamente la clase CSS de un contenedor con 'key' — algo
+    que cambia entre versiones y resultó poco confiable), esto usa
+    st.expander, un widget 100% estándar. Como el sidebar ya se dibuja
+    en cada sección de la app, el asistente queda igualmente disponible
+    sin importar en qué pantalla esté el usuario."""
+    st.markdown(
+        "<hr style='border-color:rgba(255,255,255,0.15);margin:16px 0 10px;'>",
+        unsafe_allow_html=True
     )
-
-
-def _renderizar_asistente_flotante_ia():
-    """Dibuja el botón/panel flotante del asistente de IA, visible en
-    cualquier sección de la app (se llama una sola vez, fuera del bloque
-    if/elif de las distintas vistas)."""
-    if not st.session_state["mostrar_chat_ia"]:
-        with st.container(key="boton_flotante_ia"):
-            if st.button("🤖", key="btn_abrir_chat_ia", help="Asistente de IA"):
-                st.session_state["mostrar_chat_ia"] = True
-                st.rerun()
-        _arreglar_posicion_flotante_ia()
-        return
-
-    with st.container(key="panel_flotante_ia"):
-        col_titulo_ia, col_cerrar_ia = st.columns([5, 1])
-        with col_titulo_ia:
-            st.markdown("**🤖 Asistente IA**")
-        with col_cerrar_ia:
-            if st.button("✕", key="btn_cerrar_chat_ia"):
-                st.session_state["mostrar_chat_ia"] = False
-                st.rerun()
-
+    with st.expander("🤖 Asistente IA"):
         st.caption("Pregunta sobre tu historial y resultados extraídos.")
 
-        with st.container(height=280):
+        with st.container(height=260):
             if not st.session_state["historial_chat_ia"]:
                 st.caption("👋 Aún no hay mensajes. ¡Hazme una pregunta!")
             for m in st.session_state["historial_chat_ia"]:
@@ -865,8 +825,6 @@ def _renderizar_asistente_flotante_ia():
             st.session_state["historial_chat_ia"].append({"role": "assistant", "content": respuesta_ia})
             st.rerun()
 
-    _arreglar_posicion_flotante_ia()
-
 # ==========================================================
 # CONFIGURACIÓN DE LA PÁGINA
 # ==========================================================
@@ -887,7 +845,6 @@ if "usuario_activo_real"   not in st.session_state: st.session_state["usuario_ac
 if "seccion_activa"        not in st.session_state: st.session_state["seccion_activa"]        = "Inicio"
 if "lista_filtros_company" not in st.session_state: st.session_state["lista_filtros_company"] = [""]
 if "mostrar_modal_perfil"  not in st.session_state: st.session_state["mostrar_modal_perfil"]  = False
-if "mostrar_chat_ia"       not in st.session_state: st.session_state["mostrar_chat_ia"]       = False
 if "historial_chat_ia"     not in st.session_state: st.session_state["historial_chat_ia"]     = []
 if "contexto_chat_ia"      not in st.session_state: st.session_state["contexto_chat_ia"]      = None
 
@@ -1205,44 +1162,6 @@ div[data-testid="stFileUploadDropzone"] button * { color: white !important; }
 
 ::-webkit-scrollbar { width: 5px; height: 5px; }
 ::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 3px; }
-
-/* ══════════════════════════════════════════════════════════
-   ASISTENTE IA FLOTANTE (botón + panel)
-   Usa contenedores con 'key' (st.container(key=...)), que Streamlit
-   marca con una clase CSS estable '.st-key-<key>' — así se puede
-   posicionar con position:fixed sin depender de selectores frágiles.
-══════════════════════════════════════════════════════════ */
-.st-key-boton_flotante_ia {
-    position: fixed !important;
-    bottom: 90px;
-    right: 24px;
-    z-index: 999999 !important;
-}
-.st-key-boton_flotante_ia button {
-    border-radius: 50% !important;
-    width: 58px !important;
-    height: 58px !important;
-    font-size: 24px !important;
-    box-shadow: 0 6px 22px rgba(0,0,0,0.32) !important;
-    background-color: #1a365d !important;
-}
-
-.st-key-panel_flotante_ia {
-    position: fixed !important;
-    bottom: 90px;
-    right: 24px;
-    width: 380px !important;
-    max-width: 92vw !important;
-    z-index: 999999 !important;
-    background-color: #ffffff !important;
-    border-radius: 16px !important;
-    box-shadow: 0 10px 42px rgba(0,0,0,0.30) !important;
-    padding: 16px 18px 10px !important;
-    border: 1px solid #dbe3ef !important;
-}
-.st-key-panel_flotante_ia button {
-    padding: 4px 10px !important;
-}
 </style>
 """
 
@@ -1416,6 +1335,9 @@ else:
             st.session_state["autenticado"] = False
             st.rerun()
 
+        # ── ASISTENTE IA (visible en cualquier sección, dentro del sidebar) ──
+        _renderizar_asistente_sidebar_ia()
+
     # ── HEADER con botones de Inicio / Mi Perfil a la derecha ───────────
     badge = '<span class="badge-admin">ADMIN</span>' if es_admin else ""
 
@@ -1442,9 +1364,6 @@ else:
             st.session_state["seccion_activa"] = "Perfil"
             st.rerun()
         st.markdown('</div>', unsafe_allow_html=True)
-
-    # ── ASISTENTE IA FLOTANTE (visible en cualquier sección) ─────────────
-    _renderizar_asistente_flotante_ia()
 
     # ==========================================================
     # VISTA 0: MI PERFIL
