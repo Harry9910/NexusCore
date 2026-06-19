@@ -333,8 +333,17 @@ def _obtener_valor_por_etiqueta_eudamed(driver, etiqueta):
 
 
 def _ir_a_seccion_detalle_eudamed(driver, nombre_seccion):
-    xp = f"//*[self::a or self::li or self::div or self::button][normalize-space(text())='{nombre_seccion}']"
-    elemento = _esperar_eudamed(driver, 12).until(EC.element_to_be_clickable((By.XPATH, xp)))
+    xp = (
+        f"//*[self::a or self::li or self::div or self::button]"
+        f"[contains(normalize-space(text()), '{nombre_seccion}')]"
+    )
+    elemento = _esperar_eudamed(driver, 12).until(
+        EC.element_to_be_clickable((By.XPATH, xp)),
+        message=(
+            f"No se encontró (o no se pudo pulsar) la sección '{nombre_seccion}' "
+            "en la página de detalle del dispositivo."
+        )
+    )
     _clic_js(driver, elemento)
     time.sleep(1.0)
 
@@ -430,8 +439,13 @@ def _procesar_referencia_eudamed(driver, referencia, primera_vez):
             _clic_js(driver, celda_ver)
 
             _esperar_eudamed(driver, 25).until(
-                EC.presence_of_element_located((By.XPATH, "//*[contains(text(),'UDI-DI details')]"))
+                EC.presence_of_element_located((By.XPATH, "//*[contains(text(),'UDI-DI details')]")),
+                message=(
+                    "No se cargó la página de detalle del dispositivo "
+                    "(no apareció el texto 'UDI-DI details') tras pulsar 'Ver'."
+                )
             )
+            _aceptar_cookies_eudamed(driver, espera=2)
 
             udi_di_completo = _obtener_valor_por_etiqueta_eudamed(driver, "UDI-DI code / Issuing entity")
             codigo_udi, agencia = udi_di_completo, ""
@@ -467,13 +481,6 @@ def _procesar_referencia_eudamed(driver, referencia, primera_vez):
                 "Agencia_Emisora": "Error", "Nombre_Dispositivo": "Error",
                 "Fabricante": f"Error: {_mensaje_error_limpio(e)}"
             })
-            try:
-                st.image(
-                    driver.get_screenshot_as_png(),
-                    caption=f"Estado del navegador al fallar el resultado #{indice+1} de '{referencia}'"
-                )
-            except Exception:
-                pass
             try:
                 driver.back()
             except Exception:
@@ -1680,11 +1687,6 @@ else:
                                 "Agencia_Emisora": "Error", "Nombre_Dispositivo": "Error",
                                 "Fabricante": f"Error: {_mensaje_error_limpio(e)}"
                             }]
-                            try:
-                                captura = driver_eu.get_screenshot_as_png()
-                                st.image(captura, caption=f"Estado del navegador al fallar en: {ref}")
-                            except Exception:
-                                pass
 
                         lista_resultados_eu.extend(filas_ref)
                         actualizar_barra_eu(int((idx + 1) / total_refs_eu * 100))
