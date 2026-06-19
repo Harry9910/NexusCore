@@ -888,6 +888,33 @@ CSS_GLOBAL = """
 [data-testid="stSidebar"] *:not(button):not(button *) {
     color: #ffffff !important;
 }
+/* EXCEPCIÓN: los campos de texto (como el del Asistente IA) deben verse
+   con fondo claro y letra oscura, igual que en el resto de la app — si
+   no, al escribir, el texto queda blanco sobre un fondo blanco y se
+   vuelve invisible. */
+[data-testid="stSidebar"] input,
+[data-testid="stSidebar"] textarea {
+    color: #1e293b !important;
+    background-color: #ffffff !important;
+}
+[data-testid="stSidebar"] input::placeholder,
+[data-testid="stSidebar"] textarea::placeholder {
+    color: #94a3b8 !important;
+}
+[data-testid="stSidebar"] [data-baseweb="base-input"],
+[data-testid="stSidebar"] [data-baseweb="base-input"] > div {
+    background-color: #ffffff !important;
+}
+/* El expander del Asistente IA: que el fondo sea claro para que
+   combine con el texto oscuro del campo de pregunta y los mensajes. */
+[data-testid="stSidebar"] [data-testid="stExpander"] {
+    background-color: #f8fafc !important;
+    border-radius: 8px !important;
+    border: 1px solid rgba(255,255,255,0.15) !important;
+}
+[data-testid="stSidebar"] [data-testid="stExpander"] *:not(button):not(button *):not(input):not(textarea) {
+    color: #1e293b !important;
+}
 [data-testid="stSidebar"] button {
     background-color: #1a365d !important;
     color: #ffffff !important;
