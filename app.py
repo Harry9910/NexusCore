@@ -150,11 +150,6 @@ def eliminar_usuario(usuario_a_eliminar):
 
 
 def actualizar_perfil(usuario_objetivo, nuevo_nombre=None, nueva_fecha=None, nueva_password=None):
-    """
-    Actualiza nombre, fecha de nacimiento y/o contraseña de un usuario.
-    Tanto 'Mi Perfil' como el Panel Admin usan esta función, por lo que
-    cualquier cambio se refleja en ambos lados al instante.
-    """
     try:
         sheet_users = _obtener_hoja_usuarios()
         datos = sheet_users.get_all_values()
@@ -204,26 +199,6 @@ def buscar_logo(nombre_base):
 # ==========================================================
 # FUNCIONES EUDAMED (NAVEGADOR AUTOMATIZADO / SELENIUM)
 # ==========================================================
-# NOTA IMPORTANTE:
-# La página de búsqueda de Eudamed (https://ec.europa.eu/tools/eudamed/...)
-# es una aplicación Angular: el HTML que entrega el servidor llega vacío,
-# todo se dibuja con JavaScript dentro del navegador. Por eso, a diferencia
-# de AccessGUDID, aquí NO sirve usar requests + BeautifulSoup: hace falta
-# controlar un navegador real (headless) con Selenium.
-#
-# Para que esto funcione en el despliegue hace falta, además de este .py:
-#   1) En requirements.txt:  selenium>=4.20.0
-#   2) Un archivo packages.txt (en la raíz del repo) con estas líneas:
-#        chromium
-#        chromium-driver
-#
-# Los selectores (XPaths) están armados con los textos visibles en las
-# capturas que compartiste (la forma más resistente de apuntar elementos
-# en una app Angular, ya que las clases CSS cambian seguido). Como no hay
-# forma de ejecutar un navegador contra el Eudamed real desde este entorno
-# para probarlo en vivo, es posible que algún selector necesite un ajuste
-# fino la primera vez que se ejecute. Si algo falla, se toma una captura
-# de pantalla del momento del error para poder diagnosticarlo rápido.
 
 URL_EUDAMED_HOME = "https://ec.europa.eu/tools/eudamed/eudamed"
 URL_EUDAMED_BUSQUEDA = "https://ec.europa.eu/tools/eudamed/#/screen/search-device"
@@ -231,22 +206,11 @@ LIMITE_RESULTADOS_POR_REFERENCIA_EUDAMED = 15
 
 
 def _clic_js(driver, elemento):
-    """Hace clic usando JavaScript directo sobre el elemento, en vez del
-    clic 'físico' normal de Selenium. Esto evita el error 'element click
-    intercepted' que ocurre cuando otro elemento (p. ej. el banner de
-    cookies, o algo aún animándose) se solapa visualmente con el elemento
-    que se quiere clickear, aunque ya no debería estar ahí."""
     driver.execute_script("arguments[0].scrollIntoView({block:'center'});", elemento)
     driver.execute_script("arguments[0].click();", elemento)
 
 
 def _aceptar_cookies_eudamed(driver, espera=6):
-    """Si aparece el aviso de cookies de la UE ('This site uses cookies...'),
-    lo cierra aceptando las cookies. Ese banner es lo que estaba bloqueando
-    el clic sobre la tarjeta 'Devices, Systems, Procedure packs'
-    (error 'element click intercepted'). Si no aparece, sigue sin problema.
-    Puede reaparecer al navegar entre pantallas de la SPA, por eso se llama
-    en varios puntos del flujo con tiempos de espera distintos."""
     try:
         boton_cookies = WebDriverWait(driver, espera).until(
             EC.element_to_be_clickable((
@@ -257,7 +221,6 @@ def _aceptar_cookies_eudamed(driver, espera=6):
             ))
         )
         _clic_js(driver, boton_cookies)
-        # Espera a que el banner deje de existir/ser visible antes de seguir
         try:
             WebDriverWait(driver, 6).until(
                 EC.invisibility_of_element_located((
@@ -271,11 +234,6 @@ def _aceptar_cookies_eudamed(driver, espera=6):
 
 
 def _abrir_pantalla_busqueda_eudamed(driver):
-    """Entra a la página de inicio de Eudamed y hace clic en la tarjeta
-    'Devices, Systems, Procedure packs' para llegar al formulario de
-    búsqueda. Se hace en dos pasos (en vez de saltar directo a la URL
-    del formulario) porque así es como funciona de forma confiable en
-    el navegador real, según se confirmó probándolo manualmente."""
     driver.get(URL_EUDAMED_HOME)
     _aceptar_cookies_eudamed(driver)
     enlace_devices = _esperar_eudamed(driver, 30).until(
@@ -289,7 +247,6 @@ def _abrir_pantalla_busqueda_eudamed(driver):
 
 
 def _crear_driver_eudamed():
-    """Crea una instancia de navegador Chromium headless para Selenium."""
     opciones = webdriver.ChromeOptions()
     opciones.add_argument("--headless=new")
     opciones.add_argument("--no-sandbox")
@@ -314,8 +271,6 @@ def _crear_driver_eudamed():
             servicio = Service(executable_path=ruta_driver)
             driver = webdriver.Chrome(service=servicio, options=opciones)
         else:
-            # Si no se encuentra chromedriver en el sistema, se deja que el
-            # "Selenium Manager" incorporado intente resolverlo solo.
             driver = webdriver.Chrome(options=opciones)
     except Exception as e:
         raise RuntimeError(
@@ -336,9 +291,6 @@ def _esperar_eudamed(driver, segundos=20):
 
 
 def _poner_status_all_eudamed(driver):
-    """Intenta cambiar el filtro 'Status' de 'On the EU market' a 'All'.
-    Si no logra encontrarlo, sigue sin romper el flujo (se buscará con
-    el filtro por defecto del sitio)."""
     try:
         etiqueta_status = driver.find_element(By.XPATH, "//label[normalize-space(text())='Status']")
         contenedor = etiqueta_status.find_element(By.XPATH, "./..")
@@ -362,11 +314,6 @@ def _poner_status_all_eudamed(driver):
 
 
 def _obtener_valor_por_etiqueta_eudamed(driver, etiqueta):
-    """
-    Busca el valor asociado a una etiqueta de la ficha de detalle de Eudamed
-    (p. ej. 'Device name', 'Organisation name'). Se prueban varias formas
-    de ubicarlo porque no se conoce con certeza el marcado HTML exacto.
-    """
     xpaths = [
         f"//tr[.//td[1][normalize-space(text())='{etiqueta}']]/td[2]",
         f"//tr[.//th[normalize-space(text())='{etiqueta}']]/td[1]",
@@ -393,9 +340,6 @@ def _ir_a_seccion_detalle_eudamed(driver, nombre_seccion):
 
 
 def _iniciar_busqueda_eudamed(driver, referencia, primera_vez):
-    """Abre el formulario de búsqueda (o lo reinicia con 'New search' si ya
-    había una búsqueda anterior), pone Status=All, escribe la referencia
-    en 'Reference / Catalogue number' y pulsa 'Search'."""
     if primera_vez:
         _abrir_pantalla_busqueda_eudamed(driver)
     else:
@@ -408,10 +352,7 @@ def _iniciar_busqueda_eudamed(driver, referencia, primera_vez):
         EC.presence_of_element_located((By.XPATH, "//label[contains(., 'Reference') and contains(., 'Catalogue')]"))
     )
 
-    # El aviso de cookies puede reaparecer al navegar entre pantallas de la
-    # SPA; lo volvemos a comprobar (es rápido si ya no está presente).
     _aceptar_cookies_eudamed(driver, espera=3)
-
     _poner_status_all_eudamed(driver)
 
     campo_ref = _esperar_eudamed(driver, 15).until(
@@ -453,24 +394,14 @@ def _contar_resultados_eudamed(driver):
 
 
 def _mensaje_error_limpio(e):
-    """Los errores de Selenium/Chromedriver suelen traer, después del
-    mensaje real, un 'Stacktrace' nativo larguísimo (líneas con
-    direcciones de memoria tipo '#0 0x...') que no aporta nada para
-    diagnosticar y hace que el mensaje útil quede cortado en la tabla.
-    Esta función se queda solo con la parte legible."""
     texto = str(e).split("Stacktrace:")[0].strip()
     return texto if texto else type(e).__name__
 
 
 def _procesar_referencia_eudamed(driver, referencia, primera_vez):
-    """Busca una referencia en Eudamed y devuelve una lista de filas con
-    los datos de cada coincidencia encontrada (puede haber más de una)."""
     try:
         _iniciar_busqueda_eudamed(driver, referencia, primera_vez)
     except TimeoutException as e:
-        # No se traga el error en silencio: se relanza para que la pantalla
-        # tome una captura del navegador en ese momento y se pueda ver qué
-        # pasó realmente (ayuda a ajustar selectores si algo no calzó).
         raise RuntimeError(
             f"Tiempo de espera agotado iniciando la búsqueda de '{referencia}' "
             f"(no se encontró el formulario, el botón Search, o el resultado "
@@ -528,7 +459,6 @@ def _procesar_referencia_eudamed(driver, referencia, primera_vez):
                     EC.presence_of_element_located((By.XPATH, "//table//tbody/tr"))
                 )
             except TimeoutException:
-                # Si al volver se perdió la lista de resultados, reintenta la búsqueda
                 _iniciar_busqueda_eudamed(driver, referencia, primera_vez=False)
 
         except Exception as e:
@@ -552,26 +482,11 @@ def _procesar_referencia_eudamed(driver, referencia, primera_vez):
     return filas_resultado
 
 # ==========================================================
-# FUNCIONES DE IA (CLAUDE) — TRADUCCIÓN, RESÚMENES Y ASISTENTE
+# FUNCIONES DE IA (GEMINI)
 # ==========================================================
-# Se llama directo a la API REST de Gemini (Google AI Studio) con
-# 'requests' (ya estaba importado para AccessGUDID/MyMemory), así no hace
-# falta agregar ninguna librería nueva a requirements.txt.
-#
-# Para que estas funciones trabajen, hace falta una API key de Gemini
-# (gratis, sin tarjeta de crédito para el nivel gratuito) guardada en
-# Secrets de Streamlit, en este formato:
-#
-#   [gemini]
-#   api_key = "tu-clave-aqui"
-#
-# Se consigue en: https://aistudio.google.com/apikey
-#
-# Si no está configurada, cada función avisa con un mensaje claro en vez
-# de romper el resto de la app.
 
-MODELO_IA_RAPIDO  = "gemini-2.5-flash"  # uso de alto volumen (traducciones)
-MODELO_IA_CALIDAD = "gemini-2.5-flash"  # chat y resúmenes (Pro requiere facturación habilitada; Flash sí entra en el nivel gratuito)
+MODELO_IA_RAPIDO  = "gemini-2.5-flash"
+MODELO_IA_CALIDAD = "gemini-2.5-flash"
 
 
 def _obtener_api_key_gemini():
@@ -585,12 +500,6 @@ def _obtener_api_key_gemini():
 
 
 def _llamar_gemini_api(system_prompt, mensajes, modelo=MODELO_IA_CALIDAD, max_tokens=600):
-    """Llama a la API de Gemini (Google AI Studio) y devuelve solo el texto
-    de la respuesta. 'mensajes' sigue usando el formato role 'user' /
-    'assistant' (igual que usábamos antes); aquí se traduce al formato
-    que espera Gemini, que usa 'model' en vez de 'assistant'. Lanza una
-    excepción con un mensaje claro si no hay API key configurada o si la
-    API devuelve un error."""
     api_key = _obtener_api_key_gemini()
     if not api_key:
         raise RuntimeError(
@@ -613,19 +522,12 @@ def _llamar_gemini_api(system_prompt, mensajes, modelo=MODELO_IA_CALIDAD, max_to
         "contents": contenidos,
         "generationConfig": {
             "maxOutputTokens": max_tokens,
-            # Gemini 2.5 usa parte del límite de tokens para "pensar"
-            # internamente antes de responder; eso estaba dejando muy poco
-            # espacio para la respuesta visible y la cortaba a la mitad.
-            # Lo desactivamos para que todo el límite vaya a la respuesta.
             "thinkingConfig": {"thinkingBudget": 0},
         },
     }
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{modelo}:generateContent"
     headers = {"x-goog-api-key": api_key, "content-type": "application/json"}
 
-    # Reintentos: el error 503 (modelo saturado) y el 429 (límite de tasa)
-    # del nivel gratuito suelen ser temporales y se resuelven solos unos
-    # segundos después, así que no tiene sentido fallar a la primera.
     intentos = 3
     respuesta = None
     for intento in range(intentos):
@@ -633,7 +535,7 @@ def _llamar_gemini_api(system_prompt, mensajes, modelo=MODELO_IA_CALIDAD, max_to
         if respuesta.status_code == 200:
             break
         if respuesta.status_code in (503, 429) and intento < intentos - 1:
-            time.sleep(3 * (intento + 1))  # espera creciente: 3s, 6s...
+            time.sleep(3 * (intento + 1))
             continue
         break
 
@@ -651,10 +553,6 @@ def _llamar_gemini_api(system_prompt, mensajes, modelo=MODELO_IA_CALIDAD, max_to
 
 
 def _traducir_gmdn_con_ia(texto_ingles):
-    """Reemplaza la traducción anterior (MyMemory) por una traducción hecha
-    con Claude, de mejor calidad para terminología médica. Si no hay API
-    key configurada o algo falla, devuelve el texto original en inglés en
-    vez de romper la extracción masiva."""
     texto_ingles = (texto_ingles or "").strip()
     if not texto_ingles or texto_ingles.lower() == "no encontrado":
         return texto_ingles
@@ -676,8 +574,6 @@ def _traducir_gmdn_con_ia(texto_ingles):
 
 
 def _generar_resumen_ia(df, etiqueta_fuente):
-    """Genera un resumen breve en español de un DataFrame de resultados
-    extraídos, usando Claude. Se usa tanto para AccessGudid como Eudamed."""
     if df is None or df.empty:
         return "No hay datos para resumir."
     texto_datos = df.to_csv(index=False)
@@ -700,8 +596,6 @@ def _generar_resumen_ia(df, etiqueta_fuente):
 
 
 def _obtener_o_crear_hoja(nombre_hoja, encabezados):
-    """Devuelve la pestaña de Google Sheets indicada, creándola con sus
-    encabezados si todavía no existe."""
     client = get_gspread_client()
     doc = client.open_by_key(SHEET_ID)
     try:
@@ -713,9 +607,6 @@ def _obtener_o_crear_hoja(nombre_hoja, encabezados):
 
 
 def guardar_resultados_accessgudid(usuario, filas):
-    """Guarda cada fila extraída de AccessGudid en una pestaña histórica de
-    Google Sheets (además del conteo que ya se guarda en 'Logs'), para que
-    el asistente de IA y los resúmenes tengan datos reales que consultar."""
     if not filas:
         return
     try:
@@ -738,8 +629,6 @@ def guardar_resultados_accessgudid(usuario, filas):
 
 
 def guardar_resultados_eudamed(usuario, filas):
-    """Igual que guardar_resultados_accessgudid, pero para los resultados
-    de Eudamed."""
     if not filas:
         return
     try:
@@ -760,10 +649,6 @@ def guardar_resultados_eudamed(usuario, filas):
 
 
 def _construir_contexto_chat_ia():
-    """Lee las pestañas históricas de Google Sheets (Logs + resultados de
-    ambas fuentes) y arma un texto compacto para dárselo como contexto al
-    asistente conversacional. Se queda solo con las filas más recientes de
-    cada pestaña para no disparar el tamaño del prompt."""
     try:
         client = get_gspread_client()
         doc = client.open_by_key(SHEET_ID)
@@ -802,13 +687,13 @@ def _responder_chat_ia(pregunta):
     return _llamar_gemini_api(system_prompt, mensajes, modelo=MODELO_IA_CALIDAD, max_tokens=700)
 
 
+# ==========================================================
+# ASISTENTE IA — POPOVER CON BURBUJAS DE CHAT
+# ── CAMBIO APLICADO: mensajes diferenciados visualmente ───
+# • Preguntas del usuario → burbuja azul, alineada a la DERECHA, etiqueta "👤 TÚ"
+# • Respuestas del asistente → burbuja gris clara, alineada a la IZQUIERDA, etiqueta "🤖 ASISTENTE IA"
+# ==========================================================
 def _renderizar_asistente_popover_ia():
-    """Dibuja el asistente de IA como un st.popover en el encabezado
-    superior: un botón que, al hacer clic, despliega un panel a un lado
-    (igual al patrón de 'Pregúntale a Gemini' del navegador). A diferencia
-    de los intentos anteriores con contenedores 'flotantes' por CSS (poco
-    confiables entre versiones de Streamlit), st.popover es un widget
-    100% nativo pensado exactamente para este caso."""
     with st.popover("🤖 Asistente IA", use_container_width=True):
         st.caption("Pregunta sobre tu historial y resultados extraídos.")
 
@@ -816,8 +701,64 @@ def _renderizar_asistente_popover_ia():
             if not st.session_state["historial_chat_ia"]:
                 st.caption("👋 Aún no hay mensajes. ¡Hazme una pregunta!")
             for m in st.session_state["historial_chat_ia"]:
-                with st.chat_message("user" if m["role"] == "user" else "assistant"):
-                    st.write(m["content"])
+                if m["role"] == "user":
+                    st.markdown(
+                        f"""
+                        <div style="display:flex;justify-content:flex-end;margin-bottom:10px;">
+                            <div style="
+                                background-color:#1a365d;
+                                color:#ffffff;
+                                border-radius:14px 14px 2px 14px;
+                                padding:9px 14px;
+                                max-width:85%;
+                                font-size:13px;
+                                line-height:1.5;
+                                box-shadow:0 1px 3px rgba(0,0,0,0.18);">
+                                <span style="
+                                    font-size:10px;
+                                    font-weight:700;
+                                    opacity:0.80;
+                                    display:block;
+                                    margin-bottom:4px;
+                                    text-align:right;
+                                    letter-spacing:0.4px;">
+                                    👤 TÚ
+                                </span>
+                                {m["content"]}
+                            </div>
+                        </div>
+                        """,
+                        unsafe_allow_html=True
+                    )
+                else:
+                    st.markdown(
+                        f"""
+                        <div style="display:flex;justify-content:flex-start;margin-bottom:10px;">
+                            <div style="
+                                background-color:#f1f5f9;
+                                color:#1e293b;
+                                border-radius:14px 14px 14px 2px;
+                                padding:9px 14px;
+                                max-width:85%;
+                                font-size:13px;
+                                line-height:1.5;
+                                border:1px solid #e2e8f0;
+                                box-shadow:0 1px 3px rgba(0,0,0,0.07);">
+                                <span style="
+                                    font-size:10px;
+                                    font-weight:700;
+                                    color:#1a365d;
+                                    display:block;
+                                    margin-bottom:4px;
+                                    letter-spacing:0.4px;">
+                                    🤖 ASISTENTE IA
+                                </span>
+                                {m["content"]}
+                            </div>
+                        </div>
+                        """,
+                        unsafe_allow_html=True
+                    )
 
         with st.form(key="form_chat_ia", clear_on_submit=True):
             pregunta_ia = st.text_input(
@@ -864,15 +805,6 @@ if "contexto_chat_ia"      not in st.session_state: st.session_state["contexto_c
 # ==========================================================
 CSS_GLOBAL = """
 <style>
-/* ══════════════════════════════════════════════════════════
-   RESET SIDEBAR — siempre visible y SIEMPRE EXPANDIDO.
-   FIX: Streamlit puede colapsar el sidebar (pantallas angostas,
-   clic accidental, etc.). Antes, como el <header> que contiene el
-   botón para volver a expandirlo estaba oculto con display:none,
-   una vez colapsado ya no había forma de recuperarlo. Por eso
-   forzamos aquí ancho/visibilidad fijos, sin importar el estado
-   "aria-expanded" que Streamlit le asigne internamente.
-══════════════════════════════════════════════════════════ */
 [data-testid="stSidebar"] {
     display: flex !important;
     visibility: visible !important;
@@ -889,8 +821,6 @@ CSS_GLOBAL = """
     width: 260px !important;
     margin-left: 0px !important;
 }
-/* Por si en tu versión de Streamlit el sidebar SÍ logra colapsarse,
-   dejamos visible el botón de expandir (flecha) como respaldo. */
 [data-testid="collapsedControl"],
 [data-testid="stSidebarCollapsedControl"] {
     display: flex !important;
@@ -899,10 +829,6 @@ CSS_GLOBAL = """
 [data-testid="stSidebar"] *:not(button):not(button *) {
     color: #ffffff !important;
 }
-/* EXCEPCIÓN: los campos de texto (como el del Asistente IA) deben verse
-   con fondo claro y letra oscura, igual que en el resto de la app — si
-   no, al escribir, el texto queda blanco sobre un fondo blanco y se
-   vuelve invisible. */
 [data-testid="stSidebar"] input,
 [data-testid="stSidebar"] textarea {
     color: #1e293b !important;
@@ -916,8 +842,6 @@ CSS_GLOBAL = """
 [data-testid="stSidebar"] [data-baseweb="base-input"] > div {
     background-color: #ffffff !important;
 }
-/* El expander del Asistente IA: que el fondo sea claro para que
-   combine con el texto oscuro del campo de pregunta y los mensajes. */
 [data-testid="stSidebar"] [data-testid="stExpander"] {
     background-color: #f8fafc !important;
     border-radius: 8px !important;
@@ -943,16 +867,9 @@ CSS_GLOBAL = """
     border-bottom: 1px solid rgba(255,255,255,0.15);
 }
 
-/* ══════════════════════════════════════════════════════════
-   BASE APP
-══════════════════════════════════════════════════════════ */
 .stApp { background-color: #f0f4f8 !important; }
 section.main { background-color: #f0f4f8 !important; }
 
-/* FIX: ya NO ocultamos el <header> completo (display:none), porque
-   ahí vive el control nativo de Streamlit para expandir el sidebar
-   si llegara a colapsarse. Solo ocultamos la barra de herramientas
-   (botón "Deploy", menú de 3 puntos) y el footer. */
 footer, #MainMenu, [data-testid="stToolbar"] {
     visibility: hidden !important; display: none !important;
 }
@@ -968,9 +885,6 @@ section.main h4, section.main h5, section.main h6 {
     color: #1e293b !important;
 }
 
-/* ══════════════════════════════════════════════════════════
-   BOTONES GENERALES
-══════════════════════════════════════════════════════════ */
 .stButton > button,
 .stDownloadButton > button,
 section.main button {
@@ -991,9 +905,6 @@ section.main button:hover { background-color: #2a4d7c !important; color: #ffffff
 section.main button p, section.main button span,
 .stButton > button p, .stButton > button span { color: #ffffff !important; }
 
-/* ══════════════════════════════════════════════════════════
-   INPUTS / SELECTS / DATEPICKER
-══════════════════════════════════════════════════════════ */
 section.main input[type="text"],
 section.main input[type="password"],
 section.main input[type="number"] {
@@ -1028,7 +939,6 @@ ul[role="listbox"] { background-color: white !important; }
 li[role="option"] { background-color: white !important; color: #1e293b !important; }
 li[role="option"]:hover { background-color: #eff6ff !important; }
 
-/* Botón ojo contraseña */
 section.main [data-baseweb="base-input"] button,
 section.main [data-baseweb="input"] button {
     background-color: #1a365d !important; border: none !important;
@@ -1041,9 +951,6 @@ section.main [data-baseweb="input"] button svg { fill: #ffffff !important; width
 section.main [data-baseweb="base-input"] button:hover,
 section.main [data-baseweb="input"] button:hover { background-color: #2a4d7c !important; }
 
-/* ══════════════════════════════════════════════════════════
-   FILE UPLOADER
-══════════════════════════════════════════════════════════ */
 div[data-testid="stFileUploadDropzone"] {
     background-color: #eef2ff !important;
     border: 2px dashed #1a365d !important; border-radius: 8px !important;
@@ -1056,9 +963,6 @@ div[data-testid="stFileUploadDropzone"] button {
 }
 div[data-testid="stFileUploadDropzone"] button * { color: white !important; }
 
-/* ══════════════════════════════════════════════════════════
-   MÉTRICAS
-══════════════════════════════════════════════════════════ */
 [data-testid="stMetric"] {
     background-color: #ffffff !important; border-radius: 10px !important;
     padding: 14px 18px !important; border: 1px solid #dce4f5 !important;
@@ -1067,9 +971,6 @@ div[data-testid="stFileUploadDropzone"] button * { color: white !important; }
 [data-testid="stMetricLabel"] p { color: #374151 !important; }
 [data-testid="stMetricValue"] { color: #0b1d3a !important; }
 
-/* ══════════════════════════════════════════════════════════
-   BARRA DE PROGRESO CUSTOM
-══════════════════════════════════════════════════════════ */
 .prog-wrap {
     width: 100%; background-color: #e2e8f0; border: 2px solid #1e40af;
     border-radius: 8px; padding: 3px; height: 30px; overflow: hidden; margin: 14px 0;
@@ -1080,9 +981,6 @@ div[data-testid="stFileUploadDropzone"] button * { color: white !important; }
     transition: width 0.2s ease-in-out;
 }
 
-/* ══════════════════════════════════════════════════════════
-   HEADER con botones de Inicio / Mi Perfil a la derecha
-══════════════════════════════════════════════════════════ */
 .header-box {
     background-color: #ffffff !important;
     padding: 12px 24px; border-radius: 10px;
@@ -1105,7 +1003,6 @@ div[data-testid="stFileUploadDropzone"] button * { color: white !important; }
     padding: 2px 8px; border-radius: 10px;
     font-weight: 700; letter-spacing: 0.4px;
 }
-/* Botones de acción en el header (Inicio / Mi Perfil) — estilo especial */
 .btn-perfil-header > button,
 .btn-inicio-header > button {
     background-color: #0b1d3a !important;
@@ -1124,9 +1021,6 @@ div[data-testid="stFileUploadDropzone"] button * { color: white !important; }
 .btn-inicio-header > button p,
 .btn-inicio-header > button span { color: #ffffff !important; }
 
-/* ══════════════════════════════════════════════════════════
-   CARDS
-══════════════════════════════════════════════════════════ */
 .card-azul {
     background-color: #ffffff !important; padding: 22px; border-radius: 12px;
     box-shadow: 0 3px 10px rgba(0,0,0,0.06); border-left: 5px solid #0b1d3a; margin-bottom: 16px;
@@ -1155,9 +1049,6 @@ div[data-testid="stFileUploadDropzone"] button * { color: white !important; }
 }
 .perfil-card-title { color: #0b1d3a !important; font-size: 15px !important; font-weight: 700 !important; margin: 0 0 16px 0 !important; display: block; }
 
-/* ══════════════════════════════════════════════════════════
-   TABLA USUARIOS
-══════════════════════════════════════════════════════════ */
 .tabla-usr {
     width: 100%; border-collapse: collapse; border-radius: 8px;
     overflow: hidden; border: 1px solid #e2e8f0; margin-top: 8px;
@@ -1174,9 +1065,6 @@ div[data-testid="stFileUploadDropzone"] button * { color: white !important; }
 .tabla-usr tr:hover td { background-color: #eff6ff !important; }
 .meta-txt { color: #64748b !important; font-size: 12px; margin-top: 8px; }
 
-/* ══════════════════════════════════════════════════════════
-   FOOTER
-══════════════════════════════════════════════════════════ */
 .footer-box {
     margin-top: 50px; padding: 22px 0;
     border-top: 1px solid #e2e8f0; text-align: center; font-size: 13px;
@@ -1185,16 +1073,12 @@ div[data-testid="stFileUploadDropzone"] button * { color: white !important; }
 .footer-links { display: flex; justify-content: center; gap: 28px; margin-bottom: 8px; flex-wrap: wrap; }
 .footer-links a { color: #0b1d3a !important; text-decoration: none; font-weight: 500; }
 
-/* ══════════════════════════════════════════════════════════
-   RESPONSIVE MÓVIL
-══════════════════════════════════════════════════════════ */
 @media (max-width: 768px) {
     .header-box { flex-direction: column !important; gap: 8px !important; padding: 12px !important; text-align: center !important; }
     .header-right { flex-wrap: wrap; justify-content: center; }
     .header-titulo { font-size: 15px !important; }
     .user-pill { font-size: 11px !important; }
     .card-azul, .card-roja, .admin-card, .perfil-card { padding: 14px !important; }
-    /* En móvil dejamos el sidebar un poco más angosto, pero SIEMPRE visible */
     [data-testid="stSidebar"] { min-width: 220px !important; width: 220px !important; }
 }
 
@@ -1203,7 +1087,6 @@ div[data-testid="stFileUploadDropzone"] button * { color: white !important; }
 </style>
 """
 
-# CSS exclusivo del LOGIN (fondo, ocultar sidebar, etc.)
 CSS_LOGIN = """
 <style>
 .stApp {
@@ -1211,8 +1094,6 @@ CSS_LOGIN = """
                       url('https://images.unsplash.com/photo-1576091160399-112ba8d25d1d?q=80&w=2070');
     background-size: cover; background-position: center; background-attachment: fixed;
 }
-/* En el login NO existe sidebar (no se crea hasta después de autenticar),
-   así que aquí sí podemos ocultar header/footer/menú sin riesgo. */
 header, footer, [data-testid="stSidebar"], #MainMenu {
     visibility: hidden !important; display: none !important;
 }
@@ -1373,7 +1254,7 @@ else:
             st.session_state["autenticado"] = False
             st.rerun()
 
-    # ── HEADER con botones de Inicio / Mi Perfil / Asistente IA a la derecha ──
+    # ── HEADER ──────────────────────────────────────────
     badge = '<span class="badge-admin">ADMIN</span>' if es_admin else ""
 
     col_titulo, col_inicio_btn, col_perfil_btn, col_ia_btn = st.columns([3.6, 1, 1, 1.3])
@@ -1689,7 +1570,7 @@ else:
                 st.success("✨ ¡Extracción completada al 100%!")
                 registrar_log(st.session_state["usuario_activo_real"], f"Extracción masiva AccessGudid ({total_refs} refs)", len(lista_resultados))
                 guardar_resultados_accessgudid(st.session_state["usuario_activo_real"], lista_resultados)
-                st.session_state["contexto_chat_ia"] = None  # refresca el contexto del asistente con estos datos nuevos
+                st.session_state["contexto_chat_ia"] = None
 
                 df_final = pd.DataFrame(lista_resultados)
                 output = io.BytesIO()
@@ -1714,7 +1595,7 @@ else:
                 st.info("👈 Cargue un archivo en el panel izquierdo para activar la monitorización.")
 
     # ==========================================================
-    # VISTA 2-B: EXTRACCIÓN MASIVA EUDAMED (UE) — NAVEGADOR AUTOMATIZADO
+    # VISTA 2-B: EXTRACCIÓN MASIVA EUDAMED (UE)
     # ==========================================================
     elif st.session_state["seccion_activa"] == "ExtraccionEudamed":
         st.markdown("<h3 style='color:#0b1d3a;'>🌍 Extracción Automatizada Eudamed (Unión Europea)</h3>", unsafe_allow_html=True)
@@ -1824,7 +1705,7 @@ else:
                     len(lista_resultados_eu)
                 )
                 guardar_resultados_eudamed(st.session_state["usuario_activo_real"], lista_resultados_eu)
-                st.session_state["contexto_chat_ia"] = None  # refresca el contexto del asistente con estos datos nuevos
+                st.session_state["contexto_chat_ia"] = None
 
                 df_final_eu = pd.DataFrame(lista_resultados_eu)
                 output_eu = io.BytesIO()
