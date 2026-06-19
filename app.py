@@ -611,7 +611,14 @@ def _llamar_gemini_api(system_prompt, mensajes, modelo=MODELO_IA_CALIDAD, max_to
     cuerpo = {
         "system_instruction": {"parts": [{"text": system_prompt}]},
         "contents": contenidos,
-        "generationConfig": {"maxOutputTokens": max_tokens},
+        "generationConfig": {
+            "maxOutputTokens": max_tokens,
+            # Gemini 2.5 usa parte del límite de tokens para "pensar"
+            # internamente antes de responder; eso estaba dejando muy poco
+            # espacio para la respuesta visible y la cortaba a la mitad.
+            # Lo desactivamos para que todo el límite vaya a la respuesta.
+            "thinkingConfig": {"thinkingBudget": 0},
+        },
     }
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{modelo}:generateContent"
     headers = {"x-goog-api-key": api_key, "content-type": "application/json"}
@@ -795,22 +802,17 @@ def _responder_chat_ia(pregunta):
     return _llamar_gemini_api(system_prompt, mensajes, modelo=MODELO_IA_CALIDAD, max_tokens=700)
 
 
-def _renderizar_asistente_sidebar_ia():
-    """Dibuja el asistente de IA como un expander dentro del sidebar.
-    A diferencia del panel 'flotante' (que dependía de cómo Streamlit
-    genera internamente la clase CSS de un contenedor con 'key' — algo
-    que cambia entre versiones y resultó poco confiable), esto usa
-    st.expander, un widget 100% estándar. Como el sidebar ya se dibuja
-    en cada sección de la app, el asistente queda igualmente disponible
-    sin importar en qué pantalla esté el usuario."""
-    st.markdown(
-        "<hr style='border-color:rgba(255,255,255,0.15);margin:16px 0 10px;'>",
-        unsafe_allow_html=True
-    )
-    with st.expander("🤖 Asistente IA"):
+def _renderizar_asistente_popover_ia():
+    """Dibuja el asistente de IA como un st.popover en el encabezado
+    superior: un botón que, al hacer clic, despliega un panel a un lado
+    (igual al patrón de 'Pregúntale a Gemini' del navegador). A diferencia
+    de los intentos anteriores con contenedores 'flotantes' por CSS (poco
+    confiables entre versiones de Streamlit), st.popover es un widget
+    100% nativo pensado exactamente para este caso."""
+    with st.popover("🤖 Asistente IA", use_container_width=True):
         st.caption("Pregunta sobre tu historial y resultados extraídos.")
 
-        with st.container(height=260):
+        with st.container(height=300):
             if not st.session_state["historial_chat_ia"]:
                 st.caption("👋 Aún no hay mensajes. ¡Hazme una pregunta!")
             for m in st.session_state["historial_chat_ia"]:
@@ -1371,13 +1373,10 @@ else:
             st.session_state["autenticado"] = False
             st.rerun()
 
-        # ── ASISTENTE IA (visible en cualquier sección, dentro del sidebar) ──
-        _renderizar_asistente_sidebar_ia()
-
-    # ── HEADER con botones de Inicio / Mi Perfil a la derecha ───────────
+    # ── HEADER con botones de Inicio / Mi Perfil / Asistente IA a la derecha ──
     badge = '<span class="badge-admin">ADMIN</span>' if es_admin else ""
 
-    col_titulo, col_inicio_btn, col_perfil_btn = st.columns([4, 1, 1])
+    col_titulo, col_inicio_btn, col_perfil_btn, col_ia_btn = st.columns([3.6, 1, 1, 1.3])
     with col_titulo:
         st.markdown(
             f'<div style="background:#ffffff;padding:12px 24px;border-radius:10px;'
@@ -1400,6 +1399,8 @@ else:
             st.session_state["seccion_activa"] = "Perfil"
             st.rerun()
         st.markdown('</div>', unsafe_allow_html=True)
+    with col_ia_btn:
+        _renderizar_asistente_popover_ia()
 
     # ==========================================================
     # VISTA 0: MI PERFIL
