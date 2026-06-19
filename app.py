@@ -552,6 +552,287 @@ def _procesar_referencia_eudamed(driver, referencia, primera_vez):
     return filas_resultado
 
 # ==========================================================
+# FUNCIONES DE IA (CLAUDE) — TRADUCCIÓN, RESÚMENES Y ASISTENTE
+# ==========================================================
+# Se llama directo a la API REST de Gemini (Google AI Studio) con
+# 'requests' (ya estaba importado para AccessGUDID/MyMemory), así no hace
+# falta agregar ninguna librería nueva a requirements.txt.
+#
+# Para que estas funciones trabajen, hace falta una API key de Gemini
+# (gratis, sin tarjeta de crédito para el nivel gratuito) guardada en
+# Secrets de Streamlit, en este formato:
+#
+#   [gemini]
+#   api_key = "tu-clave-aqui"
+#
+# Se consigue en: https://aistudio.google.com/apikey
+#
+# Si no está configurada, cada función avisa con un mensaje claro en vez
+# de romper el resto de la app.
+
+MODELO_IA_RAPIDO  = "gemini-2.5-flash"  # uso de alto volumen (traducciones)
+MODELO_IA_CALIDAD = "gemini-2.5-pro"    # chat y resúmenes (más razonamiento)
+
+
+def _obtener_api_key_gemini():
+    try:
+        return st.secrets["gemini"]["api_key"]
+    except Exception:
+        try:
+            return st.secrets["GEMINI_API_KEY"]
+        except Exception:
+            return None
+
+
+def _llamar_gemini_api(system_prompt, mensajes, modelo=MODELO_IA_CALIDAD, max_tokens=600):
+    """Llama a la API de Gemini (Google AI Studio) y devuelve solo el texto
+    de la respuesta. 'mensajes' sigue usando el formato role 'user' /
+    'assistant' (igual que usábamos antes); aquí se traduce al formato
+    que espera Gemini, que usa 'model' en vez de 'assistant'. Lanza una
+    excepción con un mensaje claro si no hay API key configurada o si la
+    API devuelve un error."""
+    api_key = _obtener_api_key_gemini()
+    if not api_key:
+        raise RuntimeError(
+            "No hay una API key de Gemini configurada. Consíguela gratis en "
+            "https://aistudio.google.com/apikey y agrégala en Settings → "
+            "Secrets de Streamlit Cloud, así:\n"
+            "[gemini]\napi_key = \"tu-clave-aqui\""
+        )
+
+    contenidos = [
+        {
+            "role": "model" if m["role"] == "assistant" else "user",
+            "parts": [{"text": m["content"]}],
+        }
+        for m in mensajes
+    ]
+
+    respuesta = requests.post(
+        f"https://generativelanguage.googleapis.com/v1beta/models/{modelo}:generateContent",
+        headers={
+            "x-goog-api-key": api_key,
+            "content-type": "application/json",
+        },
+        json={
+            "system_instruction": {"parts": [{"text": system_prompt}]},
+            "contents": contenidos,
+            "generationConfig": {"maxOutputTokens": max_tokens},
+        },
+        timeout=40,
+    )
+    if respuesta.status_code != 200:
+        raise RuntimeError(
+            f"Error de la API de Gemini (código {respuesta.status_code}): "
+            f"{respuesta.text[:300]}"
+        )
+    datos = respuesta.json()
+    try:
+        partes = datos["candidates"][0]["content"]["parts"]
+        return "".join(p.get("text", "") for p in partes).strip()
+    except (KeyError, IndexError):
+        return ""
+
+
+def _traducir_gmdn_con_ia(texto_ingles):
+    """Reemplaza la traducción anterior (MyMemory) por una traducción hecha
+    con Claude, de mejor calidad para terminología médica. Si no hay API
+    key configurada o algo falla, devuelve el texto original en inglés en
+    vez de romper la extracción masiva."""
+    texto_ingles = (texto_ingles or "").strip()
+    if not texto_ingles or texto_ingles.lower() == "no encontrado":
+        return texto_ingles
+    try:
+        traduccion = _llamar_gemini_api(
+            system_prompt=(
+                "Eres un traductor especializado en terminología médica de "
+                "dispositivos (nomenclatura GMDN). Traduce el siguiente texto "
+                "del inglés al español de forma precisa y natural. Responde "
+                "ÚNICAMENTE con la traducción, sin comillas ni comentarios."
+            ),
+            mensajes=[{"role": "user", "content": texto_ingles}],
+            modelo=MODELO_IA_RAPIDO,
+            max_tokens=400,
+        )
+        return traduccion if traduccion else texto_ingles
+    except Exception:
+        return texto_ingles
+
+
+def _generar_resumen_ia(df, etiqueta_fuente):
+    """Genera un resumen breve en español de un DataFrame de resultados
+    extraídos, usando Claude. Se usa tanto para AccessGudid como Eudamed."""
+    if df is None or df.empty:
+        return "No hay datos para resumir."
+    texto_datos = df.to_csv(index=False)
+    if len(texto_datos) > 12000:
+        texto_datos = texto_datos[:12000] + "\n... (datos truncados por espacio)"
+    return _llamar_gemini_api(
+        system_prompt=(
+            f"Eres un analista que resume datos de dispositivos médicos "
+            f"extraídos de {etiqueta_fuente}. Con la tabla en formato CSV que "
+            "se te entrega a continuación, escribe un resumen breve en "
+            "español (máximo 8 líneas, en viñetas) destacando: fabricantes "
+            "más frecuentes, posibles duplicados o inconsistencias, y "
+            "cuántos registros quedaron sin encontrar o con error. No "
+            "inventes datos que no estén en la tabla."
+        ),
+        mensajes=[{"role": "user", "content": texto_datos}],
+        modelo=MODELO_IA_CALIDAD,
+        max_tokens=500,
+    )
+
+
+def _obtener_o_crear_hoja(nombre_hoja, encabezados):
+    """Devuelve la pestaña de Google Sheets indicada, creándola con sus
+    encabezados si todavía no existe."""
+    client = get_gspread_client()
+    doc = client.open_by_key(SHEET_ID)
+    try:
+        hoja = doc.worksheet(nombre_hoja)
+    except Exception:
+        hoja = doc.add_worksheet(title=nombre_hoja, rows=2000, cols=len(encabezados) + 2)
+        hoja.append_row(encabezados, value_input_option='RAW')
+    return hoja
+
+
+def guardar_resultados_accessgudid(usuario, filas):
+    """Guarda cada fila extraída de AccessGudid en una pestaña histórica de
+    Google Sheets (además del conteo que ya se guarda en 'Logs'), para que
+    el asistente de IA y los resúmenes tengan datos reales que consultar."""
+    if not filas:
+        return
+    try:
+        encabezados = ["Fecha", "Usuario", "Referencia_Original", "Primary_DI_Number",
+                       "Nombre_Empresa_FDA", "Codigo_GMDN", "Definicion_GMDN",
+                       "Estado_GMDN", "Issuing_Agency"]
+        hoja = _obtener_o_crear_hoja("ResultadosAccessGudid", encabezados)
+        timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        filas_excel = [
+            [timestamp, usuario,
+             f.get("Referencia_Original", ""), f.get("Primary_DI_Number", ""),
+             f.get("Nombre_Empresa_FDA", ""), f.get("Codigo_GMDN", ""),
+             f.get("Definicion_GMDN", ""), f.get("Estado_GMDN", ""),
+             f.get("Issuing_Agency", "")]
+            for f in filas
+        ]
+        hoja.append_rows(filas_excel, value_input_option='RAW')
+    except Exception as e:
+        st.warning(f"No se pudieron guardar los resultados en el histórico de Google Sheets: {e}")
+
+
+def guardar_resultados_eudamed(usuario, filas):
+    """Igual que guardar_resultados_accessgudid, pero para los resultados
+    de Eudamed."""
+    if not filas:
+        return
+    try:
+        encabezados = ["Fecha", "Usuario", "Referencia_Original", "Codigo_UDI_DI",
+                       "Agencia_Emisora", "Nombre_Dispositivo", "Fabricante"]
+        hoja = _obtener_o_crear_hoja("ResultadosEudamed", encabezados)
+        timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        filas_excel = [
+            [timestamp, usuario,
+             f.get("Referencia_Original", ""), f.get("Codigo_UDI_DI", ""),
+             f.get("Agencia_Emisora", ""), f.get("Nombre_Dispositivo", ""),
+             f.get("Fabricante", "")]
+            for f in filas
+        ]
+        hoja.append_rows(filas_excel, value_input_option='RAW')
+    except Exception as e:
+        st.warning(f"No se pudieron guardar los resultados en el histórico de Google Sheets: {e}")
+
+
+def _construir_contexto_chat_ia():
+    """Lee las pestañas históricas de Google Sheets (Logs + resultados de
+    ambas fuentes) y arma un texto compacto para dárselo como contexto al
+    asistente conversacional. Se queda solo con las filas más recientes de
+    cada pestaña para no disparar el tamaño del prompt."""
+    try:
+        client = get_gspread_client()
+        doc = client.open_by_key(SHEET_ID)
+        partes = []
+        for nombre_hoja, max_filas in [("Logs", 150), ("ResultadosAccessGudid", 300), ("ResultadosEudamed", 300)]:
+            try:
+                hoja = doc.worksheet(nombre_hoja)
+                datos = hoja.get_all_values()
+                if len(datos) > 1:
+                    encabezado, filas = datos[0], datos[1:][-max_filas:]
+                    texto_tabla = " | ".join(encabezado) + "\n"
+                    texto_tabla += "\n".join(" | ".join(f) for f in filas)
+                    partes.append(f"### Hoja: {nombre_hoja} (mostrando {len(filas)} filas más recientes)\n{texto_tabla}")
+            except Exception:
+                continue
+        return "\n\n".join(partes) if partes else "Todavía no hay datos históricos guardados."
+    except Exception as e:
+        return f"(No se pudo cargar el contexto desde Google Sheets: {e})"
+
+
+def _responder_chat_ia(pregunta):
+    if st.session_state.get("contexto_chat_ia") is None:
+        with st.spinner("Cargando datos históricos..."):
+            st.session_state["contexto_chat_ia"] = _construir_contexto_chat_ia()
+
+    system_prompt = (
+        "Eres el asistente de la plataforma 'Oficina Virtual de Dispositivos "
+        "Médicos'. Ayudas a interpretar datos de dispositivos médicos "
+        "extraídos de AccessGUDID (FDA) y Eudamed (UE). Responde siempre en "
+        "español, de forma breve y concreta, basándote ÚNICAMENTE en los "
+        "datos proporcionados a continuación. Si la respuesta no se puede "
+        "deducir de estos datos, dilo claramente en vez de inventar.\n\n"
+        f"DATOS DISPONIBLES:\n{st.session_state['contexto_chat_ia']}"
+    )
+    mensajes = st.session_state["historial_chat_ia"] + [{"role": "user", "content": pregunta}]
+    return _llamar_gemini_api(system_prompt, mensajes, modelo=MODELO_IA_CALIDAD, max_tokens=700)
+
+
+def _renderizar_asistente_flotante_ia():
+    """Dibuja el botón/panel flotante del asistente de IA, visible en
+    cualquier sección de la app (se llama una sola vez, fuera del bloque
+    if/elif de las distintas vistas)."""
+    if not st.session_state["mostrar_chat_ia"]:
+        with st.container(key="boton_flotante_ia"):
+            if st.button("🤖", key="btn_abrir_chat_ia", help="Asistente de IA"):
+                st.session_state["mostrar_chat_ia"] = True
+                st.rerun()
+        return
+
+    with st.container(key="panel_flotante_ia"):
+        col_titulo_ia, col_cerrar_ia = st.columns([5, 1])
+        with col_titulo_ia:
+            st.markdown("**🤖 Asistente IA**")
+        with col_cerrar_ia:
+            if st.button("✕", key="btn_cerrar_chat_ia"):
+                st.session_state["mostrar_chat_ia"] = False
+                st.rerun()
+
+        st.caption("Pregunta sobre tu historial y resultados extraídos.")
+
+        with st.container(height=280):
+            if not st.session_state["historial_chat_ia"]:
+                st.caption("👋 Aún no hay mensajes. ¡Hazme una pregunta!")
+            for m in st.session_state["historial_chat_ia"]:
+                with st.chat_message("user" if m["role"] == "user" else "assistant"):
+                    st.write(m["content"])
+
+        with st.form(key="form_chat_ia", clear_on_submit=True):
+            pregunta_ia = st.text_input(
+                "Pregunta", key="txt_chat_ia", label_visibility="collapsed",
+                placeholder="Ej: ¿qué fabricantes se repiten más?"
+            )
+            enviado_ia = st.form_submit_button("Enviar", use_container_width=True)
+
+        if enviado_ia and pregunta_ia.strip():
+            st.session_state["historial_chat_ia"].append({"role": "user", "content": pregunta_ia.strip()})
+            try:
+                with st.spinner("Pensando..."):
+                    respuesta_ia = _responder_chat_ia(pregunta_ia.strip())
+            except Exception as e:
+                respuesta_ia = f"⚠️ No se pudo responder: {e}"
+            st.session_state["historial_chat_ia"].append({"role": "assistant", "content": respuesta_ia})
+            st.rerun()
+
+# ==========================================================
 # CONFIGURACIÓN DE LA PÁGINA
 # ==========================================================
 st.set_page_config(page_title="Extractor AccessGUDID FDA", page_icon="🔬", layout="wide")
@@ -571,6 +852,9 @@ if "usuario_activo_real"   not in st.session_state: st.session_state["usuario_ac
 if "seccion_activa"        not in st.session_state: st.session_state["seccion_activa"]        = "Inicio"
 if "lista_filtros_company" not in st.session_state: st.session_state["lista_filtros_company"] = [""]
 if "mostrar_modal_perfil"  not in st.session_state: st.session_state["mostrar_modal_perfil"]  = False
+if "mostrar_chat_ia"       not in st.session_state: st.session_state["mostrar_chat_ia"]       = False
+if "historial_chat_ia"     not in st.session_state: st.session_state["historial_chat_ia"]     = []
+if "contexto_chat_ia"      not in st.session_state: st.session_state["contexto_chat_ia"]      = None
 
 # ==========================================================
 # CSS GLOBAL (LOGIN + INTERIOR)
@@ -886,6 +1170,44 @@ div[data-testid="stFileUploadDropzone"] button * { color: white !important; }
 
 ::-webkit-scrollbar { width: 5px; height: 5px; }
 ::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 3px; }
+
+/* ══════════════════════════════════════════════════════════
+   ASISTENTE IA FLOTANTE (botón + panel)
+   Usa contenedores con 'key' (st.container(key=...)), que Streamlit
+   marca con una clase CSS estable '.st-key-<key>' — así se puede
+   posicionar con position:fixed sin depender de selectores frágiles.
+══════════════════════════════════════════════════════════ */
+.st-key-boton_flotante_ia {
+    position: fixed !important;
+    bottom: 24px;
+    right: 24px;
+    z-index: 99999 !important;
+}
+.st-key-boton_flotante_ia button {
+    border-radius: 50% !important;
+    width: 58px !important;
+    height: 58px !important;
+    font-size: 24px !important;
+    box-shadow: 0 6px 22px rgba(0,0,0,0.32) !important;
+    background-color: #1a365d !important;
+}
+
+.st-key-panel_flotante_ia {
+    position: fixed !important;
+    bottom: 24px;
+    right: 24px;
+    width: 380px !important;
+    max-width: 92vw !important;
+    z-index: 99999 !important;
+    background-color: #ffffff !important;
+    border-radius: 16px !important;
+    box-shadow: 0 10px 42px rgba(0,0,0,0.30) !important;
+    padding: 16px 18px 10px !important;
+    border: 1px solid #dbe3ef !important;
+}
+.st-key-panel_flotante_ia button {
+    padding: 4px 10px !important;
+}
 </style>
 """
 
@@ -1085,6 +1407,9 @@ else:
             st.session_state["seccion_activa"] = "Perfil"
             st.rerun()
         st.markdown('</div>', unsafe_allow_html=True)
+
+    # ── ASISTENTE IA FLOTANTE (visible en cualquier sección) ─────────────
+    _renderizar_asistente_flotante_ia()
 
     # ==========================================================
     # VISTA 0: MI PERFIL
@@ -1322,26 +1647,7 @@ else:
                                     gmdn_status = diccionario_estados.get(gmdn_status.lower(), gmdn_status)
 
                                     if gmdn_def and gmdn_def.lower() != "no encontrado":
-                                        try:
-                                            texto_url = gmdn_def.replace('"','').replace("'","")
-                                            partes, pedazos_trad = [], []
-                                            palabras, parte_actual, cuenta = texto_url.split(), [], 0
-                                            for palabra in palabras:
-                                                if cuenta + len(palabra) + 1 > 450:
-                                                    partes.append(" ".join(parte_actual)); parte_actual=[palabra]; cuenta=len(palabra)
-                                                else: parte_actual.append(palabra); cuenta += len(palabra)+1
-                                            if parte_actual: partes.append(" ".join(parte_actual))
-                                            for parte in partes:
-                                                r_t = requests.get(
-                                                    f"https://api.mymemory.translated.net/get?q={urllib.parse.quote(parte)}&langpair=en|es",
-                                                    timeout=5
-                                                )
-                                                if r_t.status_code == 200:
-                                                    trad = r_t.json().get("responseData",{}).get("translatedText","")
-                                                    pedazos_trad.append(trad if trad and "MYMEMORY" not in trad else parte)
-                                                else: pedazos_trad.append(parte)
-                                            gmdn_def = " ".join(pedazos_trad).strip()
-                                        except: pass
+                                        gmdn_def = _traducir_gmdn_con_ia(gmdn_def.replace('"', '').replace("'", ""))
 
                                     issuing = "No encontrado"
                                     for i2, l in enumerate(lineas):
@@ -1391,6 +1697,8 @@ else:
                 texto_estado.empty(); barra_custom.empty()
                 st.success("✨ ¡Extracción completada al 100%!")
                 registrar_log(st.session_state["usuario_activo_real"], f"Extracción masiva AccessGudid ({total_refs} refs)", len(lista_resultados))
+                guardar_resultados_accessgudid(st.session_state["usuario_activo_real"], lista_resultados)
+                st.session_state["contexto_chat_ia"] = None  # refresca el contexto del asistente con estos datos nuevos
 
                 df_final = pd.DataFrame(lista_resultados)
                 output = io.BytesIO()
@@ -1403,6 +1711,13 @@ else:
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                     use_container_width=True
                 )
+
+                if st.button("🤖 Generar resumen con IA", key="btn_resumen_ia_accessgudid", use_container_width=True):
+                    with st.spinner("Generando resumen con IA..."):
+                        try:
+                            st.info(_generar_resumen_ia(df_final, "AccessGUDID (FDA)"))
+                        except Exception as e:
+                            st.error(f"No se pudo generar el resumen: {e}")
 
             elif not archivo_cargado:
                 st.info("👈 Cargue un archivo en el panel izquierdo para activar la monitorización.")
@@ -1517,6 +1832,8 @@ else:
                     f"Extracción masiva Eudamed ({total_refs_eu} refs)",
                     len(lista_resultados_eu)
                 )
+                guardar_resultados_eudamed(st.session_state["usuario_activo_real"], lista_resultados_eu)
+                st.session_state["contexto_chat_ia"] = None  # refresca el contexto del asistente con estos datos nuevos
 
                 df_final_eu = pd.DataFrame(lista_resultados_eu)
                 output_eu = io.BytesIO()
@@ -1529,6 +1846,13 @@ else:
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                     use_container_width=True
                 )
+
+                if st.button("🤖 Generar resumen con IA", key="btn_resumen_ia_eudamed", use_container_width=True):
+                    with st.spinner("Generando resumen con IA..."):
+                        try:
+                            st.info(_generar_resumen_ia(df_final_eu, "Eudamed (Unión Europea)"))
+                        except Exception as e:
+                            st.error(f"No se pudo generar el resumen: {e}")
 
             elif not archivo_eudamed:
                 st.info("👈 Cargue un archivo en el panel izquierdo para activar la monitorización.")
@@ -1724,5 +2048,5 @@ else:
                 <a href="#">Tratamiento de datos</a>
                 <a href="#">Mesa de Ayuda</a>
             </div>
-            <p>v 1.4.26 © Invima 2026. Todos los derechos reservados.</p>
+            <p>v 1.5.26 © Invima 2026. Todos los derechos reservados.</p>
         </div>""", unsafe_allow_html=True)
