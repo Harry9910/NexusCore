@@ -1,4 +1,5 @@
 import streamlit as st
+import streamlit.components.v1 as components
 import pandas as pd
 import requests
 import urllib.parse
@@ -786,6 +787,37 @@ def _responder_chat_ia(pregunta):
     return _llamar_gemini_api(system_prompt, mensajes, modelo=MODELO_IA_CALIDAD, max_tokens=700)
 
 
+def _arreglar_posicion_flotante_ia():
+    """Streamlit envuelve el contenido en una capa interna que, en
+    algunas versiones, tiene una transformación CSS (usada para
+    animaciones). Eso hace que 'position: fixed' deje de calcularse
+    respecto a toda la ventana del navegador y en cambio quede pegado al
+    final del contenido de la página. Este script mueve nuestros
+    contenedores flotantes para que sean hijos directos de <body>, así
+    sí quedan fijos en la esquina sin importar esa estructura interna.
+    Se ejecuta dentro de un iframe invisible (de ahí el 'window.parent')
+    porque es la única forma confiable de que el <script> realmente se
+    ejecute en Streamlit (los <script> insertados vía st.markdown no se
+    ejecutan, por una limitación del navegador)."""
+    components.html(
+        """
+        <script>
+        (function() {
+            const doc = window.parent.document;
+            ["st-key-boton_flotante_ia", "st-key-panel_flotante_ia"].forEach(function(clase) {
+                const el = doc.querySelector("." + clase);
+                if (el && el.parentElement !== doc.body) {
+                    doc.body.appendChild(el);
+                }
+            });
+        })();
+        </script>
+        """,
+        height=0,
+        width=0,
+    )
+
+
 def _renderizar_asistente_flotante_ia():
     """Dibuja el botón/panel flotante del asistente de IA, visible en
     cualquier sección de la app (se llama una sola vez, fuera del bloque
@@ -795,6 +827,7 @@ def _renderizar_asistente_flotante_ia():
             if st.button("🤖", key="btn_abrir_chat_ia", help="Asistente de IA"):
                 st.session_state["mostrar_chat_ia"] = True
                 st.rerun()
+        _arreglar_posicion_flotante_ia()
         return
 
     with st.container(key="panel_flotante_ia"):
@@ -831,6 +864,8 @@ def _renderizar_asistente_flotante_ia():
                 respuesta_ia = f"⚠️ No se pudo responder: {e}"
             st.session_state["historial_chat_ia"].append({"role": "assistant", "content": respuesta_ia})
             st.rerun()
+
+    _arreglar_posicion_flotante_ia()
 
 # ==========================================================
 # CONFIGURACIÓN DE LA PÁGINA
