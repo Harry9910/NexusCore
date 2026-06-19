@@ -197,11 +197,10 @@ def buscar_logo(nombre_base):
     return ""
 
 # ==========================================================
-# FUNCIONES EUDAMED (NAVEGADOR AUTOMATIZADO / SELENIUM)
+# FUNCIONES EUDAMED — VERSIÓN CORREGIDA
 # ==========================================================
 
 URL_EUDAMED_HOME = "https://ec.europa.eu/tools/eudamed/eudamed"
-URL_EUDAMED_BUSQUEDA = "https://ec.europa.eu/tools/eudamed/#/screen/search-device"
 LIMITE_RESULTADOS_POR_REFERENCIA_EUDAMED = 15
 
 
@@ -231,19 +230,6 @@ def _aceptar_cookies_eudamed(driver, espera=6):
             time.sleep(1.5)
     except Exception:
         pass
-
-
-def _abrir_pantalla_busqueda_eudamed(driver):
-    driver.get(URL_EUDAMED_HOME)
-    _aceptar_cookies_eudamed(driver)
-    enlace_devices = _esperar_eudamed(driver, 30).until(
-        EC.element_to_be_clickable((
-            By.XPATH,
-            "//a[normalize-space(text())='Devices, Systems, Procedure packs'] "
-            "| //*[normalize-space(text())='Devices, Systems, Procedure packs']"
-        ))
-    )
-    _clic_js(driver, enlace_devices)
 
 
 def _crear_driver_eudamed():
@@ -282,15 +268,25 @@ def _crear_driver_eudamed():
             "'chromium' y 'chromium-driver', y que 'selenium' esté en requirements.txt."
         ) from e
 
-    driver.set_page_load_timeout(45)
+    driver.set_page_load_timeout(60)
     return driver
 
 
-def _esperar_eudamed(driver, segundos=20):
+def _esperar(driver, segundos=20):
     return WebDriverWait(driver, segundos)
 
 
+def _texto_seguro(driver, by, value, default="No encontrado"):
+    """Intenta obtener el texto de un elemento, devuelve default si no lo encuentra."""
+    try:
+        el = driver.find_element(by, value)
+        return el.text.strip() or default
+    except Exception:
+        return default
+
+
 def _poner_status_all_eudamed(driver):
+    """Intenta seleccionar 'All' en el dropdown Status para incluir dispositivos obsoletos."""
     try:
         etiqueta_status = driver.find_element(By.XPATH, "//label[normalize-space(text())='Status']")
         contenedor = etiqueta_status.find_element(By.XPATH, "./..")
@@ -300,7 +296,7 @@ def _poner_status_all_eudamed(driver):
             "[contains(@class,'dropdown') or contains(@class,'select') or @role='combobox']"
         )
         _clic_js(driver, control)
-        opcion_all = _esperar_eudamed(driver, 8).until(
+        opcion_all = _esperar(driver, 8).until(
             EC.presence_of_element_located((
                 By.XPATH,
                 "//li[normalize-space(text())='All'] | //*[@role='option'][normalize-space(text())='All']"
@@ -313,58 +309,55 @@ def _poner_status_all_eudamed(driver):
         return False
 
 
-def _obtener_valor_por_etiqueta_eudamed(driver, etiqueta):
-    xpaths = [
-        f"//tr[.//td[1][normalize-space(text())='{etiqueta}']]/td[2]",
-        f"//tr[.//th[normalize-space(text())='{etiqueta}']]/td[1]",
-        f"//*[self::div or self::dt or self::span][normalize-space(text())='{etiqueta}']/following-sibling::*[1]",
-        f"//*[normalize-space(text())='{etiqueta}']/parent::*/following-sibling::*[1]",
-        f"//*[contains(normalize-space(text()),'{etiqueta}')]/ancestor::tr[1]/td[last()]",
-    ]
-    for xp in xpaths:
-        try:
-            el = driver.find_element(By.XPATH, xp)
-            texto = el.text.strip()
-            if texto and texto != etiqueta:
-                return texto
-        except Exception:
-            continue
-    return "No encontrado"
-
-
-def _ir_a_seccion_detalle_eudamed(driver, nombre_seccion):
-    xp = (
-        f"//*[self::a or self::li or self::div or self::button]"
-        f"[contains(normalize-space(text()), '{nombre_seccion}')]"
-    )
-    elemento = _esperar_eudamed(driver, 12).until(
-        EC.element_to_be_clickable((By.XPATH, xp)),
-        message=(
-            f"No se encontró (o no se pudo pulsar) la sección '{nombre_seccion}' "
-            "en la página de detalle del dispositivo."
-        )
-    )
-    _clic_js(driver, elemento)
-    time.sleep(1.0)
-
-
 def _iniciar_busqueda_eudamed(driver, referencia, primera_vez):
+    """
+    Navega al formulario de búsqueda de Eudamed, ingresa la referencia y ejecuta la búsqueda.
+    En la primera llamada navega desde la home; en las siguientes usa el enlace 'New search'.
+    """
     if primera_vez:
-        _abrir_pantalla_busqueda_eudamed(driver)
-    else:
-        enlace_nueva = _esperar_eudamed(driver, 15).until(
-            EC.element_to_be_clickable((By.XPATH, "//*[normalize-space(text())='New search']"))
+        driver.get(URL_EUDAMED_HOME)
+        _aceptar_cookies_eudamed(driver)
+        # Clic en "Devices, Systems, Procedure packs"
+        enlace_devices = _esperar(driver, 30).until(
+            EC.element_to_be_clickable((
+                By.XPATH,
+                "//a[normalize-space(text())='Devices, Systems, Procedure packs'] "
+                "| //*[normalize-space(text())='Devices, Systems, Procedure packs']"
+            ))
         )
-        _clic_js(driver, enlace_nueva)
+        _clic_js(driver, enlace_devices)
+    else:
+        # Volvemos al formulario usando "New search"
+        try:
+            enlace_nueva = _esperar(driver, 15).until(
+                EC.element_to_be_clickable((By.XPATH, "//*[normalize-space(text())='New search']"))
+            )
+            _clic_js(driver, enlace_nueva)
+        except TimeoutException:
+            # Si no aparece "New search", navegamos directamente a la home de nuevo
+            driver.get(URL_EUDAMED_HOME)
+            _aceptar_cookies_eudamed(driver, espera=3)
+            enlace_devices = _esperar(driver, 30).until(
+                EC.element_to_be_clickable((
+                    By.XPATH,
+                    "//a[normalize-space(text())='Devices, Systems, Procedure packs'] "
+                    "| //*[normalize-space(text())='Devices, Systems, Procedure packs']"
+                ))
+            )
+            _clic_js(driver, enlace_devices)
 
-    _esperar_eudamed(driver, 30).until(
-        EC.presence_of_element_located((By.XPATH, "//label[contains(., 'Reference') and contains(., 'Catalogue')]"))
+    # Esperar a que aparezca el campo Reference / Catalogue
+    _esperar(driver, 30).until(
+        EC.presence_of_element_located((
+            By.XPATH, "//label[contains(., 'Reference') and contains(., 'Catalogue')]"
+        ))
     )
 
     _aceptar_cookies_eudamed(driver, espera=3)
     _poner_status_all_eudamed(driver)
 
-    campo_ref = _esperar_eudamed(driver, 15).until(
+    # Ingresar la referencia
+    campo_ref = _esperar(driver, 15).until(
         EC.element_to_be_clickable((
             By.XPATH,
             "//label[contains(., 'Reference') and contains(., 'Catalogue')]/following::input[1]"
@@ -373,8 +366,9 @@ def _iniciar_busqueda_eudamed(driver, referencia, primera_vez):
     campo_ref.clear()
     campo_ref.send_keys(referencia)
 
-    boton_buscar = _esperar_eudamed(driver, 10).until(
-        EC.presence_of_element_located((
+    # Clic en Search
+    boton_buscar = _esperar(driver, 10).until(
+        EC.element_to_be_clickable((
             By.XPATH,
             "//label[contains(., 'Reference') and contains(., 'Catalogue')]"
             "/following::button[normalize-space(.)='Search'][1] "
@@ -384,7 +378,8 @@ def _iniciar_busqueda_eudamed(driver, referencia, primera_vez):
     )
     _clic_js(driver, boton_buscar)
 
-    _esperar_eudamed(driver, 30).until(
+    # Esperar resultados o mensaje de "no encontrado"
+    _esperar(driver, 30).until(
         EC.any_of(
             EC.presence_of_element_located((By.XPATH, "//*[contains(text(),'records found')]")),
             EC.presence_of_element_located((By.XPATH, "//*[contains(text(),'No record')]")),
@@ -407,22 +402,193 @@ def _mensaje_error_limpio(e):
     return texto if texto else type(e).__name__
 
 
+# ──────────────────────────────────────────────────────────
+# CORRECCIÓN PRINCIPAL: extracción de datos en página detalle
+# ──────────────────────────────────────────────────────────
+
+def _obtener_valor_celda_detalle(driver, etiqueta):
+    """
+    Busca en la página de detalle de un UDI-DI el valor asociado a una etiqueta dada.
+    Prueba múltiples estrategias XPath para cubrir los distintos layouts de Eudamed.
+    """
+    xpaths = [
+        # Tabla estándar: <tr><td>Etiqueta</td><td>Valor</td></tr>
+        f"//tr[td[normalize-space(text())='{etiqueta}']]/td[2]",
+        f"//tr[td[normalize-space(.)='{etiqueta}']]/td[last()]",
+        # Tabla con <th>
+        f"//tr[th[normalize-space(text())='{etiqueta}']]/td[1]",
+        # dl / dt / dd
+        f"//dt[normalize-space(text())='{etiqueta}']/following-sibling::dd[1]",
+        # div con label + valor
+        f"//*[normalize-space(text())='{etiqueta}']/following-sibling::*[1]",
+        f"//*[normalize-space(text())='{etiqueta}']/parent::*/following-sibling::*[1]",
+        # Partial match como último recurso
+        f"//*[contains(normalize-space(text()),'{etiqueta}')]/ancestor::tr[1]/td[last()]",
+    ]
+    for xp in xpaths:
+        try:
+            elementos = driver.find_elements(By.XPATH, xp)
+            for el in elementos:
+                texto = el.text.strip()
+                if texto and texto != etiqueta:
+                    return texto
+        except Exception:
+            continue
+    return "No encontrado"
+
+
+def _ir_a_seccion_eudamed(driver, nombre_seccion):
+    """
+    Hace clic en una pestaña/sección dentro de la página de detalle de un UDI-DI.
+    Prueba múltiples selectores y espera a que el contenido cargue.
+    
+    CORRECCIÓN: ampliamos los selectores y agregamos espera de carga de contenido.
+    """
+    xpaths_seccion = [
+        # Pestaña exacta
+        f"//li[normalize-space(.)='{nombre_seccion}']//a",
+        f"//a[normalize-space(text())='{nombre_seccion}']",
+        # Pestaña con texto contenido (match parcial)
+        f"//li[contains(normalize-space(.),'{nombre_seccion}')]//a",
+        f"//a[contains(normalize-space(text()),'{nombre_seccion}')]",
+        # Botón o div clickable con ese texto
+        f"//button[contains(normalize-space(text()),'{nombre_seccion}')]",
+        f"//*[@role='tab'][contains(normalize-space(.),'{nombre_seccion}')]",
+        # Spans dentro de pestañas
+        f"//li//*[contains(normalize-space(text()),'{nombre_seccion}')]",
+        f"//*[contains(@class,'tab') or contains(@class,'nav')]//*[contains(normalize-space(text()),'{nombre_seccion}')]",
+    ]
+
+    elemento_encontrado = None
+    for xp in xpaths_seccion:
+        try:
+            elemento_encontrado = _esperar(driver, 8).until(
+                EC.element_to_be_clickable((By.XPATH, xp))
+            )
+            break
+        except Exception:
+            continue
+
+    if elemento_encontrado is None:
+        raise TimeoutException(
+            f"No se encontró (o no se pudo pulsar) la sección '{nombre_seccion}' "
+            "en la página de detalle del dispositivo."
+        )
+
+    _clic_js(driver, elemento_encontrado)
+
+    # Esperar a que el contenido de la sección cargue (tabla o al menos algún texto)
+    try:
+        _esperar(driver, 10).until(
+            EC.presence_of_element_located((By.XPATH, "//table | //dl | //dt"))
+        )
+    except Exception:
+        pass
+    time.sleep(1.0)
+
+
+def _extraer_codigo_udi_y_agencia(driver):
+    """
+    Extrae el código UDI-DI y la agencia emisora desde la página de detalle.
+    
+    CORRECCIÓN: Eudamed los muestra en campos separados, no en un solo campo con '/'.
+    Buscamos ambos por separado y también intentamos el campo combinado como fallback.
+    """
+    # Intento 1: campos separados (layout más común en Eudamed)
+    codigo = _obtener_valor_celda_detalle(driver, "UDI-DI code")
+    agencia = _obtener_valor_celda_detalle(driver, "Issuing entity")
+
+    # Si no se encontró por separado, intentar campo combinado con '/'
+    if codigo == "No encontrado":
+        combinado = _obtener_valor_celda_detalle(driver, "UDI-DI code / Issuing entity")
+        if combinado != "No encontrado" and "/" in combinado:
+            partes = [p.strip() for p in combinado.split("/")]
+            codigo = partes[0]
+            agencia = partes[-1] if len(partes) > 1 else "No encontrado"
+        elif combinado != "No encontrado":
+            codigo = combinado
+
+    # Intento 2: buscar el código directamente en la URL o en campos destacados
+    if codigo == "No encontrado":
+        try:
+            # A veces aparece como encabezado h2/h3 de la página de detalle
+            codigo = _texto_seguro(
+                driver, By.XPATH,
+                "//h2[contains(@class,'udi')] | //h3[contains(@class,'udi')] "
+                "| //*[contains(@class,'primary-di')]",
+                "No encontrado"
+            )
+        except Exception:
+            pass
+
+    # Intento 3: buscar la agencia por variantes de etiqueta
+    if agencia == "No encontrado":
+        for etiqueta_agencia in ["Issuing entity code", "Issuing Agency", "Issuing Entity"]:
+            agencia = _obtener_valor_celda_detalle(driver, etiqueta_agencia)
+            if agencia != "No encontrado":
+                break
+
+    return codigo, agencia
+
+
+def _extraer_nombre_dispositivo(driver):
+    """
+    Extrae el nombre del dispositivo desde la sección 'Basic UDI-DI details'.
+    
+    CORRECCIÓN: probamos múltiples etiquetas que usa Eudamed para este campo.
+    """
+    for etiqueta in ["Device name", "Trade/proprietary name", "Device trade name",
+                     "Name", "Trade name", "Commercial name"]:
+        valor = _obtener_valor_celda_detalle(driver, etiqueta)
+        if valor != "No encontrado":
+            return valor
+    return "No encontrado"
+
+
+def _extraer_fabricante(driver):
+    """
+    Extrae el nombre del fabricante desde la sección 'Manufacturer details'.
+    
+    CORRECCIÓN: probamos múltiples etiquetas para el nombre del fabricante.
+    """
+    for etiqueta in ["Organisation name", "Manufacturer name", "Company name",
+                     "Name", "Actor name", "Legal manufacturer"]:
+        valor = _obtener_valor_celda_detalle(driver, etiqueta)
+        if valor != "No encontrado":
+            return valor
+    return "No encontrado"
+
+
 def _procesar_referencia_eudamed(driver, referencia, primera_vez):
+    """
+    Búsqueda completa de una referencia en Eudamed:
+    1. Inicia la búsqueda
+    2. Itera sobre cada resultado en la tabla
+    3. Entra en el detalle y extrae: UDI-DI, agencia, nombre dispositivo, fabricante
+    4. Vuelve al listado para el siguiente resultado
+    
+    CORRECCIONES aplicadas:
+    - _extraer_codigo_udi_y_agencia: busca campos por separado, no solo con '/'
+    - _ir_a_seccion_eudamed: selectores ampliados y espera de carga
+    - _extraer_nombre_dispositivo / _extraer_fabricante: múltiples etiquetas alternativas
+    - Recuperación de error mejorada: si falla driver.back(), reinicia la búsqueda
+    """
     try:
         _iniciar_busqueda_eudamed(driver, referencia, primera_vez)
     except TimeoutException as e:
         raise RuntimeError(
-            f"Tiempo de espera agotado iniciando la búsqueda de '{referencia}' "
-            f"(no se encontró el formulario, el botón Search, o el resultado "
-            f"de la búsqueda dentro del tiempo esperado): {e}"
+            f"Tiempo de espera agotado iniciando la búsqueda de '{referencia}': "
+            f"{_mensaje_error_limpio(e)}"
         ) from e
 
     total = _contar_resultados_eudamed(driver)
     if total == 0:
         return [{
-            "Referencia_Original": referencia, "Codigo_UDI_DI": "Sin resultados",
-            "Agencia_Emisora": "Sin resultados", "Nombre_Dispositivo": "Sin resultados",
-            "Fabricante": "Sin resultados"
+            "Referencia_Original":  referencia,
+            "Codigo_UDI_DI":        "Sin resultados",
+            "Agencia_Emisora":      "Sin resultados",
+            "Nombre_Dispositivo":   "Sin resultados",
+            "Fabricante":           "Sin resultados",
         }]
 
     cantidad_a_procesar = min(total, LIMITE_RESULTADOS_POR_REFERENCIA_EUDAMED)
@@ -430,63 +596,98 @@ def _procesar_referencia_eudamed(driver, referencia, primera_vez):
 
     for indice in range(cantidad_a_procesar):
         try:
-            filas_tabla = driver.find_elements(By.XPATH, "//table//tbody/tr")
+            # Releer filas de la tabla en cada iteración (el DOM puede haberse refrescado)
+            filas_tabla = _esperar(driver, 15).until(
+                EC.presence_of_all_elements_located((By.XPATH, "//table//tbody/tr"))
+            )
             if indice >= len(filas_tabla):
                 break
-            celda_ver = filas_tabla[indice].find_element(
-                By.XPATH, ".//td[last()]//button | .//td[last()]//a"
-            )
+
+            # Clic en el botón/enlace "Ver" / "View" de esa fila
+            try:
+                celda_ver = filas_tabla[indice].find_element(
+                    By.XPATH,
+                    ".//td[last()]//button | .//td[last()]//a "
+                    "| .//button[contains(normalize-space(.),'View')] "
+                    "| .//a[contains(normalize-space(.),'View')]"
+                )
+            except Exception:
+                # Si no hay botón visible, intentar clic directo en la fila
+                celda_ver = filas_tabla[indice]
+
             _clic_js(driver, celda_ver)
 
-            _esperar_eudamed(driver, 25).until(
-                EC.presence_of_element_located((By.XPATH, "//*[contains(text(),'UDI-DI details')]")),
-                message=(
-                    "No se cargó la página de detalle del dispositivo "
-                    "(no apareció el texto 'UDI-DI details') tras pulsar 'Ver'."
+            # Esperar página de detalle
+            _esperar(driver, 25).until(
+                EC.any_of(
+                    EC.presence_of_element_located((By.XPATH, "//*[contains(text(),'UDI-DI details')]")),
+                    EC.presence_of_element_located((By.XPATH, "//*[contains(text(),'UDI-DI code')]")),
+                    EC.presence_of_element_located((By.XPATH, "//table")),
                 )
             )
             _aceptar_cookies_eudamed(driver, espera=2)
+            time.sleep(0.8)
 
-            udi_di_completo = _obtener_valor_por_etiqueta_eudamed(driver, "UDI-DI code / Issuing entity")
-            codigo_udi, agencia = udi_di_completo, ""
-            if "/" in udi_di_completo:
-                partes = [p.strip() for p in udi_di_completo.split("/")]
-                codigo_udi, agencia = partes[0], partes[-1]
+            # ── Extraer UDI-DI y agencia emisora (desde la vista inicial del detalle) ──
+            codigo_udi, agencia = _extraer_codigo_udi_y_agencia(driver)
 
-            _ir_a_seccion_detalle_eudamed(driver, "Basic UDI-DI details")
-            nombre_dispositivo = _obtener_valor_por_etiqueta_eudamed(driver, "Device name")
+            # ── Ir a la sección "Basic UDI-DI details" para el nombre del dispositivo ──
+            nombre_dispositivo = "No encontrado"
+            try:
+                _ir_a_seccion_eudamed(driver, "Basic UDI-DI")
+                nombre_dispositivo = _extraer_nombre_dispositivo(driver)
+            except Exception:
+                # Si falla la pestaña, intentar extraer el nombre desde la vista actual
+                nombre_dispositivo = _extraer_nombre_dispositivo(driver)
 
-            _ir_a_seccion_detalle_eudamed(driver, "Manufacturer details")
-            fabricante = _obtener_valor_por_etiqueta_eudamed(driver, "Organisation name")
+            # ── Ir a la sección "Manufacturer details" para el fabricante ──
+            fabricante = "No encontrado"
+            try:
+                _ir_a_seccion_eudamed(driver, "Manufacturer")
+                fabricante = _extraer_fabricante(driver)
+            except Exception:
+                fabricante = _extraer_fabricante(driver)
 
             filas_resultado.append({
-                "Referencia_Original": referencia,
-                "Codigo_UDI_DI": codigo_udi,
-                "Agencia_Emisora": agencia,
-                "Nombre_Dispositivo": nombre_dispositivo,
-                "Fabricante": fabricante,
+                "Referencia_Original":  referencia,
+                "Codigo_UDI_DI":        codigo_udi,
+                "Agencia_Emisora":      agencia,
+                "Nombre_Dispositivo":   nombre_dispositivo,
+                "Fabricante":           fabricante,
             })
 
-            driver.back()
+            # ── Volver al listado ──
             try:
-                _esperar_eudamed(driver, 12).until(
+                driver.back()
+                _esperar(driver, 15).until(
                     EC.presence_of_element_located((By.XPATH, "//table//tbody/tr"))
                 )
-            except TimeoutException:
+                time.sleep(0.5)
+            except Exception:
+                # Si back() falla o la tabla no reaparece, reiniciamos la búsqueda
                 _iniciar_busqueda_eudamed(driver, referencia, primera_vez=False)
 
         except Exception as e:
             filas_resultado.append({
-                "Referencia_Original": referencia, "Codigo_UDI_DI": "Error",
-                "Agencia_Emisora": "Error", "Nombre_Dispositivo": "Error",
-                "Fabricante": f"Error: {_mensaje_error_limpio(e)}"
+                "Referencia_Original":  referencia,
+                "Codigo_UDI_DI":        "Error",
+                "Agencia_Emisora":      "Error",
+                "Nombre_Dispositivo":   "Error",
+                "Fabricante":           f"Error: {_mensaje_error_limpio(e)}",
             })
+            # Intentar recuperar el estado del navegador
             try:
                 driver.back()
+                time.sleep(1)
             except Exception:
                 pass
+            try:
+                _iniciar_busqueda_eudamed(driver, referencia, primera_vez=False)
+            except Exception:
+                break  # Si no podemos recuperar, salir del loop de esta referencia
 
     return filas_resultado
+
 
 # ==========================================================
 # FUNCIONES DE IA (GEMINI)
@@ -696,9 +897,6 @@ def _responder_chat_ia(pregunta):
 
 # ==========================================================
 # ASISTENTE IA — POPOVER CON BURBUJAS DE CHAT
-# ── CAMBIO APLICADO: mensajes diferenciados visualmente ───
-# • Preguntas del usuario → burbuja azul, alineada a la DERECHA, etiqueta "👤 TÚ"
-# • Respuestas del asistente → burbuja gris clara, alineada a la IZQUIERDA, etiqueta "🤖 ASISTENTE IA"
 # ==========================================================
 def _renderizar_asistente_popover_ia():
     with st.popover("🤖 Asistente IA", use_container_width=True):
@@ -1683,9 +1881,11 @@ else:
                             )
                         except Exception as e:
                             filas_ref = [{
-                                "Referencia_Original": ref, "Codigo_UDI_DI": "Error de navegador",
-                                "Agencia_Emisora": "Error", "Nombre_Dispositivo": "Error",
-                                "Fabricante": f"Error: {_mensaje_error_limpio(e)}"
+                                "Referencia_Original":  ref,
+                                "Codigo_UDI_DI":        "Error de navegador",
+                                "Agencia_Emisora":      "Error",
+                                "Nombre_Dispositivo":   "Error",
+                                "Fabricante":           f"Error: {_mensaje_error_limpio(e)}",
                             }]
 
                         lista_resultados_eu.extend(filas_ref)
@@ -1829,9 +2029,9 @@ else:
 
         with col_agregar:
             st.markdown('<div class="admin-card"><span class="admin-card-title">➕ Agregar Nuevo Usuario</span>', unsafe_allow_html=True)
-            nuevo_usr            = st.text_input("Nombre de usuario",            key="nu",       placeholder="Ej: usuario_nuevo")
+            nuevo_usr            = st.text_input("Nombre de usuario",            key="nu",        placeholder="Ej: usuario_nuevo")
             nuevo_nombre_cuenta  = st.text_input("Nombre completo (opcional)",   key="nu_nombre", placeholder="Ej: Juan Pérez")
-            nuevo_pwd            = st.text_input("Contraseña",       type="password", key="np",  placeholder="Contraseña segura")
+            nuevo_pwd            = st.text_input("Contraseña",       type="password", key="np",   placeholder="Contraseña segura")
             nuevo_pwd2           = st.text_input("Confirmar contraseña", type="password", key="np2", placeholder="Repita la contraseña")
             if st.button("✅ Crear Usuario", key="btn_crear", use_container_width=True):
                 if not nuevo_usr or not nuevo_pwd: st.warning("Complete todos los campos.")
