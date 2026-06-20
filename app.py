@@ -203,11 +203,85 @@ def buscar_logo(nombre_base):
 # la extracción masiva sin perder ninguna lógica existente)
 # ==========================================================
 
+def _procesar_detalle_accessgudid(href, ref, session, headers, company_names_filtro):
+    """Descarga y procesa la ficha de detalle de UN dispositivo. Se separó
+    de _buscar_referencia_accessgudid para poder pedir varios detalles de
+    la misma referencia en paralelo (antes se pedían uno por uno, lo cual
+    era lento cuando una referencia tenía varios dispositivos coincidentes)."""
+    try:
+        res = session.get(f"https://accessgudid.nlm.nih.gov{href}", headers=headers, timeout=15)
+        if res.status_code != 200:
+            return None
+        soup2 = BeautifulSoup(res.text, 'html.parser')
+        texto = soup2.get_text()
+        lineas = [l.strip() for l in texto.split('\n') if l.strip()]
+
+        company = "No encontrado"
+        for i2, l in enumerate(lineas):
+            if "Company Name" in l:
+                company = lineas[i2+1] if l.replace(":", "").strip() == "Company Name" and i2+1 < len(lineas) else l.replace("Company Name", "").replace(":", "").strip()
+                break
+        company = " ".join(company.split()).strip() or "No encontrado"
+        if company_names_filtro and not any(n in company.upper() for n in company_names_filtro):
+            return None
+
+        gmdn_code = "No encontrado"
+        for p in texto.replace(':', ' ').replace('(', ' ').replace(')', ' ').split():
+            if p.isdigit() and len(p) == 5:
+                gmdn_code = p
+                break
+
+        gmdn_def, gmdn_status = "No encontrado", "No encontrado"
+        for i2, l in enumerate(lineas):
+            if "GMDN Term Definition" in l:
+                candidatos = [
+                    x.replace("[?]", "").strip() for x in lineas[i2:]
+                    if x.replace("[?]", "").strip() and not any(
+                        h in x for h in ["GMDN Term Code", "GMDN Term Name",
+                        "GMDN Term Definition", "GMDN Term Status", "Implantable?"]
+                    ) and not (x.strip().isdigit() and len(x.strip()) == 5)
+                ]
+                if len(candidatos) >= 2:
+                    gmdn_def, gmdn_status = candidatos[1], candidatos[2] if len(candidatos) > 2 else candidatos[1]
+                elif len(candidatos) == 1:
+                    gmdn_def = candidatos[0]
+                break
+
+        diccionario_estados = {"active": "Activo", "obsolete": "Obsoleto", "no encontrado": "No encontrado"}
+        gmdn_status = diccionario_estados.get(gmdn_status.lower(), gmdn_status)
+
+        # NOTA: la traducción con IA ya NO se hace aquí. Se hace después,
+        # una sola vez para todas las definiciones únicas encontradas, para
+        # no saturar el límite de peticiones por minuto de Gemini.
+        if gmdn_def and gmdn_def.lower() != "no encontrado":
+            gmdn_def = gmdn_def.replace('"', '').replace("'", "")
+
+        issuing = "No encontrado"
+        for i2, l in enumerate(lineas):
+            if "Issuing Agency" in l:
+                issuing = lineas[i2+1] if l.replace(":", "").strip() == "Issuing Agency" and i2+1 < len(lineas) else l.replace("Issuing Agency", "").replace(":", "").strip()
+                break
+        issuing = " ".join(issuing.split()).strip() or "No encontrado"
+
+        return {
+            "Referencia_Original": ref,
+            "Primary_DI_Number": href.split('/')[-1].strip(),
+            "Nombre_Empresa_FDA": company,
+            "Codigo_GMDN": gmdn_code,
+            "Definicion_GMDN": " ".join(str(gmdn_def).split()).strip(),
+            "Estado_GMDN": " ".join(str(gmdn_status).split()).strip(),
+            "Issuing_Agency": issuing
+        }
+    except Exception:
+        return None
+
+
 def _buscar_referencia_accessgudid(ref, session, headers, company_names_filtro):
     """Busca una referencia en AccessGUDID y devuelve la lista de filas
     encontradas (puede ser más de un dispositivo, o una fila de aviso si
-    no hay coincidencias / hubo error). Es la misma lógica que ya tenías,
-    solo aislada en una función para poder ejecutarla en paralelo."""
+    no hay coincidencias / hubo error). Las fichas de detalle de los
+    dispositivos encontrados se piden en paralelo (hasta 4 a la vez) para
+    acelerar referencias con muchas coincidencias."""
     url_busqueda = f"https://accessgudid.nlm.nih.gov/devices/search?query={urllib.parse.quote(ref)}"
     try:
         response = session.get(url_busqueda, headers=headers, timeout=15)
@@ -228,78 +302,18 @@ def _buscar_referencia_accessgudid(ref, session, headers, company_names_filtro):
             a['href'] for a in soup.find_all('a', href=True)
             if '/devices/' in a['href'] and 'search' not in a['href']
         ]))
+
         coincidencias = []
-        for href in enlaces:
-            try:
-                res = session.get(f"https://accessgudid.nlm.nih.gov{href}", headers=headers, timeout=15)
-                if res.status_code != 200:
-                    continue
-                soup2 = BeautifulSoup(res.text, 'html.parser')
-                texto = soup2.get_text()
-                lineas = [l.strip() for l in texto.split('\n') if l.strip()]
-
-                company = "No encontrado"
-                for i2, l in enumerate(lineas):
-                    if "Company Name" in l:
-                        company = lineas[i2+1] if l.replace(":", "").strip() == "Company Name" and i2+1 < len(lineas) else l.replace("Company Name", "").replace(":", "").strip()
-                        break
-                company = " ".join(company.split()).strip() or "No encontrado"
-                if company_names_filtro and not any(n in company.upper() for n in company_names_filtro):
-                    continue
-
-                gmdn_code = "No encontrado"
-                for p in texto.replace(':', ' ').replace('(', ' ').replace(')', ' ').split():
-                    if p.isdigit() and len(p) == 5:
-                        gmdn_code = p
-                        break
-
-                gmdn_def, gmdn_status = "No encontrado", "No encontrado"
-                for i2, l in enumerate(lineas):
-                    if "GMDN Term Definition" in l:
-                        candidatos = [
-                            x.replace("[?]", "").strip() for x in lineas[i2:]
-                            if x.replace("[?]", "").strip() and not any(
-                                h in x for h in ["GMDN Term Code", "GMDN Term Name",
-                                "GMDN Term Definition", "GMDN Term Status", "Implantable?"]
-                            ) and not (x.strip().isdigit() and len(x.strip()) == 5)
-                        ]
-                        if len(candidatos) >= 2:
-                            gmdn_def, gmdn_status = candidatos[1], candidatos[2] if len(candidatos) > 2 else candidatos[1]
-                        elif len(candidatos) == 1:
-                            gmdn_def = candidatos[0]
-                        break
-
-                diccionario_estados = {"active": "Activo", "obsolete": "Obsoleto", "no encontrado": "No encontrado"}
-                gmdn_status = diccionario_estados.get(gmdn_status.lower(), gmdn_status)
-
-                # NOTA: la traducción con IA ya NO se hace aquí dentro del hilo
-                # paralelo. Si 5 hilos llaman a Gemini al mismo tiempo, el
-                # límite de peticiones por minuto del nivel gratuito se agota
-                # de inmediato y todo se atasca esperando reintentos. En vez
-                # de eso, se deja el texto en inglés (limpio de comillas) y
-                # se traduce todo junto, una sola vez, después de que termine
-                # la búsqueda en paralelo (ver bucle de traducción más abajo).
-                if gmdn_def and gmdn_def.lower() != "no encontrado":
-                    gmdn_def = gmdn_def.replace('"', '').replace("'", "")
-
-                issuing = "No encontrado"
-                for i2, l in enumerate(lineas):
-                    if "Issuing Agency" in l:
-                        issuing = lineas[i2+1] if l.replace(":", "").strip() == "Issuing Agency" and i2+1 < len(lineas) else l.replace("Issuing Agency", "").replace(":", "").strip()
-                        break
-                issuing = " ".join(issuing.split()).strip() or "No encontrado"
-
-                coincidencias.append({
-                    "Referencia_Original": ref,
-                    "Primary_DI_Number": href.split('/')[-1].strip(),
-                    "Nombre_Empresa_FDA": company,
-                    "Codigo_GMDN": gmdn_code,
-                    "Definicion_GMDN": " ".join(str(gmdn_def).split()).strip(),
-                    "Estado_GMDN": " ".join(str(gmdn_status).split()).strip(),
-                    "Issuing_Agency": issuing
-                })
-            except Exception:
-                continue
+        if enlaces:
+            with ThreadPoolExecutor(max_workers=min(4, len(enlaces))) as executor_detalle:
+                futuros_detalle = [
+                    executor_detalle.submit(_procesar_detalle_accessgudid, href, ref, session, headers, company_names_filtro)
+                    for href in enlaces
+                ]
+                for futuro_detalle in futuros_detalle:
+                    resultado = futuro_detalle.result()
+                    if resultado is not None:
+                        coincidencias.append(resultado)
 
         if coincidencias:
             return coincidencias
@@ -363,6 +377,21 @@ def _crear_driver_eudamed():
     opciones.add_argument(
         "user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
         "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+    )
+    # OPTIMIZACIÓN DE VELOCIDAD:
+    # - 'eager': Selenium considera la página "cargada" en cuanto el HTML
+    #   está listo, sin esperar a que terminen de cargar imágenes/CSS/fuentes
+    #   de terceros — en un sitio pesado como Eudamed esto ahorra varios
+    #   segundos por navegación.
+    # - Bloquear imágenes: no las necesitamos para leer texto, y cada una
+    #   que no se descarga es tiempo de red que se ahorra.
+    opciones.page_load_strategy = "eager"
+    opciones.add_experimental_option(
+        "prefs",
+        {
+            "profile.managed_default_content_settings.images": 2,
+            "profile.default_content_setting_values.notifications": 2,
+        },
     )
 
     ruta_navegador = (
@@ -1688,6 +1717,12 @@ else:
                 c.strip().upper() for c in st.session_state["lista_filtros_company"] if c.strip()
             ]
 
+            traducir_gmdn = st.checkbox(
+                "🌐 Traducir definiciones GMDN con IA (más lento)",
+                value=False, key="chk_traducir_gmdn",
+                help="Si lo desactivas, la Definición_GMDN queda en inglés pero la extracción es mucho más rápida."
+            )
+
             conectar_boton = st.button(
                 "🚀 Iniciar Extracción AccessGudid", disabled=(archivo_cargado is None),
                 use_container_width=True, key="btn_iniciar_gudid"
@@ -1759,26 +1794,29 @@ else:
                             actualizar_barra_gudid(int(completados / total_refs * 100))
                             tabla_viva.dataframe(pd.DataFrame(lista_resultados), use_container_width=True, height=260)
 
-                    # ── TRADUCCIÓN (un solo paso, sin concurrencia) ──
+                    # ── TRADUCCIÓN (un solo paso, sin concurrencia, opcional) ──
                     # Se traduce aquí, después de la búsqueda en paralelo, para
                     # no saturar el límite de peticiones por minuto de Gemini.
                     # Además, se cachean los textos repetidos (varias referencias
                     # pueden compartir la misma definición GMDN) para no pedirle
-                    # a la IA la misma traducción más de una vez.
-                    definiciones_unicas = sorted(set(
-                        f.get("Definicion_GMDN", "") for f in lista_resultados
-                        if f.get("Definicion_GMDN", "") and f.get("Definicion_GMDN", "").lower() != "no encontrado"
-                    ))
-                    if definiciones_unicas:
-                        texto_estado.info(f"🌐 Traduciendo {len(definiciones_unicas)} definiciones GMDN...")
-                        cache_traduccion = {}
-                        for texto_original in definiciones_unicas:
-                            cache_traduccion[texto_original] = _traducir_gmdn_con_ia(texto_original)
-                        for f in lista_resultados:
-                            original = f.get("Definicion_GMDN", "")
-                            if original in cache_traduccion:
-                                f["Definicion_GMDN"] = cache_traduccion[original]
-                        tabla_viva.dataframe(pd.DataFrame(lista_resultados), use_container_width=True, height=260)
+                    # a la IA la misma traducción más de una vez. Solo se hace
+                    # si el usuario activó el checkbox (por defecto está apagado
+                    # para que la extracción sea lo más rápida posible).
+                    if traducir_gmdn:
+                        definiciones_unicas = sorted(set(
+                            f.get("Definicion_GMDN", "") for f in lista_resultados
+                            if f.get("Definicion_GMDN", "") and f.get("Definicion_GMDN", "").lower() != "no encontrado"
+                        ))
+                        if definiciones_unicas:
+                            texto_estado.info(f"🌐 Traduciendo {len(definiciones_unicas)} definiciones GMDN...")
+                            cache_traduccion = {}
+                            for texto_original in definiciones_unicas:
+                                cache_traduccion[texto_original] = _traducir_gmdn_con_ia(texto_original)
+                            for f in lista_resultados:
+                                original = f.get("Definicion_GMDN", "")
+                                if original in cache_traduccion:
+                                    f["Definicion_GMDN"] = cache_traduccion[original]
+                            tabla_viva.dataframe(pd.DataFrame(lista_resultados), use_container_width=True, height=260)
 
                     texto_estado.empty(); barra_custom.empty()
                     st.success(f"✨ ¡Completado! ({int(time.time()-inicio_tiempo)}s)")
