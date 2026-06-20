@@ -9,6 +9,10 @@ import time
 import io
 import base64
 import shutil
+import json
+import uuid
+import zipfile
+import mimetypes
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -33,11 +37,17 @@ COLUMNAS_USUARIOS = ["usuario", "contraseña", "nombre", "fecha_nacimiento"]
 # FUNCIONES DE CONEXIÓN Y AUTENTICACIÓN
 # ==========================================================
 
-def get_gspread_client():
+def _obtener_credenciales_google():
+    """Construye las credenciales de la cuenta de servicio. Se separó de
+    get_gspread_client() para poder reutilizar las mismas credenciales con
+    la API de Google Drive (Documentación Post-Venta) sin duplicar código."""
     creds_dict = dict(st.secrets["gcp"])
     creds_dict["private_key"] = creds_dict["private_key"].replace("\\n", "\n")
-    creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, SCOPE)
-    return gspread.authorize(creds)
+    return ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, SCOPE)
+
+
+def get_gspread_client():
+    return gspread.authorize(_obtener_credenciales_google())
 
 
 def asegurar_columnas_usuarios(sheet_users):
@@ -196,6 +206,229 @@ def buscar_logo(nombre_base):
         if os.path.exists(ruta):
             return obtener_base64_imagen(ruta)
     return ""
+
+# ==========================================================
+# GOOGLE DRIVE — DOCUMENTACIÓN POST-VENTA
+# ==========================================================
+# Reutiliza la misma cuenta de servicio que ya se usa para Google Sheets
+# (el scope de Drive ya estaba incluido en SCOPE desde el principio).
+# Se trabaja con la API REST de Drive directamente vía 'requests', igual
+# que con Gemini, para no agregar dependencias nuevas.
+#
+# Estructura que se replica en Drive:
+#   Carpeta raíz (la que tú compartiste, [drive] folder_id en Secrets)
+#     └── Fabricante
+#           └── Equipo
+#                 └── Referencia
+#                       └── (los archivos de esa referencia)
+
+def _obtener_id_carpeta_raiz_postventa():
+    try:
+        return st.secrets["drive"]["folder_id"]
+    except Exception:
+        return None
+
+
+def _obtener_token_drive():
+    """Obtiene un token de acceso OAuth2 a partir de las credenciales de
+    la cuenta de servicio, para llamar a la API REST de Drive."""
+    creds = _obtener_credenciales_google()
+    info_token = creds.get_access_token()
+    return info_token.access_token
+
+
+def _drive_listar_hijos(token, parent_id):
+    """Devuelve un diccionario {nombre: {'id':..., 'mimeType':...}} con los
+    hijos directos (carpetas y archivos) de una carpeta de Drive."""
+    resultados = {}
+    page_token = None
+    while True:
+        params = {
+            "q": f"'{parent_id}' in parents and trashed = false",
+            "fields": "nextPageToken, files(id, name, mimeType)",
+            "pageSize": 1000,
+        }
+        if page_token:
+            params["pageToken"] = page_token
+        respuesta = requests.get(
+            "https://www.googleapis.com/drive/v3/files",
+            headers={"Authorization": f"Bearer {token}"},
+            params=params,
+            timeout=30,
+        )
+        respuesta.raise_for_status()
+        datos = respuesta.json()
+        for f in datos.get("files", []):
+            resultados[f["name"]] = {"id": f["id"], "mimeType": f["mimeType"]}
+        page_token = datos.get("nextPageToken")
+        if not page_token:
+            break
+    return resultados
+
+
+def _drive_crear_carpeta(token, nombre, parent_id):
+    respuesta = requests.post(
+        "https://www.googleapis.com/drive/v3/files?fields=id,name",
+        headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+        json={"name": nombre, "mimeType": "application/vnd.google-apps.folder", "parents": [parent_id]},
+        timeout=30,
+    )
+    respuesta.raise_for_status()
+    return respuesta.json()["id"]
+
+
+def _drive_obtener_o_crear_carpeta(token, nombre, parent_id, cache_hijos=None):
+    """Busca una subcarpeta por nombre dentro de parent_id; si no existe,
+    la crea. 'cache_hijos' (opcional) evita listar Drive repetidamente
+    cuando se procesan muchas referencias del mismo fabricante/equipo."""
+    hijos = cache_hijos if cache_hijos is not None else _drive_listar_hijos(token, parent_id)
+    existente = hijos.get(nombre)
+    if existente and existente["mimeType"] == "application/vnd.google-apps.folder":
+        return existente["id"], False  # False = ya existía
+    nuevo_id = _drive_crear_carpeta(token, nombre, parent_id)
+    if cache_hijos is not None:
+        cache_hijos[nombre] = {"id": nuevo_id, "mimeType": "application/vnd.google-apps.folder"}
+    return nuevo_id, True  # True = se creó ahora
+
+
+def _drive_descargar_archivo(token, file_id):
+    """Descarga el contenido binario de un archivo de Drive. Se usa para
+    procesar .zip grandes que el usuario subió directamente a su carpeta
+    de Drive (sin pasar por el límite de carga de Streamlit)."""
+    respuesta = requests.get(
+        f"https://www.googleapis.com/drive/v3/files/{file_id}",
+        headers={"Authorization": f"Bearer {token}"},
+        params={"alt": "media"},
+        timeout=600,
+    )
+    respuesta.raise_for_status()
+    return respuesta.content
+
+
+def _drive_subir_archivo(token, nombre, contenido_bytes, mimetype, parent_id):
+    """Sube un archivo a Drive usando 'multipart upload' construido a mano
+    (multipart/related), siguiendo el formato exacto que pide la API de
+    Drive — los multipart automáticos de 'requests' usan un Content-Type
+    distinto (multipart/form-data) que la API de Drive no garantiza
+    aceptar, así que se arma el cuerpo manualmente para evitar sorpresas."""
+    boundary = uuid.uuid4().hex
+    metadata = json.dumps({"name": nombre, "parents": [parent_id]})
+    cuerpo = (
+        f"--{boundary}\r\n"
+        f"Content-Type: application/json; charset=UTF-8\r\n\r\n"
+        f"{metadata}\r\n"
+        f"--{boundary}\r\n"
+        f"Content-Type: {mimetype}\r\n\r\n"
+    ).encode("utf-8") + contenido_bytes + f"\r\n--{boundary}--".encode("utf-8")
+
+    respuesta = requests.post(
+        "https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id,name",
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Content-Type": f"multipart/related; boundary={boundary}",
+        },
+        data=cuerpo,
+        timeout=120,
+    )
+    respuesta.raise_for_status()
+    return respuesta.json()
+
+
+def _procesar_zip_postventa(bytes_zip, token, carpeta_raiz_id):
+    """Recorre el .zip subido (Fabricante/Equipo/Referencia/archivo) y:
+    - Crea en Drive las carpetas que falten (Fabricante > Equipo > Referencia)
+    - Sube los archivos que no existan todavía en esa referencia
+    - NO sobrescribe ni renombra archivos que ya existan: los reporta como
+      'conflicto pendiente' para que el usuario decida qué hacer.
+    Devuelve una lista de filas (una por archivo procesado) con su estado."""
+    filas = []
+    cache_carpetas_fabricante = _drive_listar_hijos(token, carpeta_raiz_id)
+    cache_carpetas_equipo = {}   # clave: id de carpeta fabricante -> dict hijos
+    cache_carpetas_referencia = {}  # clave: id de carpeta equipo -> dict hijos
+    cache_archivos_referencia = {}  # clave: id de carpeta referencia -> dict hijos
+
+    with zipfile.ZipFile(io.BytesIO(bytes_zip)) as zf:
+        nombres = [n for n in zf.namelist() if not n.endswith("/")]
+
+        # Si todo el .zip viene envuelto en una sola carpeta raíz (común al
+        # comprimir desde Windows/Mac), se detecta y se ignora ese nivel.
+        partes_todas = [n.strip("/").split("/") for n in nombres if n.strip("/")]
+        primeros_segmentos = set(p[0] for p in partes_todas if p)
+        prefijo_a_quitar = None
+        if len(primeros_segmentos) == 1:
+            prefijo_a_quitar = next(iter(primeros_segmentos))
+
+        for nombre_entrada in nombres:
+            ruta = nombre_entrada.strip("/")
+            partes = ruta.split("/")
+            if prefijo_a_quitar and partes and partes[0] == prefijo_a_quitar:
+                partes = partes[1:]
+
+            if len(partes) == 4:
+                fabricante, equipo, referencia, nombre_archivo = partes
+            elif len(partes) == 3:
+                # Equipo sin subcarpeta de referencia: se usa el mismo nombre
+                # del equipo como referencia, para mantener siempre 4 niveles
+                # consistentes dentro de Drive (Fabricante/Equipo/Equipo/archivo).
+                fabricante, equipo, nombre_archivo = partes
+                referencia = equipo
+            else:
+                filas.append({
+                    "Fabricante": "?", "Equipo": "?", "Referencia": "?",
+                    "Archivo": ruta, "Estado": f"⚠ Ignorado (se esperaban 3 o 4 niveles, tiene {len(partes)})"
+                })
+                continue
+
+            if not nombre_archivo:
+                continue
+
+            # Carpeta del fabricante
+            id_fabricante, _ = _drive_obtener_o_crear_carpeta(
+                token, fabricante, carpeta_raiz_id, cache_carpetas_fabricante
+            )
+
+            # Carpeta del equipo
+            if id_fabricante not in cache_carpetas_equipo:
+                cache_carpetas_equipo[id_fabricante] = _drive_listar_hijos(token, id_fabricante)
+            id_equipo, _ = _drive_obtener_o_crear_carpeta(
+                token, equipo, id_fabricante, cache_carpetas_equipo[id_fabricante]
+            )
+
+            # Carpeta de la referencia
+            if id_equipo not in cache_carpetas_referencia:
+                cache_carpetas_referencia[id_equipo] = _drive_listar_hijos(token, id_equipo)
+            id_referencia, _ = _drive_obtener_o_crear_carpeta(
+                token, referencia, id_equipo, cache_carpetas_referencia[id_equipo]
+            )
+
+            # Archivos ya existentes en esa referencia
+            if id_referencia not in cache_archivos_referencia:
+                cache_archivos_referencia[id_referencia] = _drive_listar_hijos(token, id_referencia)
+            archivos_existentes = cache_archivos_referencia[id_referencia]
+
+            if nombre_archivo in archivos_existentes:
+                filas.append({
+                    "Fabricante": fabricante, "Equipo": equipo, "Referencia": referencia,
+                    "Archivo": nombre_archivo, "Estado": "🟡 CONFLICTO: ya existe (no se subió, pendiente de decisión)"
+                })
+                continue
+
+            try:
+                contenido = zf.read(nombre_entrada)
+                mimetype = mimetypes.guess_type(nombre_archivo)[0] or "application/octet-stream"
+                _drive_subir_archivo(token, nombre_archivo, contenido, mimetype, id_referencia)
+                archivos_existentes[nombre_archivo] = {"id": "nuevo", "mimeType": mimetype}
+                filas.append({
+                    "Fabricante": fabricante, "Equipo": equipo, "Referencia": referencia,
+                    "Archivo": nombre_archivo, "Estado": "✅ Subido"
+                })
+            except Exception as e:
+                filas.append({
+                    "Fabricante": fabricante, "Equipo": equipo, "Referencia": referencia,
+                    "Archivo": nombre_archivo, "Estado": f"❌ Error: {e}"
+                })
+
+    return filas
 
 # ==========================================================
 # ACCESSGUDID — FUNCIÓN DE BÚSQUEDA POR REFERENCIA (extraída
@@ -2015,16 +2248,101 @@ else:
                 st.info("👈 Sube un archivo para activar la monitorización.")
 
     # ==========================================================
-    # VISTA 2-C: DOCUMENTACIÓN POST-VENTA (en construcción)
+    # VISTA 2-C: DOCUMENTACIÓN POST-VENTA
     # ==========================================================
     elif st.session_state["seccion_activa"] == "DocumentacionPostVenta":
         st.markdown("<h3 style='color:#0b1d3a;'>📄 Documentación Post-Venta</h3>", unsafe_allow_html=True)
         st.markdown(
-            "<p style='color:#475569;'>Este apartado está en construcción. "
-            "Cuéntame qué necesitas y lo armamos paso a paso.</p>",
+            "<p style='color:#475569;'>Sube un archivo .zip con la estructura "
+            "<b>Fabricante / Equipo / Referencia / archivos</b>. Las carpetas que no "
+            "existan en tu Google Drive se crean automáticamente; las que ya existan "
+            "se reutilizan (así puedes ir alimentando esto con nuevos fabricantes, "
+            "equipos o referencias sin duplicar nada).</p>",
             unsafe_allow_html=True
         )
-        st.info("🚧 Aún no hay nada configurado aquí — listo para que me indiques qué construir.")
+
+        carpeta_raiz_id = _obtener_id_carpeta_raiz_postventa()
+        if not carpeta_raiz_id:
+            st.error(
+                "No hay una carpeta de Google Drive configurada todavía. Agrega en "
+                "Settings → Secrets de Streamlit Cloud:\n\n"
+                "[drive]\nfolder_id = \"el-id-de-tu-carpeta-de-drive\""
+            )
+            st.info(
+                "Recuerda compartir esa carpeta (permiso Editor) con el correo de la "
+                "cuenta de servicio que aparece en tus Secrets, dentro de [gcp] → client_email."
+            )
+        else:
+            archivo_zip = st.file_uploader(
+                "Sube el archivo .zip con la documentación", type=["zip"], key="uploader_postventa"
+            )
+
+            if archivo_zip and st.button(
+                "📤 Procesar y subir a Drive", use_container_width=True, key="btn_procesar_postventa"
+            ):
+                try:
+                    bytes_zip = archivo_zip.read()
+                except Exception as e:
+                    st.error(f"No se pudo leer el archivo .zip: {e}")
+                    st.stop()
+
+                with st.spinner("Conectando con Google Drive..."):
+                    try:
+                        token = _obtener_token_drive()
+                    except Exception as e:
+                        st.error(f"No se pudo obtener acceso a Google Drive: {e}")
+                        st.stop()
+
+                with st.spinner("Procesando carpetas y subiendo archivos... esto puede tardar varios minutos si hay muchos documentos."):
+                    try:
+                        filas_resultado = _procesar_zip_postventa(bytes_zip, token, carpeta_raiz_id)
+                    except zipfile.BadZipFile:
+                        st.error("El archivo subido no es un .zip válido.")
+                        st.stop()
+                    except Exception as e:
+                        st.error(f"Ocurrió un error procesando el .zip: {e}")
+                        st.stop()
+
+                df_resultado = pd.DataFrame(filas_resultado)
+                total_subidos = (df_resultado["Estado"] == "✅ Subido").sum() if not df_resultado.empty else 0
+                total_conflictos = df_resultado["Estado"].str.contains("CONFLICTO", na=False).sum() if not df_resultado.empty else 0
+                total_errores = df_resultado["Estado"].str.contains("❌", na=False).sum() if not df_resultado.empty else 0
+                total_ignorados = df_resultado["Estado"].str.contains("Ignorado", na=False).sum() if not df_resultado.empty else 0
+
+                st.success(
+                    f"✨ Proceso terminado: {total_subidos} archivo(s) subido(s), "
+                    f"{total_conflictos} en conflicto, {total_errores} con error, "
+                    f"{total_ignorados} ignorado(s)."
+                )
+
+                if total_conflictos > 0:
+                    st.warning(
+                        f"⚠ Hay {total_conflictos} archivo(s) que ya existían en su referencia "
+                        "y NO se subieron (para no sobrescribir nada sin tu autorización). "
+                        "Revísalos en la tabla de abajo (estado 'CONFLICTO') y avísame cómo "
+                        "quieres que proceda con ellos."
+                    )
+
+                st.dataframe(df_resultado, use_container_width=True, height=350)
+
+                output_resumen = io.BytesIO()
+                with pd.ExcelWriter(output_resumen, engine='openpyxl') as writer:
+                    df_resultado.to_excel(writer, index=False)
+                st.download_button(
+                    label="📥 Descargar resumen en Excel",
+                    data=output_resumen.getvalue(),
+                    file_name="resumen_documentacion_postventa.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    use_container_width=True
+                )
+
+                registrar_log(
+                    st.session_state["usuario_activo_real"],
+                    f"Carga de documentación post-venta ({total_subidos} archivos subidos, {total_conflictos} conflictos)",
+                    len(filas_resultado)
+                )
+            elif not archivo_zip:
+                st.info("👈 Sube tu archivo .zip para comenzar.")
 
     # ==========================================================
     # VISTA 3: HISTORIALES
