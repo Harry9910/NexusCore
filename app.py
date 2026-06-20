@@ -11,6 +11,7 @@ import base64
 import shutil
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from selenium import webdriver
 from selenium.webdriver.chrome.service import Service
@@ -197,6 +198,118 @@ def buscar_logo(nombre_base):
     return ""
 
 # ==========================================================
+# ACCESSGUDID — FUNCIÓN DE BÚSQUEDA POR REFERENCIA (extraída
+# para poder paralelizarla con ThreadPoolExecutor y así acelerar
+# la extracción masiva sin perder ninguna lógica existente)
+# ==========================================================
+
+def _buscar_referencia_accessgudid(ref, session, headers, company_names_filtro):
+    """Busca una referencia en AccessGUDID y devuelve la lista de filas
+    encontradas (puede ser más de un dispositivo, o una fila de aviso si
+    no hay coincidencias / hubo error). Es la misma lógica que ya tenías,
+    solo aislada en una función para poder ejecutarla en paralelo."""
+    url_busqueda = f"https://accessgudid.nlm.nih.gov/devices/search?query={urllib.parse.quote(ref)}"
+    try:
+        response = session.get(url_busqueda, headers=headers, timeout=15)
+        if response.status_code == 429:
+            time.sleep(8)
+            response = session.get(url_busqueda, headers=headers, timeout=15)
+
+        if response.status_code != 200:
+            return [{
+                "Referencia_Original": ref, "Primary_DI_Number": "No encontrado",
+                "Nombre_Empresa_FDA": "No encontrado", "Codigo_GMDN": "No encontrado",
+                "Definicion_GMDN": "No encontrado", "Estado_GMDN": "No encontrado",
+                "Issuing_Agency": "No encontrado"
+            }]
+
+        soup = BeautifulSoup(response.text, 'html.parser')
+        enlaces = list(dict.fromkeys([
+            a['href'] for a in soup.find_all('a', href=True)
+            if '/devices/' in a['href'] and 'search' not in a['href']
+        ]))
+        coincidencias = []
+        for href in enlaces:
+            try:
+                res = session.get(f"https://accessgudid.nlm.nih.gov{href}", headers=headers, timeout=15)
+                if res.status_code != 200:
+                    continue
+                soup2 = BeautifulSoup(res.text, 'html.parser')
+                texto = soup2.get_text()
+                lineas = [l.strip() for l in texto.split('\n') if l.strip()]
+
+                company = "No encontrado"
+                for i2, l in enumerate(lineas):
+                    if "Company Name" in l:
+                        company = lineas[i2+1] if l.replace(":", "").strip() == "Company Name" and i2+1 < len(lineas) else l.replace("Company Name", "").replace(":", "").strip()
+                        break
+                company = " ".join(company.split()).strip() or "No encontrado"
+                if company_names_filtro and not any(n in company.upper() for n in company_names_filtro):
+                    continue
+
+                gmdn_code = "No encontrado"
+                for p in texto.replace(':', ' ').replace('(', ' ').replace(')', ' ').split():
+                    if p.isdigit() and len(p) == 5:
+                        gmdn_code = p
+                        break
+
+                gmdn_def, gmdn_status = "No encontrado", "No encontrado"
+                for i2, l in enumerate(lineas):
+                    if "GMDN Term Definition" in l:
+                        candidatos = [
+                            x.replace("[?]", "").strip() for x in lineas[i2:]
+                            if x.replace("[?]", "").strip() and not any(
+                                h in x for h in ["GMDN Term Code", "GMDN Term Name",
+                                "GMDN Term Definition", "GMDN Term Status", "Implantable?"]
+                            ) and not (x.strip().isdigit() and len(x.strip()) == 5)
+                        ]
+                        if len(candidatos) >= 2:
+                            gmdn_def, gmdn_status = candidatos[1], candidatos[2] if len(candidatos) > 2 else candidatos[1]
+                        elif len(candidatos) == 1:
+                            gmdn_def = candidatos[0]
+                        break
+
+                diccionario_estados = {"active": "Activo", "obsolete": "Obsoleto", "no encontrado": "No encontrado"}
+                gmdn_status = diccionario_estados.get(gmdn_status.lower(), gmdn_status)
+
+                if gmdn_def and gmdn_def.lower() != "no encontrado":
+                    gmdn_def = _traducir_gmdn_con_ia(gmdn_def.replace('"', '').replace("'", ""))
+
+                issuing = "No encontrado"
+                for i2, l in enumerate(lineas):
+                    if "Issuing Agency" in l:
+                        issuing = lineas[i2+1] if l.replace(":", "").strip() == "Issuing Agency" and i2+1 < len(lineas) else l.replace("Issuing Agency", "").replace(":", "").strip()
+                        break
+                issuing = " ".join(issuing.split()).strip() or "No encontrado"
+
+                coincidencias.append({
+                    "Referencia_Original": ref,
+                    "Primary_DI_Number": href.split('/')[-1].strip(),
+                    "Nombre_Empresa_FDA": company,
+                    "Codigo_GMDN": gmdn_code,
+                    "Definicion_GMDN": " ".join(str(gmdn_def).split()).strip(),
+                    "Estado_GMDN": " ".join(str(gmdn_status).split()).strip(),
+                    "Issuing_Agency": issuing
+                })
+            except Exception:
+                continue
+
+        if coincidencias:
+            return coincidencias
+        return [{
+            "Referencia_Original": "Filtrado", "Primary_DI_Number": "Filtrado",
+            "Nombre_Empresa_FDA": "No coincide", "Codigo_GMDN": "Filtrado",
+            "Definicion_GMDN": "Filtrado", "Estado_GMDN": "Filtrado", "Issuing_Agency": "Filtrado"
+        }]
+    except Exception:
+        return [{
+            "Referencia_Original": ref, "Primary_DI_Number": "Error de Red",
+            "Nombre_Empresa_FDA": "Error", "Codigo_GMDN": "Error",
+            "Definicion_GMDN": "Error", "Estado_GMDN": "Error", "Issuing_Agency": "Error"
+        }]
+
+
+# ==========================================================
 # FUNCIONES EUDAMED — VERSIÓN OPTIMIZADA
 # ==========================================================
 
@@ -268,20 +381,12 @@ def _crear_driver_eudamed():
             "'chromium' y 'chromium-driver', y que 'selenium' esté en requirements.txt."
         ) from e
 
-    driver.set_page_load_timeout(45)  # OPTIMIZADO: reducido de 60 a 45s
+    driver.set_page_load_timeout(45)
     return driver
 
 
 def _esperar(driver, segundos=20):
     return WebDriverWait(driver, segundos)
-
-
-def _texto_seguro(driver, by, value, default="No encontrado"):
-    try:
-        el = driver.find_element(by, value)
-        return el.text.strip() or default
-    except Exception:
-        return default
 
 
 def _poner_status_all_eudamed(driver):
@@ -301,7 +406,7 @@ def _poner_status_all_eudamed(driver):
             ))
         )
         _clic_js(driver, opcion_all)
-        time.sleep(0.5)
+        time.sleep(0.4)
         return True
     except Exception:
         return False
@@ -321,7 +426,7 @@ def _iniciar_busqueda_eudamed(driver, referencia, primera_vez):
         _clic_js(driver, enlace_devices)
     else:
         try:
-            enlace_nueva = _esperar(driver, 15).until(
+            enlace_nueva = _esperar(driver, 12).until(
                 EC.element_to_be_clickable((By.XPATH, "//*[normalize-space(text())='New search']"))
             )
             _clic_js(driver, enlace_nueva)
@@ -337,16 +442,16 @@ def _iniciar_busqueda_eudamed(driver, referencia, primera_vez):
             )
             _clic_js(driver, enlace_devices)
 
-    _esperar(driver, 30).until(
+    _esperar(driver, 25).until(
         EC.presence_of_element_located((
             By.XPATH, "//label[contains(., 'Reference') and contains(., 'Catalogue')]"
         ))
     )
 
-    _aceptar_cookies_eudamed(driver, espera=3)
+    _aceptar_cookies_eudamed(driver, espera=2)
     _poner_status_all_eudamed(driver)
 
-    campo_ref = _esperar(driver, 15).until(
+    campo_ref = _esperar(driver, 12).until(
         EC.element_to_be_clickable((
             By.XPATH,
             "//label[contains(., 'Reference') and contains(., 'Catalogue')]/following::input[1]"
@@ -366,7 +471,7 @@ def _iniciar_busqueda_eudamed(driver, referencia, primera_vez):
     )
     _clic_js(driver, boton_buscar)
 
-    _esperar(driver, 30).until(
+    _esperar(driver, 25).until(
         EC.any_of(
             EC.presence_of_element_located((By.XPATH, "//*[contains(text(),'records found')]")),
             EC.presence_of_element_located((By.XPATH, "//*[contains(text(),'No record')]")),
@@ -411,14 +516,7 @@ def _obtener_valor_celda_detalle(driver, etiqueta):
     return "No encontrado"
 
 
-# ─────────────────────────────────────────────────────────────
-# NUEVO: extrae todos los campos en una sola carga de detalle
-# sin navegar entre pestañas → ahorra ~12s por resultado
-# ─────────────────────────────────────────────────────────────
-
 def _ir_a_seccion_eudamed_rapido(driver, nombre_seccion):
-    """Versión rápida con timeout de 5s. Solo se llama si los datos
-    no aparecieron en la vista principal del detalle."""
     xpaths = [
         f"//a[normalize-space(text())='{nombre_seccion}']",
         f"//li[contains(normalize-space(.),'{nombre_seccion}')]//a",
@@ -429,7 +527,7 @@ def _ir_a_seccion_eudamed_rapido(driver, nombre_seccion):
         try:
             el = WebDriverWait(driver, 5).until(EC.element_to_be_clickable((By.XPATH, xp)))
             _clic_js(driver, el)
-            time.sleep(0.8)
+            time.sleep(0.6)
             return
         except Exception:
             continue
@@ -437,18 +535,11 @@ def _ir_a_seccion_eudamed_rapido(driver, nombre_seccion):
 
 
 def _extraer_todo_del_detalle(driver):
-    """
-    Extrae UDI-DI, agencia, nombre del dispositivo y fabricante en una sola
-    pasada sobre el HTML de la página de detalle, sin navegar entre pestañas.
-    Solo navega a una pestaña concreta si el dato no apareció en la vista principal.
-    """
-    # Intentar primero con los XPaths conocidos desde la vista principal
     codigo_udi = _obtener_valor_celda_detalle(driver, "UDI-DI code")
     agencia    = _obtener_valor_celda_detalle(driver, "Issuing entity")
     nombre     = "No encontrado"
     fabricante = "No encontrado"
 
-    # Nombre del dispositivo — múltiples etiquetas posibles
     for etiqueta in ["Device name", "Trade/proprietary name", "Trade name",
                      "Commercial name", "Device trade name", "Name"]:
         val = _obtener_valor_celda_detalle(driver, etiqueta)
@@ -456,7 +547,6 @@ def _extraer_todo_del_detalle(driver):
             nombre = val
             break
 
-    # Fabricante — múltiples etiquetas posibles (evitar duplicar el nombre)
     for etiqueta in ["Organisation name", "Manufacturer name", "Company name",
                      "Actor name", "Legal manufacturer", "Name"]:
         val = _obtener_valor_celda_detalle(driver, etiqueta)
@@ -464,7 +554,6 @@ def _extraer_todo_del_detalle(driver):
             fabricante = val
             break
 
-    # Si nombre no se encontró en la vista principal → ir a pestaña Basic UDI-DI
     if nombre == "No encontrado":
         try:
             _ir_a_seccion_eudamed_rapido(driver, "Basic UDI-DI")
@@ -476,7 +565,6 @@ def _extraer_todo_del_detalle(driver):
         except Exception:
             pass
 
-    # Si fabricante no se encontró → ir a pestaña Manufacturer
     if fabricante == "No encontrado":
         try:
             _ir_a_seccion_eudamed_rapido(driver, "Manufacturer")
@@ -488,7 +576,6 @@ def _extraer_todo_del_detalle(driver):
         except Exception:
             pass
 
-    # Fallback agencia
     if agencia == "No encontrado":
         for etiqueta in ["Issuing entity code", "Issuing Agency", "Issuing Entity"]:
             val = _obtener_valor_celda_detalle(driver, etiqueta)
@@ -496,7 +583,6 @@ def _extraer_todo_del_detalle(driver):
                 agencia = val
                 break
 
-    # Fallback UDI-DI con campo combinado
     if codigo_udi == "No encontrado":
         combinado = _obtener_valor_celda_detalle(driver, "UDI-DI code / Issuing entity")
         if combinado != "No encontrado" and "/" in combinado:
@@ -511,14 +597,6 @@ def _extraer_todo_del_detalle(driver):
 
 
 def _procesar_referencia_eudamed(driver, referencia, primera_vez):
-    """
-    Búsqueda optimizada de una referencia en Eudamed.
-    Cambios vs versión original:
-    - Extrae todos los datos en una sola carga (sin navegar 2 pestañas por resultado)
-    - Sleeps reducidos: 0.5s en lugar de 0.8+1.0s por iteración
-    - Timeouts ajustados: 10-15s en lugar de 25-30s
-    - Recuperación de error más rápida
-    """
     try:
         _iniciar_busqueda_eudamed(driver, referencia, primera_vez)
     except TimeoutException as e:
@@ -542,7 +620,6 @@ def _procesar_referencia_eudamed(driver, referencia, primera_vez):
 
     for indice in range(cantidad_a_procesar):
         try:
-            # Timeout reducido a 10s (era 15s)
             filas_tabla = WebDriverWait(driver, 10).until(
                 EC.presence_of_all_elements_located((By.XPATH, "//table//tbody/tr"))
             )
@@ -561,17 +638,15 @@ def _procesar_referencia_eudamed(driver, referencia, primera_vez):
 
             _clic_js(driver, celda_ver)
 
-            # Timeout reducido a 15s (era 25s)
-            WebDriverWait(driver, 15).until(
+            WebDriverWait(driver, 12).until(
                 EC.any_of(
                     EC.presence_of_element_located((By.XPATH, "//*[contains(text(),'UDI-DI')]")),
                     EC.presence_of_element_located((By.XPATH, "//table")),
                 )
             )
             _aceptar_cookies_eudamed(driver, espera=2)
-            time.sleep(0.5)  # reducido de 0.8s
+            time.sleep(0.35)
 
-            # Extraer TODOS los datos en una sola pasada (sin navegar entre pestañas)
             codigo_udi, agencia, nombre_dispositivo, fabricante = _extraer_todo_del_detalle(driver)
 
             filas_resultado.append({
@@ -582,10 +657,9 @@ def _procesar_referencia_eudamed(driver, referencia, primera_vez):
                 "Fabricante":          fabricante,
             })
 
-            # Volver al listado — timeout reducido a 10s (era 15s)
             try:
                 driver.back()
-                WebDriverWait(driver, 10).until(
+                WebDriverWait(driver, 8).until(
                     EC.presence_of_element_located((By.XPATH, "//table//tbody/tr"))
                 )
             except Exception:
@@ -604,7 +678,7 @@ def _procesar_referencia_eudamed(driver, referencia, primera_vez):
             })
             try:
                 driver.back()
-                time.sleep(0.5)
+                time.sleep(0.4)
             except Exception:
                 pass
             try:
@@ -616,7 +690,10 @@ def _procesar_referencia_eudamed(driver, referencia, primera_vez):
 
 
 # ==========================================================
-# FUNCIONES DE IA (GEMINI)
+# FUNCIONES DE IA (GEMINI) — más robustas: reintentan también
+# ante errores de red (no solo 503/429), avisan si la respuesta
+# viene vacía por el filtro de seguridad de Gemini, y usan más
+# tokens de margen para que las respuestas no queden a la mitad.
 # ==========================================================
 
 MODELO_IA_RAPIDO  = "gemini-2.5-flash"
@@ -633,7 +710,14 @@ def _obtener_api_key_gemini():
             return None
 
 
-def _llamar_gemini_api(system_prompt, mensajes, modelo=MODELO_IA_CALIDAD, max_tokens=600):
+def _llamar_gemini_api(system_prompt, mensajes, modelo=MODELO_IA_CALIDAD, max_tokens=900):
+    """Llama a la API de Gemini. Reintenta automáticamente ante:
+    - Errores de red/timeout (problemas de conexión transitorios)
+    - 503 (modelo saturado) y 429 (límite de tasa)
+    Y revisa explícitamente el motivo de finalización de la respuesta,
+    para poder avisar con un mensaje claro si Gemini bloqueó la
+    respuesta por su filtro de seguridad en vez de devolver texto vacío
+    sin explicación (una de las causas de 'preguntas que fallan')."""
     api_key = _obtener_api_key_gemini()
     if not api_key:
         raise RuntimeError(
@@ -662,10 +746,19 @@ def _llamar_gemini_api(system_prompt, mensajes, modelo=MODELO_IA_CALIDAD, max_to
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{modelo}:generateContent"
     headers = {"x-goog-api-key": api_key, "content-type": "application/json"}
 
-    intentos = 3
+    intentos = 4
+    ultimo_error = None
     respuesta = None
     for intento in range(intentos):
-        respuesta = requests.post(url, headers=headers, json=cuerpo, timeout=40)
+        try:
+            respuesta = requests.post(url, headers=headers, json=cuerpo, timeout=45)
+        except requests.exceptions.RequestException as e:
+            ultimo_error = e
+            if intento < intentos - 1:
+                time.sleep(2 * (intento + 1))
+                continue
+            raise RuntimeError(f"Error de red llamando a Gemini: {e}") from e
+
         if respuesta.status_code == 200:
             break
         if respuesta.status_code in (503, 429) and intento < intentos - 1:
@@ -673,17 +766,34 @@ def _llamar_gemini_api(system_prompt, mensajes, modelo=MODELO_IA_CALIDAD, max_to
             continue
         break
 
+    if respuesta is None:
+        raise RuntimeError(f"No se pudo contactar a Gemini: {ultimo_error}")
+
     if respuesta.status_code != 200:
         raise RuntimeError(
             f"Error de la API de Gemini (código {respuesta.status_code}): "
             f"{respuesta.text[:300]}"
         )
+
     datos = respuesta.json()
-    try:
-        partes = datos["candidates"][0]["content"]["parts"]
-        return "".join(p.get("text", "") for p in partes).strip()
-    except (KeyError, IndexError):
-        return ""
+    candidatos = datos.get("candidates") or []
+    if not candidatos:
+        razon_bloqueo = (datos.get("promptFeedback") or {}).get("blockReason", "desconocida")
+        raise RuntimeError(
+            f"Gemini no devolvió respuesta (motivo: {razon_bloqueo}). "
+            "Intenta reformular la pregunta."
+        )
+
+    finish_reason = candidatos[0].get("finishReason", "")
+    partes = candidatos[0].get("content", {}).get("parts", [])
+    texto = "".join(p.get("text", "") for p in partes).strip()
+
+    if not texto and finish_reason == "SAFETY":
+        raise RuntimeError("Gemini bloqueó esta respuesta por su filtro de seguridad.")
+    if not texto and finish_reason == "MAX_TOKENS":
+        raise RuntimeError("La respuesta quedó incompleta por límite de tokens. Intenta de nuevo.")
+
+    return texto
 
 
 def _traducir_gmdn_con_ia(texto_ingles):
@@ -725,7 +835,7 @@ def _generar_resumen_ia(df, etiqueta_fuente):
         ),
         mensajes=[{"role": "user", "content": texto_datos}],
         modelo=MODELO_IA_CALIDAD,
-        max_tokens=500,
+        max_tokens=700,
     )
 
 
@@ -817,8 +927,9 @@ def _responder_chat_ia(pregunta):
         "deducir de estos datos, dilo claramente en vez de inventar.\n\n"
         f"DATOS DISPONIBLES:\n{st.session_state['contexto_chat_ia']}"
     )
-    mensajes = st.session_state["historial_chat_ia"] + [{"role": "user", "content": pregunta}]
-    return _llamar_gemini_api(system_prompt, mensajes, modelo=MODELO_IA_CALIDAD, max_tokens=700)
+    historial_reciente = st.session_state["historial_chat_ia"][-8:]
+    mensajes = historial_reciente + [{"role": "user", "content": pregunta}]
+    return _llamar_gemini_api(system_prompt, mensajes, modelo=MODELO_IA_CALIDAD, max_tokens=900)
 
 
 # ==========================================================
@@ -930,7 +1041,6 @@ if "lista_filtros_company"   not in st.session_state: st.session_state["lista_fi
 if "mostrar_modal_perfil"    not in st.session_state: st.session_state["mostrar_modal_perfil"]    = False
 if "historial_chat_ia"       not in st.session_state: st.session_state["historial_chat_ia"]       = []
 if "contexto_chat_ia"        not in st.session_state: st.session_state["contexto_chat_ia"]        = None
-# NUEVO: estado para la extracción Eudamed (evita el bug del botón que no reacciona)
 if "eudamed_iniciar"         not in st.session_state: st.session_state["eudamed_iniciar"]         = False
 if "eudamed_archivo_bytes"   not in st.session_state: st.session_state["eudamed_archivo_bytes"]   = None
 if "eudamed_archivo_nombre"  not in st.session_state: st.session_state["eudamed_archivo_nombre"]  = ""
@@ -1208,6 +1318,13 @@ div[data-testid="stFileUploadDropzone"] button * { color: white !important; }
 .footer-links { display: flex; justify-content: center; gap: 28px; margin-bottom: 8px; flex-wrap: wrap; }
 .footer-links a { color: #0b1d3a !important; text-decoration: none; font-weight: 500; }
 
+.col-extraccion-titulo {
+    background-color: #ffffff !important; padding: 14px 18px; border-radius: 10px 10px 0 0;
+    border-bottom: 3px solid #1a365d; margin-bottom: 14px; font-weight: 700; font-size: 16px;
+    color: #0b1d3a !important; display:flex; align-items:center; gap:8px;
+}
+.col-extraccion-titulo.eudamed { border-bottom-color: #0e7490; }
+
 @media (max-width: 768px) {
     .header-box { flex-direction: column !important; gap: 8px !important; padding: 12px !important; text-align: center !important; }
     .header-right { flex-wrap: wrap; justify-content: center; }
@@ -1359,10 +1476,9 @@ else:
         )
 
         nav_items = [
-            ("🏠 Menú Principal",                  "Inicio"),
-            ("🚀 Extracción Masiva AccessGudid",     "Extraccion"),
-            ("🌍 Extracción Masiva Eudamed",         "ExtraccionEudamed"),
-            ("📋 Historiales y Reportes",            "Historiales"),
+            ("🏠 Menú Principal",       "Inicio"),
+            ("🚀 Extracción Masiva",     "ExtraccionMasiva"),
+            ("📋 Historiales y Reportes", "Historiales"),
         ]
         for label, seccion in nav_items:
             if st.button(label, key=f"nav_{seccion}", use_container_width=True):
@@ -1485,23 +1601,15 @@ else:
 
         st.markdown("""
             <div class="card-azul">
-                <h4>1. Extracción Masiva AccessGudid (FDA)</h4>
-                <p>Carga masiva de archivos Excel para cruce con AccessGUDID (FDA), identificación de códigos GMDN y agencias emisoras.</p>
+                <h4>1. Extracción Masiva (AccessGudid + Eudamed)</h4>
+                <p>Carga masiva de archivos Excel para cruce con AccessGUDID (FDA) y Eudamed (UE), en una sola pantalla dividida.</p>
             </div>""", unsafe_allow_html=True)
-        if st.button("🚀 Ingresar al Módulo de Extracción AccessGudid", key="btn_ext", use_container_width=True):
-            st.session_state["seccion_activa"] = "Extraccion"; st.rerun()
-
-        st.markdown("""
-            <div class="card-azul" style="border-left-color:#1d4ed8;">
-                <h4>2. Extracción Masiva Eudamed (Unión Europea)</h4>
-                <p>Carga masiva de archivos Excel para cruce con Eudamed: código UDI-DI, agencia emisora, nombre del dispositivo y fabricante.</p>
-            </div>""", unsafe_allow_html=True)
-        if st.button("🌍 Ingresar al Módulo de Extracción Eudamed", key="btn_ext_eudamed", use_container_width=True):
-            st.session_state["seccion_activa"] = "ExtraccionEudamed"; st.rerun()
+        if st.button("🚀 Ingresar al Módulo de Extracción Masiva", key="btn_ext", use_container_width=True):
+            st.session_state["seccion_activa"] = "ExtraccionMasiva"; st.rerun()
 
         st.markdown("""
             <div class="card-azul" style="border-left-color:#0369a1;">
-                <h4>3. Consulta de Historiales y Reportes</h4>
+                <h4>2. Consulta de Historiales y Reportes</h4>
                 <p>Consulta el historial de referencias buscadas por usuario, con fecha y cantidad de resultados obtenidos.</p>
             </div>""", unsafe_allow_html=True)
         if st.button("📋 Ver Historiales y Reportes", key="btn_hist", use_container_width=True):
@@ -1509,7 +1617,7 @@ else:
 
         st.markdown("""
             <div class="card-azul" style="border-left-color:#0b1d3a;">
-                <h4>4. Mi Perfil</h4>
+                <h4>3. Mi Perfil</h4>
                 <p>Edite su nombre, fecha de nacimiento y contraseña de acceso. Los cambios se reflejan en tiempo real.</p>
             </div>""", unsafe_allow_html=True)
         if st.button("👤 Editar mi Perfil", key="btn_perfil_inicio", use_container_width=True):
@@ -1518,371 +1626,302 @@ else:
         if es_admin:
             st.markdown("""
                 <div class="card-roja">
-                    <h4>🔐 5. Panel de Administración</h4>
+                    <h4>🔐 4. Panel de Administración</h4>
                     <p>Gestión completa de usuarios: agregar, eliminar, ver/cambiar contraseñas y editar datos.</p>
                 </div>""", unsafe_allow_html=True)
             if st.button("👥 Ir al Panel de Administración", key="btn_admin", use_container_width=True):
                 st.session_state["seccion_activa"] = "Admin"; st.rerun()
 
     # ==========================================================
-    # VISTA 2: EXTRACCIÓN MASIVA ACCESSGUDID (FDA)
+    # VISTA 2: EXTRACCIÓN MASIVA — PANTALLA DIVIDIDA
+    # AccessGudid (izquierda) | Eudamed (derecha)
     # ==========================================================
-    elif st.session_state["seccion_activa"] == "Extraccion":
-        st.markdown("<h3 style='color:#0b1d3a;'>🚀 Extracción Automatizada AccessGUDID (FDA)</h3>", unsafe_allow_html=True)
-        st.markdown("<p style='color:#475569;'>Suba su archivo, aplique filtros opcionales e inicie la consulta.</p>", unsafe_allow_html=True)
+    elif st.session_state["seccion_activa"] == "ExtraccionMasiva":
+        st.markdown("<h3 style='color:#0b1d3a;margin-bottom:4px;'>🚀 Extracción Masiva</h3>", unsafe_allow_html=True)
+        st.markdown(
+            "<p style='color:#475569;margin-bottom:18px;'>Trabaja con ambas fuentes en paralelo: "
+            "AccessGUDID (FDA) a la izquierda, Eudamed (UE) a la derecha.</p>",
+            unsafe_allow_html=True
+        )
 
-        col_izq, col_der = st.columns([1, 2])
+        col_gudid, col_eudamed = st.columns(2)
 
-        with col_izq:
-            st.info("⚙ Configuración de Parámetros")
-            archivo_cargado = st.file_uploader("Sube tu archivo de Excel (.xlsx)", type=["xlsx"])
+        # ──────────────────────────────────────────────
+        # COLUMNA IZQUIERDA: ACCESSGUDID (FDA)
+        # ──────────────────────────────────────────────
+        with col_gudid:
+            st.markdown('<div class="col-extraccion-titulo">🚀 AccessGudid (FDA)</div>', unsafe_allow_html=True)
 
-            st.markdown("<p style='font-weight:500;color:#374151;margin-bottom:4px;font-size:14px;'>Filtrar por Company Name (Opcional)</p>", unsafe_allow_html=True)
-            st.caption("Puede agregar varios fabricantes; se incluirá cualquier coincidencia con al menos uno de ellos.")
+            archivo_cargado = st.file_uploader(
+                "Sube tu archivo de Excel (.xlsx)", type=["xlsx"], key="uploader_gudid"
+            )
 
-            for i in range(len(st.session_state["lista_filtros_company"])):
-                col_campo, col_quitar = st.columns([5, 1])
-                with col_campo:
-                    valor_actual = st.text_input(
-                        f"Fabricante #{i+1}",
-                        value=st.session_state["lista_filtros_company"][i],
-                        key=f"company_filtro_{i}",
-                        placeholder="Ej: MEDTRONIC",
-                        label_visibility="collapsed"
-                    )
-                    st.session_state["lista_filtros_company"][i] = valor_actual
-                with col_quitar:
-                    if len(st.session_state["lista_filtros_company"]) > 1:
-                        if st.button("✖", key=f"quitar_company_{i}", use_container_width=True):
-                            st.session_state["lista_filtros_company"].pop(i)
-                            st.rerun()
-
-            if st.button("➕ Agregar otro fabricante", key="btn_agregar_company", use_container_width=True):
-                st.session_state["lista_filtros_company"].append("")
-                st.rerun()
+            with st.expander("⚙ Filtrar por fabricante (opcional)"):
+                for i in range(len(st.session_state["lista_filtros_company"])):
+                    col_campo, col_quitar = st.columns([5, 1])
+                    with col_campo:
+                        valor_actual = st.text_input(
+                            f"Fabricante #{i+1}",
+                            value=st.session_state["lista_filtros_company"][i],
+                            key=f"company_filtro_{i}",
+                            placeholder="Ej: MEDTRONIC",
+                            label_visibility="collapsed"
+                        )
+                        st.session_state["lista_filtros_company"][i] = valor_actual
+                    with col_quitar:
+                        if len(st.session_state["lista_filtros_company"]) > 1:
+                            if st.button("✖", key=f"quitar_company_{i}", use_container_width=True):
+                                st.session_state["lista_filtros_company"].pop(i)
+                                st.rerun()
+                if st.button("➕ Agregar otro fabricante", key="btn_agregar_company", use_container_width=True):
+                    st.session_state["lista_filtros_company"].append("")
+                    st.rerun()
 
             company_names_filtro = [
                 c.strip().upper() for c in st.session_state["lista_filtros_company"] if c.strip()
             ]
 
-            st.markdown("<div style='margin-top:14px'></div>", unsafe_allow_html=True)
-            conectar_boton = st.button("🚀 Iniciar Extracción Masiva", disabled=(archivo_cargado is None), use_container_width=True)
+            conectar_boton = st.button(
+                "🚀 Iniciar Extracción AccessGudid", disabled=(archivo_cargado is None),
+                use_container_width=True, key="btn_iniciar_gudid"
+            )
 
-        with col_der:
-            st.warning("📊 Monitor de Procesamiento en Tiempo Real")
-            headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
+            contenedor_gudid = st.container()
 
             if archivo_cargado and conectar_boton:
-                try:
-                    bytes_data = archivo_cargado.read()
-                    df = pd.read_excel(io.BytesIO(bytes_data), header=None, dtype=str)
-                    df[0] = df[0].astype(str).str.strip()
-                    referencias_totales = [r for r in df[0].tolist() if r and r != "nan"]
-                    total_refs = len(referencias_totales)
-                except Exception as e:
-                    st.error(f"Error al abrir el archivo de Excel: {e}"); st.stop()
+                with contenedor_gudid:
+                    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
+                    try:
+                        bytes_data = archivo_cargado.read()
+                        df = pd.read_excel(io.BytesIO(bytes_data), header=None, dtype=str)
+                        df[0] = df[0].astype(str).str.strip()
+                        referencias_totales = [r for r in df[0].tolist() if r and r != "nan"]
+                        total_refs = len(referencias_totales)
+                    except Exception as e:
+                        st.error(f"Error al abrir el archivo de Excel: {e}"); st.stop()
 
-                st.success(f"📋 Referencias encontradas: {total_refs}")
-                if company_names_filtro:
-                    st.info(f"🔎 Filtrando por fabricantes: {', '.join(company_names_filtro)}")
+                    st.success(f"📋 Referencias encontradas: {total_refs}")
+                    if company_names_filtro:
+                        st.info(f"🔎 Filtrando por: {', '.join(company_names_filtro)}")
 
-                texto_estado = st.empty()
-                barra_custom = st.empty()
-                tabla_viva   = st.empty()
-                lista_resultados = []
-                session = requests.Session()
+                    texto_estado = st.empty()
+                    barra_custom = st.empty()
+                    tabla_viva   = st.empty()
+                    lista_resultados = []
+                    session = requests.Session()
+                    inicio_tiempo = time.time()
 
-                def actualizar_barra(pct):
-                    barra_custom.markdown(
-                        f'<div class="prog-wrap"><div class="prog-bar" style="width:{pct}%;"></div></div>',
-                        unsafe_allow_html=True
+                    # OPTIMIZACIÓN: hasta 5 referencias en paralelo (cada una hace
+                    # sus propias peticiones HTTP independientes a AccessGUDID,
+                    # así que paralelizar es seguro y acelera bastante el total).
+                    MAX_HILOS_GUDID = 5
+
+                    def actualizar_barra_gudid(pct):
+                        barra_custom.markdown(
+                            f'<div class="prog-wrap"><div class="prog-bar" style="width:{pct}%;"></div></div>',
+                            unsafe_allow_html=True
+                        )
+
+                    completados = 0
+                    with ThreadPoolExecutor(max_workers=MAX_HILOS_GUDID) as executor:
+                        futuros = {
+                            executor.submit(
+                                _buscar_referencia_accessgudid, ref, session, headers, company_names_filtro
+                            ): ref
+                            for ref in referencias_totales
+                        }
+                        for futuro in as_completed(futuros):
+                            ref_actual = futuros[futuro]
+                            try:
+                                filas_ref = futuro.result()
+                            except Exception:
+                                filas_ref = [{
+                                    "Referencia_Original": ref_actual, "Primary_DI_Number": "Error",
+                                    "Nombre_Empresa_FDA": "Error", "Codigo_GMDN": "Error",
+                                    "Definicion_GMDN": "Error", "Estado_GMDN": "Error", "Issuing_Agency": "Error"
+                                }]
+                            lista_resultados.extend(filas_ref)
+                            completados += 1
+
+                            transcurrido = time.time() - inicio_tiempo
+                            promedio = transcurrido / completados
+                            restante = promedio * (total_refs - completados)
+                            texto_estado.info(
+                                f"⏳ {completados}/{total_refs} completadas | ⏱ ~{int(restante)}s restantes"
+                            )
+                            actualizar_barra_gudid(int(completados / total_refs * 100))
+                            tabla_viva.dataframe(pd.DataFrame(lista_resultados), use_container_width=True, height=260)
+
+                    texto_estado.empty(); barra_custom.empty()
+                    st.success(f"✨ ¡Completado! ({int(time.time()-inicio_tiempo)}s)")
+                    registrar_log(st.session_state["usuario_activo_real"], f"Extracción masiva AccessGudid ({total_refs} refs)", len(lista_resultados))
+                    guardar_resultados_accessgudid(st.session_state["usuario_activo_real"], lista_resultados)
+                    st.session_state["contexto_chat_ia"] = None
+
+                    df_final = pd.DataFrame(lista_resultados)
+                    output = io.BytesIO()
+                    with pd.ExcelWriter(output, engine='openpyxl') as writer:
+                        df_final.to_excel(writer, index=False)
+                    st.download_button(
+                        label="📥 Descargar Excel (AccessGudid)",
+                        data=output.getvalue(),
+                        file_name="resultados_fda.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        use_container_width=True, key="dl_gudid"
                     )
 
-                for idx, ref in enumerate(referencias_totales):
-                    base_pct = (idx / total_refs) * 100
-                    paso_pct = (1 / total_refs) * 100
-                    texto_estado.info(f"⏳ Fila {idx+1} de {total_refs} | 🔍 Buscando: {ref}...")
-                    actualizar_barra(int(base_pct + paso_pct * 0.33))
-                    url_busqueda = f"https://accessgudid.nlm.nih.gov/devices/search?query={urllib.parse.quote(ref)}"
-                    try:
-                        response = session.get(url_busqueda, headers=headers, timeout=15)
-                        actualizar_barra(int(base_pct + paso_pct * 0.66))
-                        time.sleep(0.4)
-                        if response.status_code == 200:
-                            soup = BeautifulSoup(response.text, 'html.parser')
-                            enlaces = list(dict.fromkeys([
-                                a['href'] for a in soup.find_all('a', href=True)
-                                if '/devices/' in a['href'] and 'search' not in a['href']
-                            ]))
-                            coincidencias = []
-                            for href in enlaces:
-                                try:
-                                    res = session.get(f"https://accessgudid.nlm.nih.gov{href}", headers=headers, timeout=15)
-                                    if res.status_code != 200: continue
-                                    soup2 = BeautifulSoup(res.text, 'html.parser')
-                                    texto = soup2.get_text()
-                                    lineas = [l.strip() for l in texto.split('\n') if l.strip()]
-
-                                    company = "No encontrado"
-                                    for i2, l in enumerate(lineas):
-                                        if "Company Name" in l:
-                                            company = lineas[i2+1] if l.replace(":","").strip() == "Company Name" and i2+1 < len(lineas) else l.replace("Company Name","").replace(":","").strip()
-                                            break
-                                    company = " ".join(company.split()).strip() or "No encontrado"
-                                    if company_names_filtro and not any(n in company.upper() for n in company_names_filtro):
-                                        continue
-
-                                    gmdn_code = "No encontrado"
-                                    for p in texto.replace(':',' ').replace('(',' ').replace(')',' ').split():
-                                        if p.isdigit() and len(p) == 5: gmdn_code = p; break
-
-                                    gmdn_def, gmdn_status = "No encontrado", "No encontrado"
-                                    for i2, l in enumerate(lineas):
-                                        if "GMDN Term Definition" in l:
-                                            candidatos = [
-                                                x.replace("[?]","").strip() for x in lineas[i2:]
-                                                if x.replace("[?]","").strip() and not any(
-                                                    h in x for h in ["GMDN Term Code","GMDN Term Name",
-                                                    "GMDN Term Definition","GMDN Term Status","Implantable?"]
-                                                ) and not (x.strip().isdigit() and len(x.strip())==5)
-                                            ]
-                                            if len(candidatos) >= 2: gmdn_def, gmdn_status = candidatos[1], candidatos[2] if len(candidatos)>2 else candidatos[1]
-                                            elif len(candidatos) == 1: gmdn_def = candidatos[0]
-                                            break
-
-                                    diccionario_estados = {"active":"Activo","obsolete":"Obsoleto","no encontrado":"No encontrado"}
-                                    gmdn_status = diccionario_estados.get(gmdn_status.lower(), gmdn_status)
-
-                                    if gmdn_def and gmdn_def.lower() != "no encontrado":
-                                        gmdn_def = _traducir_gmdn_con_ia(gmdn_def.replace('"', '').replace("'", ""))
-
-                                    issuing = "No encontrado"
-                                    for i2, l in enumerate(lineas):
-                                        if "Issuing Agency" in l:
-                                            issuing = lineas[i2+1] if l.replace(":","").strip() == "Issuing Agency" and i2+1 < len(lineas) else l.replace("Issuing Agency","").replace(":","").strip()
-                                            break
-                                    issuing = " ".join(issuing.split()).strip() or "No encontrado"
-
-                                    coincidencias.append({
-                                        "Referencia_Original": ref,
-                                        "Primary_DI_Number":   href.split('/')[-1].strip(),
-                                        "Nombre_Empresa_FDA":  company,
-                                        "Codigo_GMDN":         gmdn_code,
-                                        "Definicion_GMDN":     " ".join(str(gmdn_def).split()).strip(),
-                                        "Estado_GMDN":         " ".join(str(gmdn_status).split()).strip(),
-                                        "Issuing_Agency":      issuing
-                                    })
-                                except: continue
-
-                            if coincidencias:
-                                lista_resultados.extend(coincidencias)
-                            else:
-                                lista_resultados.append({
-                                    "Referencia_Original":"Filtrado","Primary_DI_Number":"Filtrado",
-                                    "Nombre_Empresa_FDA":"No coincide","Codigo_GMDN":"Filtrado",
-                                    "Definicion_GMDN":"Filtrado","Estado_GMDN":"Filtrado","Issuing_Agency":"Filtrado"
-                                })
-                        elif response.status_code == 429:
-                            st.warning("⏳ Servidor saturado. Esperando 15 segundos..."); time.sleep(15)
-                        else:
-                            lista_resultados.append({
-                                "Referencia_Original":ref,"Primary_DI_Number":"No encontrado",
-                                "Nombre_Empresa_FDA":"No encontrado","Codigo_GMDN":"No encontrado",
-                                "Definicion_GMDN":"No encontrado","Estado_GMDN":"No encontrado","Issuing_Agency":"No encontrado"
-                            })
-                    except Exception:
-                        lista_resultados.append({
-                            "Referencia_Original":ref,"Primary_DI_Number":"Error de Red",
-                            "Nombre_Empresa_FDA":"Error","Codigo_GMDN":"Error",
-                            "Definicion_GMDN":"Error","Estado_GMDN":"Error","Issuing_Agency":"Error"
-                        })
-
-                    actualizar_barra(int((idx+1)/total_refs*100))
-                    tabla_viva.dataframe(pd.DataFrame(lista_resultados), use_container_width=True)
-                    time.sleep(0.8)
-
-                texto_estado.empty(); barra_custom.empty()
-                st.success("✨ ¡Extracción completada al 100%!")
-                registrar_log(st.session_state["usuario_activo_real"], f"Extracción masiva AccessGudid ({total_refs} refs)", len(lista_resultados))
-                guardar_resultados_accessgudid(st.session_state["usuario_activo_real"], lista_resultados)
-                st.session_state["contexto_chat_ia"] = None
-
-                df_final = pd.DataFrame(lista_resultados)
-                output = io.BytesIO()
-                with pd.ExcelWriter(output, engine='openpyxl') as writer:
-                    df_final.to_excel(writer, index=False)
-                st.download_button(
-                    label="📥 Descargar Excel con Resultados",
-                    data=output.getvalue(),
-                    file_name="resultados_fda.xlsx",
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                    use_container_width=True
-                )
-
-                if st.button("🤖 Generar resumen con IA", key="btn_resumen_ia_accessgudid", use_container_width=True):
-                    with st.spinner("Generando resumen con IA..."):
-                        try:
-                            st.info(_generar_resumen_ia(df_final, "AccessGUDID (FDA)"))
-                        except Exception as e:
-                            st.error(f"No se pudo generar el resumen: {e}")
-
+                    if st.button("🤖 Resumen con IA", key="btn_resumen_ia_accessgudid", use_container_width=True):
+                        with st.spinner("Generando resumen..."):
+                            try:
+                                st.info(_generar_resumen_ia(df_final, "AccessGUDID (FDA)"))
+                            except Exception as e:
+                                st.error(f"No se pudo generar el resumen: {e}")
             elif not archivo_cargado:
-                st.info("👈 Cargue un archivo en el panel izquierdo para activar la monitorización.")
+                st.info("👈 Sube un archivo para activar la monitorización.")
 
-    # ==========================================================
-    # VISTA 2-B: EXTRACCIÓN MASIVA EUDAMED (UE) — OPTIMIZADA
-    # ==========================================================
-    elif st.session_state["seccion_activa"] == "ExtraccionEudamed":
-        st.markdown("<h3 style='color:#0b1d3a;'>🌍 Extracción Automatizada Eudamed (Unión Europea)</h3>", unsafe_allow_html=True)
-        st.markdown(
-            "<p style='color:#475569;'>Suba su archivo de Excel con las referencias / números de catálogo. "
-            "La búsqueda usa un navegador automatizado (no una simple petición web), por lo que es más lenta "
-            "que la extracción de AccessGudid: calcule entre 15 y 30 segundos por referencia.</p>",
-            unsafe_allow_html=True
-        )
+        # ──────────────────────────────────────────────
+        # COLUMNA DERECHA: EUDAMED (UE)
+        # ──────────────────────────────────────────────
+        with col_eudamed:
+            st.markdown('<div class="col-extraccion-titulo eudamed">🌍 Eudamed (Unión Europea)</div>', unsafe_allow_html=True)
+            st.caption("Usa navegador automatizado: ~10-20s por referencia.")
 
-        col_izq_eu, col_der_eu = st.columns([1, 2])
-
-        with col_izq_eu:
-            st.info("⚙ Configuración")
             archivo_eudamed = st.file_uploader(
                 "Sube tu archivo de Excel (.xlsx)", type=["xlsx"], key="uploader_eudamed"
             )
-            st.caption(
-                "El archivo debe tener una sola columna con las referencias / números de "
-                "catálogo (Reference / Catalogue number), una por fila, sin encabezado."
-            )
 
-            # CORRECCIÓN: guardar bytes en session_state para sobrevivir al re-render
             if archivo_eudamed is not None:
                 if archivo_eudamed.name != st.session_state.get("eudamed_archivo_nombre", ""):
                     st.session_state["eudamed_archivo_bytes"]  = archivo_eudamed.read()
                     st.session_state["eudamed_archivo_nombre"] = archivo_eudamed.name
                     st.session_state["eudamed_iniciar"]        = False
 
-            hay_archivo = st.session_state.get("eudamed_archivo_bytes") is not None
-
-            st.markdown("<div style='margin-top:10px'></div>", unsafe_allow_html=True)
+            hay_archivo_eu = st.session_state.get("eudamed_archivo_bytes") is not None
 
             if st.button(
-                "🌍 Iniciar Extracción Masiva Eudamed",
-                disabled=not hay_archivo,
+                "🌍 Iniciar Extracción Eudamed",
+                disabled=not hay_archivo_eu,
                 use_container_width=True,
                 key="btn_iniciar_eudamed"
             ):
                 st.session_state["eudamed_iniciar"] = True
-                st.rerun()  # re-render limpio antes de arrancar
+                st.rerun()
 
-        with col_der_eu:
-            st.warning("📊 Monitor de Procesamiento en Tiempo Real")
+            contenedor_eudamed = st.container()
 
-            if st.session_state.get("eudamed_iniciar") and hay_archivo:
-                st.session_state["eudamed_iniciar"] = False  # consumir el flag
+            if st.session_state.get("eudamed_iniciar") and hay_archivo_eu:
+                st.session_state["eudamed_iniciar"] = False
 
-                try:
-                    bytes_data_eu = st.session_state["eudamed_archivo_bytes"]
-                    df_eu = pd.read_excel(io.BytesIO(bytes_data_eu), header=None, dtype=str)
-                    df_eu[0] = df_eu[0].astype(str).str.strip()
-                    referencias_eu = [r for r in df_eu[0].tolist() if r and r != "nan"]
-                    total_refs_eu  = len(referencias_eu)
-                except Exception as e:
-                    st.error(f"Error al abrir el archivo de Excel: {e}")
-                    st.stop()
+                with contenedor_eudamed:
+                    try:
+                        bytes_data_eu = st.session_state["eudamed_archivo_bytes"]
+                        df_eu = pd.read_excel(io.BytesIO(bytes_data_eu), header=None, dtype=str)
+                        df_eu[0] = df_eu[0].astype(str).str.strip()
+                        referencias_eu = [r for r in df_eu[0].tolist() if r and r != "nan"]
+                        total_refs_eu  = len(referencias_eu)
+                    except Exception as e:
+                        st.error(f"Error al abrir el archivo de Excel: {e}")
+                        st.stop()
 
-                st.success(f"📋 Referencias encontradas: {total_refs_eu}")
+                    st.success(f"📋 Referencias encontradas: {total_refs_eu}")
 
-                texto_estado_eu  = st.empty()
-                barra_eu         = st.empty()
-                tabla_viva_eu    = st.empty()
-                lista_resultados_eu = []
+                    texto_estado_eu  = st.empty()
+                    barra_eu         = st.empty()
+                    tabla_viva_eu    = st.empty()
+                    lista_resultados_eu = []
+                    inicio_tiempo_eu = time.time()
 
-                def actualizar_barra_eu(pct):
-                    barra_eu.markdown(
-                        f'<div class="prog-wrap"><div class="prog-bar" style="width:{pct}%;"></div></div>',
-                        unsafe_allow_html=True
-                    )
-
-                driver_eu = None
-                try:
-                    with st.spinner("Abriendo navegador automatizado..."):
-                        driver_eu = _crear_driver_eudamed()
-                except Exception as e:
-                    st.error("No se pudo iniciar el navegador automatizado para Eudamed.")
-                    st.code(str(e))
-                    st.info(
-                        "Revisa que 'packages.txt' tenga 'chromium' y 'chromium-driver', "
-                        "y que 'selenium' esté en requirements.txt."
-                    )
-                    st.stop()
-
-                try:
-                    for idx, ref in enumerate(referencias_eu):
-                        texto_estado_eu.info(
-                            f"⏳ Referencia {idx+1} de {total_refs_eu} | 🔍 Buscando: {ref}..."
+                    def actualizar_barra_eu(pct):
+                        barra_eu.markdown(
+                            f'<div class="prog-wrap"><div class="prog-bar" style="width:{pct}%;"></div></div>',
+                            unsafe_allow_html=True
                         )
-                        actualizar_barra_eu(int(idx / total_refs_eu * 100))
 
-                        try:
-                            filas_ref = _procesar_referencia_eudamed(
-                                driver_eu, ref, primera_vez=(idx == 0)
-                            )
-                        except Exception as e:
-                            filas_ref = [{
-                                "Referencia_Original": ref,
-                                "Codigo_UDI_DI":       "Error de navegador",
-                                "Agencia_Emisora":     "Error",
-                                "Nombre_Dispositivo":  "Error",
-                                "Fabricante":          f"Error: {_mensaje_error_limpio(e)}",
-                            }]
+                    driver_eu = None
+                    try:
+                        with st.spinner("Abriendo navegador automatizado..."):
+                            driver_eu = _crear_driver_eudamed()
+                    except Exception as e:
+                        st.error("No se pudo iniciar el navegador automatizado para Eudamed.")
+                        st.code(str(e))
+                        st.info(
+                            "Revisa que 'packages.txt' tenga 'chromium' y 'chromium-driver', "
+                            "y que 'selenium' esté en requirements.txt."
+                        )
+                        st.stop()
 
-                        lista_resultados_eu.extend(filas_ref)
-                        actualizar_barra_eu(int((idx + 1) / total_refs_eu * 100))
-                        tabla_viva_eu.dataframe(pd.DataFrame(lista_resultados_eu), use_container_width=True)
+                    try:
+                        for idx, ref in enumerate(referencias_eu):
+                            transcurrido = time.time() - inicio_tiempo_eu
+                            if idx > 0:
+                                promedio = transcurrido / idx
+                                restante = promedio * (total_refs_eu - idx)
+                                texto_tiempo = f" | ⏱ ~{int(restante)}s restantes"
+                            else:
+                                texto_tiempo = ""
 
-                finally:
-                    if driver_eu is not None:
-                        try:
-                            driver_eu.quit()
-                        except Exception:
-                            pass
+                            texto_estado_eu.info(f"⏳ {idx+1}/{total_refs_eu} | 🔍 {ref}{texto_tiempo}")
+                            actualizar_barra_eu(int(idx / total_refs_eu * 100))
 
-                texto_estado_eu.empty()
-                barra_eu.empty()
-                st.success("✨ ¡Extracción Eudamed completada!")
+                            try:
+                                filas_ref = _procesar_referencia_eudamed(
+                                    driver_eu, ref, primera_vez=(idx == 0)
+                                )
+                            except Exception as e:
+                                filas_ref = [{
+                                    "Referencia_Original": ref,
+                                    "Codigo_UDI_DI":       "Error de navegador",
+                                    "Agencia_Emisora":     "Error",
+                                    "Nombre_Dispositivo":  "Error",
+                                    "Fabricante":          f"Error: {_mensaje_error_limpio(e)}",
+                                }]
 
-                # Limpiar estado para permitir nueva extracción sin recargar página
-                st.session_state["eudamed_archivo_bytes"]  = None
-                st.session_state["eudamed_archivo_nombre"] = ""
+                            lista_resultados_eu.extend(filas_ref)
+                            actualizar_barra_eu(int((idx + 1) / total_refs_eu * 100))
+                            tabla_viva_eu.dataframe(pd.DataFrame(lista_resultados_eu), use_container_width=True, height=260)
 
-                registrar_log(
-                    st.session_state["usuario_activo_real"],
-                    f"Extracción masiva Eudamed ({total_refs_eu} refs)",
-                    len(lista_resultados_eu)
-                )
-                guardar_resultados_eudamed(st.session_state["usuario_activo_real"], lista_resultados_eu)
-                st.session_state["contexto_chat_ia"] = None
+                    finally:
+                        if driver_eu is not None:
+                            try:
+                                driver_eu.quit()
+                            except Exception:
+                                pass
 
-                df_final_eu = pd.DataFrame(lista_resultados_eu)
-                output_eu   = io.BytesIO()
-                with pd.ExcelWriter(output_eu, engine='openpyxl') as writer:
-                    df_final_eu.to_excel(writer, index=False)
-                st.download_button(
-                    label="📥 Descargar Excel con Resultados Eudamed",
-                    data=output_eu.getvalue(),
-                    file_name="resultados_eudamed.xlsx",
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                    use_container_width=True
-                )
+                    texto_estado_eu.empty()
+                    barra_eu.empty()
+                    st.success(f"✨ ¡Completado! ({int(time.time()-inicio_tiempo_eu)}s)")
 
-                if st.button("🤖 Generar resumen con IA", key="btn_resumen_ia_eudamed", use_container_width=True):
-                    with st.spinner("Generando resumen con IA..."):
-                        try:
-                            st.info(_generar_resumen_ia(df_final_eu, "Eudamed (Unión Europea)"))
-                        except Exception as e:
-                            st.error(f"No se pudo generar el resumen: {e}")
+                    st.session_state["eudamed_archivo_bytes"]  = None
+                    st.session_state["eudamed_archivo_nombre"] = ""
 
-            elif not hay_archivo:
-                st.info("👈 Cargue un archivo en el panel izquierdo para activar la monitorización.")
+                    registrar_log(
+                        st.session_state["usuario_activo_real"],
+                        f"Extracción masiva Eudamed ({total_refs_eu} refs)",
+                        len(lista_resultados_eu)
+                    )
+                    guardar_resultados_eudamed(st.session_state["usuario_activo_real"], lista_resultados_eu)
+                    st.session_state["contexto_chat_ia"] = None
+
+                    df_final_eu = pd.DataFrame(lista_resultados_eu)
+                    output_eu   = io.BytesIO()
+                    with pd.ExcelWriter(output_eu, engine='openpyxl') as writer:
+                        df_final_eu.to_excel(writer, index=False)
+                    st.download_button(
+                        label="📥 Descargar Excel (Eudamed)",
+                        data=output_eu.getvalue(),
+                        file_name="resultados_eudamed.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        use_container_width=True, key="dl_eudamed"
+                    )
+
+                    if st.button("🤖 Resumen con IA", key="btn_resumen_ia_eudamed", use_container_width=True):
+                        with st.spinner("Generando resumen..."):
+                            try:
+                                st.info(_generar_resumen_ia(df_final_eu, "Eudamed (Unión Europea)"))
+                            except Exception as e:
+                                st.error(f"No se pudo generar el resumen: {e}")
+            elif not hay_archivo_eu:
+                st.info("👈 Sube un archivo para activar la monitorización.")
 
     # ==========================================================
     # VISTA 3: HISTORIALES
@@ -2075,5 +2114,5 @@ else:
                 <a href="#">Tratamiento de datos</a>
                 <a href="#">Mesa de Ayuda</a>
             </div>
-            <p>v 1.5.26 © Invima 2026. Todos los derechos reservados.</p>
+            <p>v 1.6.26 © Invima 2026. Todos los derechos reservados.</p>
         </div>""", unsafe_allow_html=True)
