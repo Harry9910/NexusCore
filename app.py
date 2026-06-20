@@ -632,7 +632,7 @@ def _extraer_todo_del_detalle(driver):
     return codigo_udi, agencia, nombre, fabricante
 
 
-def _procesar_referencia_eudamed(driver, referencia, primera_vez):
+def _procesar_referencia_eudamed(driver, referencia, primera_vez, limite_resultados=LIMITE_RESULTADOS_POR_REFERENCIA_EUDAMED):
     try:
         _iniciar_busqueda_eudamed(driver, referencia, primera_vez)
     except TimeoutException as e:
@@ -651,7 +651,7 @@ def _procesar_referencia_eudamed(driver, referencia, primera_vez):
             "Fabricante":          "Sin resultados",
         }]
 
-    cantidad_a_procesar = min(total, LIMITE_RESULTADOS_POR_REFERENCIA_EUDAMED)
+    cantidad_a_procesar = min(total, limite_resultados)
     filas_resultado = []
 
     for indice in range(cantidad_a_procesar):
@@ -721,6 +721,15 @@ def _procesar_referencia_eudamed(driver, referencia, primera_vez):
                 _iniciar_busqueda_eudamed(driver, referencia, primera_vez=False)
             except Exception:
                 break
+
+    if total > cantidad_a_procesar:
+        filas_resultado.append({
+            "Referencia_Original": referencia,
+            "Codigo_UDI_DI":       f"⚠ {total - cantidad_a_procesar} resultados más sin procesar",
+            "Agencia_Emisora":     f"(de {total} encontrados, solo se procesaron {cantidad_a_procesar})",
+            "Nombre_Dispositivo":  "Sube el límite en 'Configuración' si necesitas todos",
+            "Fabricante":          "",
+        })
 
     return filas_resultado
 
@@ -1514,6 +1523,7 @@ else:
         nav_items = [
             ("🏠 Menú Principal",       "Inicio"),
             ("🚀 Extracción Masiva",     "ExtraccionMasiva"),
+            ("📄 Documentación Post-Venta", "DocumentacionPostVenta"),
             ("📋 Historiales y Reportes", "Historiales"),
         ]
         for label, seccion in nav_items:
@@ -1856,6 +1866,20 @@ else:
                 "Sube tu archivo de Excel (.xlsx)", type=["xlsx"], key="uploader_eudamed"
             )
 
+            with st.expander("⚙ Configuración"):
+                limite_eudamed = st.number_input(
+                    "Máximo de resultados a procesar por referencia",
+                    min_value=1, max_value=200, value=15, step=5,
+                    key="limite_eudamed",
+                    help="Si una referencia tiene muchas coincidencias (ej: 'mg1' con 94 resultados), "
+                         "procesar todas puede tardar mucho (cada una toma ~10-20s). Si necesitas todas, "
+                         "sube este número, pero la extracción será más lenta."
+                )
+                st.caption(
+                    "Si una referencia tiene más resultados que este límite, se te avisará "
+                    "en la tabla cuántos quedaron sin procesar."
+                )
+
             if archivo_eudamed is not None:
                 if archivo_eudamed.name != st.session_state.get("eudamed_archivo_nombre", ""):
                     st.session_state["eudamed_archivo_bytes"]  = archivo_eudamed.read()
@@ -1931,7 +1955,8 @@ else:
 
                             try:
                                 filas_ref = _procesar_referencia_eudamed(
-                                    driver_eu, ref, primera_vez=(idx == 0)
+                                    driver_eu, ref, primera_vez=(idx == 0),
+                                    limite_resultados=limite_eudamed
                                 )
                             except Exception as e:
                                 filas_ref = [{
@@ -1988,6 +2013,18 @@ else:
                                 st.error(f"No se pudo generar el resumen: {e}")
             elif not hay_archivo_eu:
                 st.info("👈 Sube un archivo para activar la monitorización.")
+
+    # ==========================================================
+    # VISTA 2-C: DOCUMENTACIÓN POST-VENTA (en construcción)
+    # ==========================================================
+    elif st.session_state["seccion_activa"] == "DocumentacionPostVenta":
+        st.markdown("<h3 style='color:#0b1d3a;'>📄 Documentación Post-Venta</h3>", unsafe_allow_html=True)
+        st.markdown(
+            "<p style='color:#475569;'>Este apartado está en construcción. "
+            "Cuéntame qué necesitas y lo armamos paso a paso.</p>",
+            unsafe_allow_html=True
+        )
+        st.info("🚧 Aún no hay nada configurado aquí — listo para que me indiques qué construir.")
 
     # ==========================================================
     # VISTA 3: HISTORIALES
