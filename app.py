@@ -338,6 +338,8 @@ def _procesar_zip_postventa(bytes_zip, token, carpeta_raiz_id):
     """Recorre el .zip subido (Fabricante/Equipo/Referencia/archivo) y:
     - Crea en Drive las carpetas que falten (Fabricante > Equipo > Referencia)
     - Sube los archivos que no existan todavía en esa referencia
+    - Los archivos sueltos en la raíz del .zip (que no pertenecen a ningún
+      fabricante) se guardan en una carpeta 'DOCUMENTOS GENERALES'.
     - NO sobrescribe ni renombra archivos que ya existan: los reporta como
       'conflicto pendiente' para que el usuario decida qué hacer.
     Devuelve una lista de filas (una por archivo procesado) con su estado."""
@@ -346,6 +348,7 @@ def _procesar_zip_postventa(bytes_zip, token, carpeta_raiz_id):
     cache_carpetas_equipo = {}   # clave: id de carpeta fabricante -> dict hijos
     cache_carpetas_referencia = {}  # clave: id de carpeta equipo -> dict hijos
     cache_archivos_referencia = {}  # clave: id de carpeta referencia -> dict hijos
+    id_carpeta_generales = None  # se crea/obtiene solo si hace falta
 
     with zipfile.ZipFile(io.BytesIO(bytes_zip)) as zf:
         nombres = [n for n in zf.namelist() if not n.endswith("/")]
@@ -364,6 +367,40 @@ def _procesar_zip_postventa(bytes_zip, token, carpeta_raiz_id):
             if prefijo_a_quitar and partes and partes[0] == prefijo_a_quitar:
                 partes = partes[1:]
 
+            # ── Archivo suelto en la raíz (no pertenece a ningún fabricante) ──
+            if len(partes) == 1:
+                nombre_archivo = partes[0]
+                if not nombre_archivo:
+                    continue
+                if id_carpeta_generales is None:
+                    id_carpeta_generales, _ = _drive_obtener_o_crear_carpeta(
+                        token, "DOCUMENTOS GENERALES", carpeta_raiz_id, cache_carpetas_fabricante
+                    )
+                    cache_archivos_referencia[id_carpeta_generales] = _drive_listar_hijos(token, id_carpeta_generales)
+                archivos_generales = cache_archivos_referencia[id_carpeta_generales]
+
+                if nombre_archivo in archivos_generales:
+                    filas.append({
+                        "Fabricante": "(general)", "Equipo": "-", "Referencia": "-",
+                        "Archivo": nombre_archivo, "Estado": "🟡 CONFLICTO: ya existe (no se subió, pendiente de decisión)"
+                    })
+                    continue
+                try:
+                    contenido = zf.read(nombre_entrada)
+                    mimetype = mimetypes.guess_type(nombre_archivo)[0] or "application/octet-stream"
+                    _drive_subir_archivo(token, nombre_archivo, contenido, mimetype, id_carpeta_generales)
+                    archivos_generales[nombre_archivo] = {"id": "nuevo", "mimeType": mimetype}
+                    filas.append({
+                        "Fabricante": "(general)", "Equipo": "-", "Referencia": "-",
+                        "Archivo": nombre_archivo, "Estado": "✅ Subido a DOCUMENTOS GENERALES"
+                    })
+                except Exception as e:
+                    filas.append({
+                        "Fabricante": "(general)", "Equipo": "-", "Referencia": "-",
+                        "Archivo": nombre_archivo, "Estado": f"❌ Error: {e}"
+                    })
+                continue
+
             if len(partes) == 4:
                 fabricante, equipo, referencia, nombre_archivo = partes
             elif len(partes) == 3:
@@ -375,7 +412,7 @@ def _procesar_zip_postventa(bytes_zip, token, carpeta_raiz_id):
             else:
                 filas.append({
                     "Fabricante": "?", "Equipo": "?", "Referencia": "?",
-                    "Archivo": ruta, "Estado": f"⚠ Ignorado (se esperaban 3 o 4 niveles, tiene {len(partes)})"
+                    "Archivo": ruta, "Estado": f"⚠ Ignorado (se esperaban 1, 3 o 4 niveles, tiene {len(partes)})"
                 })
                 continue
 
