@@ -9,6 +9,7 @@ import time
 import io
 import base64
 import shutil
+import re
 import json
 import uuid
 import zipfile
@@ -223,10 +224,21 @@ def buscar_logo(nombre_base):
 #                       └── (los archivos de esa referencia)
 
 def _obtener_id_carpeta_raiz_postventa():
+    """Lee el ID de la carpeta raíz desde Secrets. Si por error se pegó la
+    URL completa de Drive (ej: '.../folders/ABC123?usp=drive_link') en vez
+    del ID solo, lo extrae automáticamente en vez de fallar."""
     try:
-        return st.secrets["drive"]["folder_id"]
+        valor = st.secrets["drive"]["folder_id"]
     except Exception:
         return None
+    if not valor:
+        return None
+    valor = valor.strip()
+    coincidencia = re.search(r"/folders/([a-zA-Z0-9_-]+)", valor)
+    if coincidencia:
+        return coincidencia.group(1)
+    # Si viene con parámetros tipo '?usp=drive_link' pegados al ID solo
+    return valor.split("?")[0].strip("/")
 
 
 def _obtener_token_drive():
