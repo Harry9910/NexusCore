@@ -272,8 +272,15 @@ def _buscar_referencia_accessgudid(ref, session, headers, company_names_filtro):
                 diccionario_estados = {"active": "Activo", "obsolete": "Obsoleto", "no encontrado": "No encontrado"}
                 gmdn_status = diccionario_estados.get(gmdn_status.lower(), gmdn_status)
 
+                # NOTA: la traducción con IA ya NO se hace aquí dentro del hilo
+                # paralelo. Si 5 hilos llaman a Gemini al mismo tiempo, el
+                # límite de peticiones por minuto del nivel gratuito se agota
+                # de inmediato y todo se atasca esperando reintentos. En vez
+                # de eso, se deja el texto en inglés (limpio de comillas) y
+                # se traduce todo junto, una sola vez, después de que termine
+                # la búsqueda en paralelo (ver bucle de traducción más abajo).
                 if gmdn_def and gmdn_def.lower() != "no encontrado":
-                    gmdn_def = _traducir_gmdn_con_ia(gmdn_def.replace('"', '').replace("'", ""))
+                    gmdn_def = gmdn_def.replace('"', '').replace("'", "")
 
                 issuing = "No encontrado"
                 for i2, l in enumerate(lineas):
@@ -1751,6 +1758,27 @@ else:
                             )
                             actualizar_barra_gudid(int(completados / total_refs * 100))
                             tabla_viva.dataframe(pd.DataFrame(lista_resultados), use_container_width=True, height=260)
+
+                    # ── TRADUCCIÓN (un solo paso, sin concurrencia) ──
+                    # Se traduce aquí, después de la búsqueda en paralelo, para
+                    # no saturar el límite de peticiones por minuto de Gemini.
+                    # Además, se cachean los textos repetidos (varias referencias
+                    # pueden compartir la misma definición GMDN) para no pedirle
+                    # a la IA la misma traducción más de una vez.
+                    definiciones_unicas = sorted(set(
+                        f.get("Definicion_GMDN", "") for f in lista_resultados
+                        if f.get("Definicion_GMDN", "") and f.get("Definicion_GMDN", "").lower() != "no encontrado"
+                    ))
+                    if definiciones_unicas:
+                        texto_estado.info(f"🌐 Traduciendo {len(definiciones_unicas)} definiciones GMDN...")
+                        cache_traduccion = {}
+                        for texto_original in definiciones_unicas:
+                            cache_traduccion[texto_original] = _traducir_gmdn_con_ia(texto_original)
+                        for f in lista_resultados:
+                            original = f.get("Definicion_GMDN", "")
+                            if original in cache_traduccion:
+                                f["Definicion_GMDN"] = cache_traduccion[original]
+                        tabla_viva.dataframe(pd.DataFrame(lista_resultados), use_container_width=True, height=260)
 
                     texto_estado.empty(); barra_custom.empty()
                     st.success(f"✨ ¡Completado! ({int(time.time()-inicio_tiempo)}s)")
