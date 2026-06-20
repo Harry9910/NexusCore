@@ -510,17 +510,20 @@ def _mensaje_error_drive(e):
     return str(e)
 
 
-def _drive_copiar_archivo(token, file_id, nuevo_nombre, nuevo_parent_id):
-    """Copia un archivo ya existente en Drive a otra carpeta, sin tener
-    que descargar y volver a subir sus bytes (mucho más rápido)."""
-    respuesta = requests.post(
-        f"https://www.googleapis.com/drive/v3/files/{file_id}/copy?fields=id,name",
-        headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
-        json={"name": nuevo_nombre, "parents": [nuevo_parent_id]},
-        timeout=60,
+def _drive_descargar_archivo(token, file_id):
+    """Descarga el contenido (bytes) de un archivo de Drive. Se usa en vez
+    de 'files.copy' (que falla porque las cuentas de servicio no tienen
+    cuota propia: ver _mensaje_error_drive más abajo) — descargando y
+    subiendo de nuevo el archivo (como una subida normal) sí funciona,
+    porque ese consumo de cuota se atribuye al dueño de la carpeta
+    destino, no a la cuenta de servicio."""
+    respuesta = requests.get(
+        f"https://www.googleapis.com/drive/v3/files/{file_id}?alt=media",
+        headers={"Authorization": f"Bearer {token}"},
+        timeout=120,
     )
     respuesta.raise_for_status()
-    return respuesta.json()
+    return respuesta.content
 
 
 def _drive_listar_archivos_de_carpeta(token, folder_id):
@@ -736,7 +739,9 @@ def _procesar_zip_remisiones(bytes_zip, token, carpeta_raiz_id, callback_progres
                 errores_copia = []
                 for nombre_archivo, info_archivo in archivos_origen.items():
                     try:
-                        _drive_copiar_archivo(token, info_archivo["id"], nombre_archivo, id_subcarpeta_equipo)
+                        contenido_archivo = _drive_descargar_archivo(token, info_archivo["id"])
+                        mimetype_archivo = info_archivo.get("mimeType") or mimetypes.guess_type(nombre_archivo)[0] or "application/octet-stream"
+                        _drive_subir_archivo(token, nombre_archivo, contenido_archivo, mimetype_archivo, id_subcarpeta_equipo)
                         copiados += 1
                     except Exception as e:
                         errores_copia.append(f"{nombre_archivo}: {_mensaje_error_drive(e)}")
