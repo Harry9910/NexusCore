@@ -648,25 +648,23 @@ def _analizar_remision_con_ia(texto_pdf, arbol_referencias):
     return json.loads(texto_json)
 
 
-def _procesar_zip_remisiones(bytes_zip, token, carpeta_raiz_id, callback_progreso=None):
-    """Procesa un .zip con remisiones en PDF: por cada una, extrae texto,
-    la analiza con IA, y copia los documentos de cada equipo identificado
-    dentro de una carpeta nueva por cliente, en 'CARPETA FINAL POST-VENTA'.
-    'callback_progreso(indice, total, nombre_archivo)' se llama antes de
-    procesar cada PDF, para poder mostrar avance en la interfaz."""
-    filas = []
+def _analizar_zip_remisiones(bytes_zip, token, carpeta_raiz_id, callback_progreso=None):
+    """FASE 1: analiza el .zip de remisiones con IA y arma la lista de
+    'grupos' (remisión + equipo encontrado, con sus archivos disponibles
+    en Drive), SIN COPIAR nada todavía. El usuario revisa y marca/desmarca
+    qué archivos quiere antes de confirmar la copia real (ver
+    _ejecutar_copia_seleccionada más abajo). 'callback_progreso(indice,
+    total, nombre_archivo)' se llama antes de procesar cada PDF."""
+    grupos = []
+    informativas = []  # casos sin coincidencia, sin texto, o con error (no requieren selección)
 
     arbol_referencias = _construir_arbol_referencias_drive(token, carpeta_raiz_id)
     if not arbol_referencias:
-        return [{
+        return {"grupos": [], "informativas": [{
             "Remision": "-", "Cliente": "-", "Equipo": "-", "Referencia": "-",
             "Estado": "⚠ No se encontró ningún equipo documentado en Drive todavía. "
                       "Sube primero la documentación de los fabricantes."
-        }]
-
-    id_carpeta_final, _ = _drive_obtener_o_crear_carpeta(
-        token, NOMBRE_CARPETA_FINAL_POSTVENTA, carpeta_raiz_id
-    )
+        }]}
 
     with zipfile.ZipFile(io.BytesIO(bytes_zip)) as zf:
         nombres_pdf = [n for n in zf.namelist() if n.lower().endswith(".pdf") and not n.endswith("/")]
@@ -681,14 +679,14 @@ def _procesar_zip_remisiones(bytes_zip, token, carpeta_raiz_id, callback_progres
                 bytes_pdf = zf.read(nombre_entrada)
                 texto_pdf = _extraer_texto_pdf(bytes_pdf)
                 if len(texto_pdf) < 30:
-                    filas.append({
+                    informativas.append({
                         "Remision": nombre_archivo_pdf, "Cliente": "-", "Equipo": "-", "Referencia": "-",
                         "Estado": "⚠ No se pudo leer texto del PDF (¿está escaneado como imagen?)"
                     })
                     continue
                 analisis = _analizar_remision_con_ia(texto_pdf, arbol_referencias)
             except Exception as e:
-                filas.append({
+                informativas.append({
                     "Remision": nombre_archivo_pdf, "Cliente": "-", "Equipo": "-", "Referencia": "-",
                     "Estado": f"❌ Error analizando con IA: {e}"
                 })
@@ -704,16 +702,14 @@ def _procesar_zip_remisiones(bytes_zip, token, carpeta_raiz_id, callback_progres
                 nombre_carpeta_cliente = nombre_archivo_pdf
 
             if not items:
-                filas.append({
+                informativas.append({
                     "Remision": nombre_archivo_pdf, "Cliente": cliente or "-",
                     "Equipo": "-", "Referencia": "-",
                     "Estado": "⚠ No se identificaron equipos en la tabla de esta remisión"
                 })
                 continue
 
-            id_carpeta_cliente = None  # se crea solo si hay al menos un equipo con coincidencia
-
-            for item in items:
+            for idx_item, item in enumerate(items):
                 descripcion = (item.get("descripcion_original") or "").strip()
                 fabricante_m = (item.get("fabricante") or "").strip()
                 equipo_m = (item.get("equipo") or "").strip()
@@ -721,7 +717,7 @@ def _procesar_zip_remisiones(bytes_zip, token, carpeta_raiz_id, callback_progres
                 coincidencia = (item.get("coincidencia") or "").strip().lower()
 
                 if coincidencia == "sin_coincidencia" or not equipo_m or not referencia_m:
-                    filas.append({
+                    informativas.append({
                         "Remision": nombre_archivo_pdf, "Cliente": cliente or "-",
                         "Equipo": descripcion or "-", "Referencia": "-",
                         "Estado": "🟠 PENDIENTE: no se encontró carpeta de Drive correspondiente"
@@ -736,7 +732,7 @@ def _procesar_zip_remisiones(bytes_zip, token, carpeta_raiz_id, callback_progres
                     None
                 )
                 if entrada_arbol is None:
-                    filas.append({
+                    informativas.append({
                         "Remision": nombre_archivo_pdf, "Cliente": cliente or "-",
                         "Equipo": descripcion or f"{equipo_m} {referencia_m}", "Referencia": referencia_m,
                         "Estado": "🟠 PENDIENTE: la IA sugirió una carpeta que no coincide exactamente"
@@ -745,49 +741,90 @@ def _procesar_zip_remisiones(bytes_zip, token, carpeta_raiz_id, callback_progres
 
                 archivos_origen = _drive_listar_archivos_de_carpeta(token, entrada_arbol["folder_id"])
                 if not archivos_origen:
-                    filas.append({
+                    informativas.append({
                         "Remision": nombre_archivo_pdf, "Cliente": cliente or "-",
                         "Equipo": equipo_m, "Referencia": referencia_m,
                         "Estado": "🟠 PENDIENTE: la carpeta de ese equipo no tiene archivos"
                     })
                     continue
 
-                if id_carpeta_cliente is None:
-                    id_carpeta_cliente, _ = _drive_obtener_o_crear_carpeta(
-                        token, nombre_carpeta_cliente, id_carpeta_final
-                    )
-
-                nombre_subcarpeta_equipo = f"{equipo_m} - {referencia_m}"
-                id_subcarpeta_equipo, _ = _drive_obtener_o_crear_carpeta(
-                    token, nombre_subcarpeta_equipo, id_carpeta_cliente
-                )
-
-                copiados = 0
-                errores_copia = []
-                for nombre_archivo, info_archivo in archivos_origen.items():
-                    try:
-                        contenido_archivo = _drive_descargar_archivo(token, info_archivo["id"])
-                        mimetype_archivo = info_archivo.get("mimeType") or mimetypes.guess_type(nombre_archivo)[0] or "application/octet-stream"
-                        _drive_subir_archivo(token, nombre_archivo, contenido_archivo, mimetype_archivo, id_subcarpeta_equipo)
-                        copiados += 1
-                    except Exception as e:
-                        errores_copia.append(f"{nombre_archivo}: {_mensaje_error_drive(e)}")
-
-                if copiados == 0 and errores_copia:
-                    estado_fila = f"❌ No se pudo copiar ningún archivo. Detalle: {errores_copia[0]}"
-                else:
-                    estado_fila = (
-                        f"✅ {copiados} documento(s) copiado(s) a "
-                        f"'{NOMBRE_CARPETA_FINAL_POSTVENTA}/{nombre_carpeta_cliente}/{nombre_subcarpeta_equipo}'"
-                    )
-                    if errores_copia:
-                        estado_fila += f" (⚠ {len(errores_copia)} fallaron: {errores_copia[0]})"
-
-                filas.append({
-                    "Remision": nombre_archivo_pdf, "Cliente": cliente or "-",
-                    "Equipo": equipo_m, "Referencia": referencia_m,
-                    "Estado": estado_fila
+                grupos.append({
+                    "id_grupo": f"{idx}_{idx_item}",
+                    "remision": nombre_archivo_pdf,
+                    "cliente": cliente or "-",
+                    "nombre_carpeta_cliente": nombre_carpeta_cliente,
+                    "equipo": equipo_m,
+                    "referencia": referencia_m,
+                    "archivos_disponibles": [
+                        {"nombre": nombre, "id": info["id"], "mimeType": info.get("mimeType", "")}
+                        for nombre, info in archivos_origen.items()
+                    ],
                 })
+
+    return {"grupos": grupos, "informativas": informativas}
+
+
+def _ejecutar_copia_seleccionada(token, carpeta_raiz_id, grupos, obtener_seleccion_archivo):
+    """FASE 2: ya con la selección de archivos confirmada por el usuario
+    ('obtener_seleccion_archivo(id_grupo, id_archivo) -> bool'), crea las
+    carpetas que falten y copia (descarga + sube) solo los archivos que
+    quedaron marcados."""
+    filas = []
+    id_carpeta_final, _ = _drive_obtener_o_crear_carpeta(
+        token, NOMBRE_CARPETA_FINAL_POSTVENTA, carpeta_raiz_id
+    )
+    cache_carpetas_cliente = {}
+
+    for grupo in grupos:
+        archivos_seleccionados = [
+            a for a in grupo["archivos_disponibles"]
+            if obtener_seleccion_archivo(grupo["id_grupo"], a["id"])
+        ]
+        if not archivos_seleccionados:
+            filas.append({
+                "Remision": grupo["remision"], "Cliente": grupo["cliente"],
+                "Equipo": grupo["equipo"], "Referencia": grupo["referencia"],
+                "Estado": "⏭ Omitido (no se seleccionó ningún archivo de este equipo)"
+            })
+            continue
+
+        nombre_carpeta_cliente = grupo["nombre_carpeta_cliente"]
+        if nombre_carpeta_cliente not in cache_carpetas_cliente:
+            id_cliente, _ = _drive_obtener_o_crear_carpeta(token, nombre_carpeta_cliente, id_carpeta_final)
+            cache_carpetas_cliente[nombre_carpeta_cliente] = id_cliente
+        id_carpeta_cliente = cache_carpetas_cliente[nombre_carpeta_cliente]
+
+        nombre_subcarpeta_equipo = f"{grupo['equipo']} - {grupo['referencia']}"
+        id_subcarpeta_equipo, _ = _drive_obtener_o_crear_carpeta(
+            token, nombre_subcarpeta_equipo, id_carpeta_cliente
+        )
+
+        copiados = 0
+        errores_copia = []
+        for archivo in archivos_seleccionados:
+            try:
+                contenido = _drive_descargar_archivo(token, archivo["id"])
+                mimetype = archivo.get("mimeType") or mimetypes.guess_type(archivo["nombre"])[0] or "application/octet-stream"
+                _drive_subir_archivo(token, archivo["nombre"], contenido, mimetype, id_subcarpeta_equipo)
+                copiados += 1
+            except Exception as e:
+                errores_copia.append(f"{archivo['nombre']}: {_mensaje_error_drive(e)}")
+
+        if copiados == 0 and errores_copia:
+            estado_fila = f"❌ No se pudo copiar ningún archivo. Detalle: {errores_copia[0]}"
+        else:
+            estado_fila = (
+                f"✅ {copiados}/{len(archivos_seleccionados)} documento(s) copiado(s) a "
+                f"'{NOMBRE_CARPETA_FINAL_POSTVENTA}/{nombre_carpeta_cliente}/{nombre_subcarpeta_equipo}'"
+            )
+            if errores_copia:
+                estado_fila += f" (⚠ {len(errores_copia)} fallaron: {errores_copia[0]})"
+
+        filas.append({
+            "Remision": grupo["remision"], "Cliente": grupo["cliente"],
+            "Equipo": grupo["equipo"], "Referencia": grupo["referencia"],
+            "Estado": estado_fila
+        })
 
     return filas
 
@@ -2713,19 +2750,22 @@ else:
             )
             st.markdown(
                 "<p style='color:#475569;'>Sube un .zip con tu carpeta de remisiones (PDF). Por cada "
-                "una, la IA extrae el pedido, la remisión y el cliente, identifica los equipos de la "
-                "tabla, y copia la documentación correspondiente (ya organizada en Drive) dentro de "
-                f"una carpeta nueva por cliente, en <b>{NOMBRE_CARPETA_FINAL_POSTVENTA}</b>. "
-                "Los archivos originales no se mueven ni se modifican, solo se copian.</p>",
+                "una, la IA extrae el pedido, la remisión y el cliente, e identifica los equipos de la "
+                "tabla. Antes de copiar nada, vas a poder revisar y desmarcar los documentos que NO "
+                "quieras incluir. Los archivos originales no se mueven ni se modifican, solo se copian "
+                f"dentro de una carpeta nueva por cliente, en <b>{NOMBRE_CARPETA_FINAL_POSTVENTA}</b>.</p>",
                 unsafe_allow_html=True
             )
+
+            if "analisis_remisiones" not in st.session_state:
+                st.session_state["analisis_remisiones"] = None
 
             archivo_zip_remisiones = st.file_uploader(
                 "Sube el .zip con las remisiones (PDF)", type=["zip"], key="uploader_remisiones"
             )
 
             if archivo_zip_remisiones and st.button(
-                "📑 Procesar Remisiones", use_container_width=True, key="btn_procesar_remisiones"
+                "🔍 Analizar Remisiones", use_container_width=True, key="btn_analizar_remisiones"
             ):
                 try:
                     bytes_zip_rem = archivo_zip_remisiones.read()
@@ -2745,9 +2785,9 @@ else:
                 def _avisar_progreso_remision(idx, total, nombre_archivo):
                     texto_estado_rem.info(f"⏳ Analizando {idx+1}/{total}: {nombre_archivo}...")
 
-                with st.spinner("Procesando remisiones (puede tardar varios minutos)..."):
+                with st.spinner("Analizando remisiones con IA (puede tardar varios minutos)..."):
                     try:
-                        filas_rem = _procesar_zip_remisiones(
+                        resultado_analisis = _analizar_zip_remisiones(
                             bytes_zip_rem, token_rem, carpeta_raiz_id,
                             callback_progreso=_avisar_progreso_remision
                         )
@@ -2755,47 +2795,100 @@ else:
                         st.error("El archivo subido no es un .zip válido.")
                         st.stop()
                     except Exception as e:
-                        st.error(f"Ocurrió un error procesando las remisiones: {e}")
+                        st.error(f"Ocurrió un error analizando las remisiones: {e}")
                         st.stop()
 
                 texto_estado_rem.empty()
+                st.session_state["analisis_remisiones"] = resultado_analisis
+                st.rerun()
 
-                df_rem = pd.DataFrame(filas_rem)
-                total_ok = df_rem["Estado"].str.contains("✅", na=False).sum() if not df_rem.empty else 0
-                total_pendientes = df_rem["Estado"].str.contains("PENDIENTE", na=False).sum() if not df_rem.empty else 0
-                total_err = df_rem["Estado"].str.contains("❌", na=False).sum() if not df_rem.empty else 0
-
-                st.success(
-                    f"✨ Proceso terminado: {total_ok} equipo(s) organizado(s), "
-                    f"{total_pendientes} pendiente(s) por revisar, {total_err} error(es)."
-                )
-                if total_pendientes > 0:
-                    st.warning(
-                        f"⚠ Hay {total_pendientes} caso(s) que quedaron pendientes de revisión manual "
-                        "(no se encontró con certeza la carpeta de Drive correspondiente). Revísalos en "
-                        "la tabla — dime qué encuentras y ajustamos lo que haga falta."
-                    )
-
-                st.dataframe(df_rem, use_container_width=True, height=350)
-
-                output_rem = io.BytesIO()
-                with pd.ExcelWriter(output_rem, engine='openpyxl') as writer:
-                    df_rem.to_excel(writer, index=False)
-                st.download_button(
-                    label="📥 Descargar resumen en Excel",
-                    data=output_rem.getvalue(),
-                    file_name="resumen_remisiones_postventa.xlsx",
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                    use_container_width=True
-                )
-
-                registrar_log(
-                    st.session_state["usuario_activo_real"],
-                    f"Procesamiento de remisiones post-venta ({total_ok} organizados, {total_pendientes} pendientes)",
-                    len(filas_rem)
-                )
             elif not archivo_zip_remisiones:
                 st.info("👈 Sube tu .zip con las remisiones para comenzar.")
+
+            # ── Revisión de la selección (después de analizar, antes de copiar) ──
+            datos_analisis = st.session_state.get("analisis_remisiones")
+            if datos_analisis is not None:
+                grupos_rem = datos_analisis["grupos"]
+                informativas_rem = datos_analisis["informativas"]
+
+                if informativas_rem:
+                    st.warning(
+                        f"⚠ {len(informativas_rem)} caso(s) sin coincidencia o sin texto legible "
+                        "(no requieren selección, no se les puede copiar nada):"
+                    )
+                    st.dataframe(pd.DataFrame(informativas_rem), use_container_width=True)
+
+                if grupos_rem:
+                    st.markdown("##### ✅ Revisa qué documentos copiar por cada equipo encontrado")
+                    st.caption(
+                        "Por defecto están todos marcados. Desmarca los que NO quieras incluir en "
+                        "la carpeta final de ese cliente."
+                    )
+                    for grupo_rem in grupos_rem:
+                        with st.expander(
+                            f"📦 {grupo_rem['remision']} — {grupo_rem['cliente']} — "
+                            f"{grupo_rem['equipo']} ({grupo_rem['referencia']}) "
+                            f"· {len(grupo_rem['archivos_disponibles'])} documento(s)",
+                            expanded=True
+                        ):
+                            for archivo_rem in grupo_rem["archivos_disponibles"]:
+                                key_chk = f"chk_rem_{grupo_rem['id_grupo']}_{archivo_rem['id']}"
+                                if key_chk not in st.session_state:
+                                    st.session_state[key_chk] = True
+                                st.checkbox(archivo_rem["nombre"], key=key_chk)
+
+                    if st.button(
+                        "✅ Confirmar selección y copiar a Drive",
+                        use_container_width=True, key="btn_confirmar_copia_remisiones"
+                    ):
+                        with st.spinner("Conectando con Google Drive..."):
+                            try:
+                                token_copia_rem = _obtener_token_drive()
+                            except Exception as e:
+                                st.error(f"No se pudo obtener acceso a Google Drive: {e}")
+                                st.stop()
+
+                        with st.spinner("Copiando los documentos seleccionados..."):
+                            filas_copiados = _ejecutar_copia_seleccionada(
+                                token_copia_rem, carpeta_raiz_id, grupos_rem,
+                                obtener_seleccion_archivo=lambda gid, fid: st.session_state.get(
+                                    f"chk_rem_{gid}_{fid}", True
+                                )
+                            )
+
+                        filas_finales_rem = filas_copiados + informativas_rem
+                        df_rem = pd.DataFrame(filas_finales_rem)
+                        total_ok = df_rem["Estado"].str.contains("✅", na=False).sum() if not df_rem.empty else 0
+                        total_omitidos = df_rem["Estado"].str.contains("⏭", na=False).sum() if not df_rem.empty else 0
+                        total_pendientes = df_rem["Estado"].str.contains("PENDIENTE", na=False).sum() if not df_rem.empty else 0
+                        total_err = df_rem["Estado"].str.contains("❌", na=False).sum() if not df_rem.empty else 0
+
+                        st.success(
+                            f"✨ Proceso terminado: {total_ok} equipo(s) copiado(s), "
+                            f"{total_omitidos} omitido(s) por selección, "
+                            f"{total_pendientes} pendiente(s), {total_err} error(es)."
+                        )
+                        st.dataframe(df_rem, use_container_width=True, height=350)
+
+                        output_rem = io.BytesIO()
+                        with pd.ExcelWriter(output_rem, engine='openpyxl') as writer:
+                            df_rem.to_excel(writer, index=False)
+                        st.download_button(
+                            label="📥 Descargar resumen en Excel",
+                            data=output_rem.getvalue(),
+                            file_name="resumen_remisiones_postventa.xlsx",
+                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                            use_container_width=True
+                        )
+
+                        registrar_log(
+                            st.session_state["usuario_activo_real"],
+                            f"Procesamiento de remisiones post-venta ({total_ok} copiados, {total_pendientes} pendientes)",
+                            len(filas_finales_rem)
+                        )
+                        st.session_state["analisis_remisiones"] = None
+                elif not informativas_rem:
+                    st.info("No se encontraron remisiones para procesar en ese .zip.")
 
     # ==========================================================
     # VISTA 3: HISTORIALES
