@@ -496,6 +496,20 @@ def _extraer_texto_pdf(bytes_pdf):
         return ""
 
 
+def _mensaje_error_drive(e):
+    """Extrae el mensaje de error real que devuelve la API de Drive
+    (viene en el cuerpo de la respuesta como JSON), en vez de solo el
+    genérico '404 Client Error' / '403 Client Error' que da 'requests'."""
+    respuesta = getattr(e, "response", None)
+    if respuesta is not None:
+        try:
+            datos_error = respuesta.json()
+            return datos_error.get("error", {}).get("message", respuesta.text[:200])
+        except Exception:
+            return (respuesta.text or str(e))[:200]
+    return str(e)
+
+
 def _drive_copiar_archivo(token, file_id, nuevo_nombre, nuevo_parent_id):
     """Copia un archivo ya existente en Drive a otra carpeta, sin tener
     que descargar y volver a subir sus bytes (mucho más rápido)."""
@@ -719,18 +733,28 @@ def _procesar_zip_remisiones(bytes_zip, token, carpeta_raiz_id, callback_progres
                 )
 
                 copiados = 0
+                errores_copia = []
                 for nombre_archivo, info_archivo in archivos_origen.items():
                     try:
                         _drive_copiar_archivo(token, info_archivo["id"], nombre_archivo, id_subcarpeta_equipo)
                         copiados += 1
-                    except Exception:
-                        continue
+                    except Exception as e:
+                        errores_copia.append(f"{nombre_archivo}: {_mensaje_error_drive(e)}")
+
+                if copiados == 0 and errores_copia:
+                    estado_fila = f"❌ No se pudo copiar ningún archivo. Detalle: {errores_copia[0]}"
+                else:
+                    estado_fila = (
+                        f"✅ {copiados} documento(s) copiado(s) a "
+                        f"'{NOMBRE_CARPETA_FINAL_POSTVENTA}/{nombre_carpeta_cliente}/{nombre_subcarpeta_equipo}'"
+                    )
+                    if errores_copia:
+                        estado_fila += f" (⚠ {len(errores_copia)} fallaron: {errores_copia[0]})"
 
                 filas.append({
                     "Remision": nombre_archivo_pdf, "Cliente": cliente or "-",
                     "Equipo": equipo_m, "Referencia": referencia_m,
-                    "Estado": f"✅ {copiados} documento(s) copiado(s) a "
-                              f"'{NOMBRE_CARPETA_FINAL_POSTVENTA}/{nombre_carpeta_cliente}/{nombre_subcarpeta_equipo}'"
+                    "Estado": estado_fila
                 })
 
     return filas
