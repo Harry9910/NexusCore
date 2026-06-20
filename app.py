@@ -243,11 +243,38 @@ def _obtener_id_carpeta_raiz_postventa():
 
 
 def _obtener_token_drive():
-    """Obtiene un token de acceso OAuth2 a partir de las credenciales de
-    la cuenta de servicio, para llamar a la API REST de Drive."""
-    creds = _obtener_credenciales_google()
-    info_token = creds.get_access_token()
-    return info_token.access_token
+    """Obtiene un token de acceso a Drive usando OAuth con la cuenta del
+    USUARIO (no la cuenta de servicio). Esto es necesario porque las
+    cuentas de servicio gratuitas de Google NO tienen cuota de
+    almacenamiento propia y no pueden crear archivos con contenido real
+    (ni subiéndolos de cero ni copiándolos) — solo pueden leer/listar.
+    El token se renueva en cada llamada a partir del 'refresh_token'
+    guardado en Secrets, que no caduca salvo que se revoque el acceso
+    manualmente desde la cuenta de Google."""
+    try:
+        client_id = st.secrets["oauth_drive"]["client_id"]
+        client_secret = st.secrets["oauth_drive"]["client_secret"]
+        refresh_token = st.secrets["oauth_drive"]["refresh_token"]
+    except Exception:
+        raise RuntimeError(
+            "No hay credenciales OAuth de Drive configuradas. Agrega en "
+            "Settings → Secrets de Streamlit Cloud:\n\n"
+            "[oauth_drive]\nclient_id = \"...\"\nclient_secret = \"...\"\n"
+            "refresh_token = \"...\"\n\n"
+            "(se consiguen siguiendo la guía paso a paso que te compartí)."
+        )
+    respuesta = requests.post(
+        "https://oauth2.googleapis.com/token",
+        data={
+            "client_id": client_id,
+            "client_secret": client_secret,
+            "refresh_token": refresh_token,
+            "grant_type": "refresh_token",
+        },
+        timeout=30,
+    )
+    respuesta.raise_for_status()
+    return respuesta.json()["access_token"]
 
 
 def _drive_listar_hijos(token, parent_id):
