@@ -6,3 +6,4 @@ openpyxl
 gspread
 oauth2client
 selenium
+pypdf
