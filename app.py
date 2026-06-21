@@ -1527,6 +1527,59 @@ def _obtener_o_crear_hoja(nombre_hoja, encabezados):
     return hoja
 
 
+# ==========================================================
+# SEMÁFORO DE USO DE EUDAMED — evita que dos personas corran la
+# extracción de Eudamed (la más pesada, abre un navegador completo) al
+# mismo tiempo y saturen la memoria del servidor compartido. Se guarda
+# en una fila fija de una hoja de Google Sheets, visible para todos los
+# usuarios de la app sin importar en qué sesión estén.
+# ==========================================================
+NOMBRE_HOJA_ESTADO_EUDAMED = "EstadoEudamed"
+LIMITE_MINUTOS_LOCK_EUDAMED = 20  # si lleva más de esto "en uso", se considera abandonado (ej: sesión cerrada a la fuerza)
+
+
+def _obtener_estado_eudamed():
+    """Devuelve (en_uso, usuario, hora_inicio). Si algo falla al leer
+    (ej: problema de red puntual), se devuelve 'no en uso' para no
+    bloquear a nadie por un error de lectura."""
+    try:
+        hoja = _obtener_o_crear_hoja(NOMBRE_HOJA_ESTADO_EUDAMED, ["En_Uso", "Usuario", "Hora_Inicio"])
+        valores = hoja.get_all_values()
+        if len(valores) < 2:
+            return False, None, None
+        fila = valores[1]
+        en_uso = (fila[0].strip().upper() == "TRUE") if len(fila) > 0 and fila[0] else False
+        usuario = fila[1] if len(fila) > 1 and fila[1] else None
+        hora_texto = fila[2] if len(fila) > 2 and fila[2] else None
+        hora_inicio = None
+        if hora_texto:
+            try:
+                hora_inicio = datetime.datetime.strptime(hora_texto, "%Y-%m-%d %H:%M:%S")
+            except Exception:
+                hora_inicio = None
+        if en_uso and hora_inicio:
+            minutos_transcurridos = (datetime.datetime.now() - hora_inicio).total_seconds() / 60
+            if minutos_transcurridos > LIMITE_MINUTOS_LOCK_EUDAMED:
+                return False, None, None  # se considera abandonado, no bloquea
+        return en_uso, usuario, hora_inicio
+    except Exception:
+        return False, None, None
+
+
+def _marcar_estado_eudamed(en_uso, usuario=""):
+    """Actualiza el semáforo. Si falla (ej: problema de red puntual), no
+    interrumpe el flujo principal de la extracción por esto."""
+    try:
+        hoja = _obtener_o_crear_hoja(NOMBRE_HOJA_ESTADO_EUDAMED, ["En_Uso", "Usuario", "Hora_Inicio"])
+        if en_uso:
+            hora_texto = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            hoja.update("A2:C2", [["TRUE", usuario, hora_texto]])
+        else:
+            hoja.update("A2:C2", [["FALSE", "", ""]])
+    except Exception:
+        pass
+
+
 def guardar_resultados_accessgudid(usuario, filas):
     if not filas:
         return
@@ -2521,9 +2574,18 @@ else:
 
             hay_archivo_eu = st.session_state.get("eudamed_archivo_bytes") is not None
 
+            en_uso_eu, usuario_en_uso_eu, hora_inicio_eu = _obtener_estado_eudamed()
+            if en_uso_eu:
+                minutos_en_uso = int((datetime.datetime.now() - hora_inicio_eu).total_seconds() / 60) if hora_inicio_eu else 0
+                st.warning(
+                    f"🔴 Eudamed está siendo usado ahora mismo por **{usuario_en_uso_eu or 'otro usuario'}** "
+                    f"(empezó hace ~{minutos_en_uso} min). Para no saturar el servidor, espera a que termine "
+                    "antes de iniciar otra extracción."
+                )
+
             if st.button(
                 "🌍 Iniciar Extracción Eudamed",
-                disabled=not hay_archivo_eu,
+                disabled=(not hay_archivo_eu) or en_uso_eu,
                 use_container_width=True,
                 key="btn_iniciar_eudamed"
             ):
@@ -2536,6 +2598,17 @@ else:
                 st.session_state["eudamed_iniciar"] = False
 
                 with contenedor_eudamed:
+                    # Re-chequeo del semáforo justo antes de empezar (por si dos
+                    # personas le dieron clic casi al mismo tiempo, antes de que
+                    # el botón se deshabilitara para la otra persona).
+                    en_uso_eu_check, usuario_en_uso_eu_check, _ = _obtener_estado_eudamed()
+                    if en_uso_eu_check:
+                        st.error(
+                            f"🔴 {usuario_en_uso_eu_check or 'Otro usuario'} acaba de iniciar una extracción "
+                            "de Eudamed justo ahora. Espera a que termine antes de intentar de nuevo."
+                        )
+                        st.stop()
+
                     try:
                         bytes_data_eu = st.session_state["eudamed_archivo_bytes"]
                         df_eu = pd.read_excel(io.BytesIO(bytes_data_eu), header=None, dtype=str)
@@ -2545,6 +2618,8 @@ else:
                     except Exception as e:
                         st.error(f"Error al abrir el archivo de Excel: {e}")
                         st.stop()
+
+                    _marcar_estado_eudamed(True, usuario=st.session_state["usuario_activo_real"])
 
                     st.success(f"📋 Referencias encontradas: {total_refs_eu}")
 
@@ -2565,6 +2640,7 @@ else:
                         with st.spinner("Abriendo navegador automatizado..."):
                             driver_eu = _crear_driver_eudamed()
                     except Exception as e:
+                        _marcar_estado_eudamed(False)
                         st.error("No se pudo iniciar el navegador automatizado para Eudamed.")
                         st.code(str(e))
                         st.info(
@@ -2610,6 +2686,7 @@ else:
                                 driver_eu.quit()
                             except Exception:
                                 pass
+                        _marcar_estado_eudamed(False)
 
                     texto_estado_eu.empty()
                     barra_eu.empty()
