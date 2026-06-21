@@ -2156,6 +2156,7 @@ else:
             ("🏠 Menú Principal",       "Inicio"),
             ("🚀 Extracción Masiva",     "ExtraccionMasiva"),
             ("📄 Documentación Post-Venta", "DocumentacionPostVenta"),
+            ("🔢 Codificación",          "Codificacion"),
             ("📋 Historiales y Reportes", "Historiales"),
         ]
         for label, seccion in nav_items:
@@ -2889,6 +2890,120 @@ else:
                         st.session_state["analisis_remisiones"] = None
                 elif not informativas_rem:
                     st.info("No se encontraron remisiones para procesar en ese .zip.")
+
+    # ==========================================================
+    # VISTA 2-D: CODIFICACIÓN — COMPARAR REFERENCIAS ENTRE ARCHIVOS
+    # ==========================================================
+    elif st.session_state["seccion_activa"] == "Codificacion":
+        st.markdown("<h3 style='color:#0b1d3a;'>🔢 Codificación — Comparar Referencias entre Archivos</h3>", unsafe_allow_html=True)
+        st.markdown(
+            "<p style='color:#475569;'>Sube dos archivos de Excel (una sola columna de referencias, "
+            "sin encabezado, igual que en Extracción Masiva). Te muestro cuáles referencias del "
+            "<b>Archivo 1</b> NO están en el <b>Archivo 2</b>.</p>",
+            unsafe_allow_html=True
+        )
+
+        col_arch1, col_arch2 = st.columns(2)
+        with col_arch1:
+            st.markdown("**📄 Archivo 1** (el que quieres revisar)")
+            archivo_cod_1 = st.file_uploader("Sube el Archivo 1", type=["xlsx"], key="uploader_cod_1")
+        with col_arch2:
+            st.markdown("**📄 Archivo 2** (donde se busca si ya están)")
+            archivo_cod_2 = st.file_uploader("Sube el Archivo 2", type=["xlsx"], key="uploader_cod_2")
+
+        ignorar_mayusculas_cod = st.checkbox(
+            "Ignorar mayúsculas/minúsculas y espacios extra al comparar (recomendado)",
+            value=True, key="chk_cod_ignorar_mayus"
+        )
+
+        if archivo_cod_1 and archivo_cod_2 and st.button(
+            "🔍 Comparar Referencias", use_container_width=True, key="btn_comparar_codificacion"
+        ):
+            with st.spinner("Leyendo y comparando archivos (si son muy grandes puede tardar un poco)..."):
+                try:
+                    df_cod_1 = pd.read_excel(archivo_cod_1, header=None, dtype=str)
+                    df_cod_2 = pd.read_excel(archivo_cod_2, header=None, dtype=str)
+                except Exception as e:
+                    st.error(f"No se pudo leer alguno de los archivos: {e}")
+                    st.stop()
+
+                refs_1 = [r for r in df_cod_1[0].astype(str).str.strip().tolist() if r and r.lower() != "nan"]
+                refs_2 = [r for r in df_cod_2[0].astype(str).str.strip().tolist() if r and r.lower() != "nan"]
+
+                if ignorar_mayusculas_cod:
+                    _normalizar_cod = lambda r: r.strip().upper()
+                else:
+                    _normalizar_cod = lambda r: r.strip()
+
+                mapa_normalizado_a_original = {}
+                for r in refs_1:
+                    clave = _normalizar_cod(r)
+                    mapa_normalizado_a_original.setdefault(clave, r)
+
+                set_2_normalizado = set(_normalizar_cod(r) for r in refs_2)
+
+                # Índice del Archivo 2 quitando TODO lo que no sea letra o número
+                # (puntos, espacios, guiones, etc.) — para sugerir posibles
+                # coincidencias cuando la referencia es casi la misma pero con
+                # un formato ligeramente distinto.
+                _normalizar_alfanumerico_cod = lambda r: re.sub(r'[^A-Za-z0-9]', '', r).upper()
+                indice_super_normalizado_2 = {}
+                for r in refs_2:
+                    clave_super = _normalizar_alfanumerico_cod(r)
+                    indice_super_normalizado_2.setdefault(clave_super, []).append(r)
+
+                filas_faltantes_cod = []
+                for clave in mapa_normalizado_a_original:
+                    if clave in set_2_normalizado:
+                        continue
+                    referencia_original = mapa_normalizado_a_original[clave]
+                    clave_super = _normalizar_alfanumerico_cod(referencia_original)
+                    posibles = sorted(set(indice_super_normalizado_2.get(clave_super, [])))
+                    filas_faltantes_cod.append({
+                        "Referencia_No_Encontrada": referencia_original,
+                        "Posibles_Coincidencias_Archivo2": ", ".join(posibles) if posibles else "-"
+                    })
+
+                faltantes = [f["Referencia_No_Encontrada"] for f in filas_faltantes_cod]
+                total_con_posible = sum(1 for f in filas_faltantes_cod if f["Posibles_Coincidencias_Archivo2"] != "-")
+
+            st.success(
+                f"✨ Archivo 1: {len(refs_1)} referencias ({len(mapa_normalizado_a_original)} únicas) · "
+                f"Archivo 2: {len(refs_2)} referencias · "
+                f"**{len(faltantes)} referencias del Archivo 1 no están en el Archivo 2**"
+            )
+            if faltantes and total_con_posible:
+                st.info(
+                    f"🔎 De esas {len(faltantes)}, **{total_con_posible}** tienen una posible coincidencia "
+                    "en el Archivo 2 (probablemente la misma referencia con formato distinto — un punto, "
+                    "espacio, guion, etc.). Revísalas en la columna 'Posibles_Coincidencias_Archivo2'."
+                )
+
+            if faltantes:
+                df_faltantes_cod = pd.DataFrame(filas_faltantes_cod)
+                st.dataframe(df_faltantes_cod, use_container_width=True, height=400)
+
+                output_cod = io.BytesIO()
+                with pd.ExcelWriter(output_cod, engine='openpyxl') as writer:
+                    df_faltantes_cod.to_excel(writer, index=False)
+                st.download_button(
+                    label="📥 Descargar referencias faltantes en Excel",
+                    data=output_cod.getvalue(),
+                    file_name="referencias_faltantes.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    use_container_width=True
+                )
+
+                registrar_log(
+                    st.session_state["usuario_activo_real"],
+                    f"Codificación: comparación de referencias ({len(faltantes)} faltantes de {len(refs_1)})",
+                    len(faltantes)
+                )
+            else:
+                st.info("🎉 Todas las referencias del Archivo 1 están presentes en el Archivo 2.")
+
+        elif not archivo_cod_1 or not archivo_cod_2:
+            st.info("👈 Sube ambos archivos para activar la comparación.")
 
     # ==========================================================
     # VISTA 3: HISTORIALES
