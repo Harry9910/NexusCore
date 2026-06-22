@@ -3576,24 +3576,36 @@ else:
                     "Clasificación de riesgo", ["I", "IIA", "IIB", "III"], key="select_riesgo_dossier"
                 )
 
-            st.markdown(
-                "**Referencias** (puede haber miles — sube un Excel con una sola columna, "
-                "sin encabezado, igual que en Extracción Masiva)"
-            )
-            archivo_referencias_dossier = st.file_uploader(
-                "Sube el Excel de referencias", type=["xlsx"], key="uploader_referencias_dossier"
+            st.markdown("**Referencias** (opcional)")
+            modo_referencias_dm = st.radio(
+                "¿Cómo vas a indicar las referencias?",
+                ["✍️ Escribir manualmente (1-2 referencias)", "📄 Subir Excel (muchas referencias)"],
+                horizontal=True, key="modo_referencias_dm", label_visibility="collapsed"
             )
             lista_referencias_dossier = []
-            if archivo_referencias_dossier is not None:
-                try:
-                    df_refs_dossier = pd.read_excel(archivo_referencias_dossier, header=None, dtype=str)
-                    lista_referencias_dossier = [
-                        r for r in df_refs_dossier[0].astype(str).str.strip().tolist()
-                        if r and r.lower() != "nan"
-                    ]
-                    st.success(f"✅ {len(lista_referencias_dossier)} referencia(s) cargada(s).")
-                except Exception as e:
-                    st.error(f"No se pudo leer el archivo de referencias: {e}")
+            if modo_referencias_dm.startswith("✍️"):
+                texto_referencias_dm = st.text_area(
+                    "Escribe una referencia por línea", key="txt_referencias_manual_dm",
+                    placeholder="Ej:\nIMEC10\nIMEC12"
+                )
+                lista_referencias_dossier = [
+                    r.strip() for r in texto_referencias_dm.split("\n") if r.strip()
+                ]
+            else:
+                archivo_referencias_dossier = st.file_uploader(
+                    "Sube el Excel de referencias (una sola columna, sin encabezado)",
+                    type=["xlsx"], key="uploader_referencias_dossier"
+                )
+                if archivo_referencias_dossier is not None:
+                    try:
+                        df_refs_dossier = pd.read_excel(archivo_referencias_dossier, header=None, dtype=str)
+                        lista_referencias_dossier = [
+                            r for r in df_refs_dossier[0].astype(str).str.strip().tolist()
+                            if r and r.lower() != "nan"
+                        ]
+                        st.success(f"✅ {len(lista_referencias_dossier)} referencia(s) cargada(s).")
+                    except Exception as e:
+                        st.error(f"No se pudo leer el archivo de referencias: {e}")
 
             items_aplicables_dm = _obtener_items_aplicables_dm(riesgo_dossier)
 
@@ -3683,6 +3695,37 @@ else:
             st.markdown("##### Datos del trámite")
             equipo_mod = st.text_input("Nombre del equipo / producto", key="txt_equipo_mod")
 
+            st.markdown("**Referencias relacionadas** (opcional — útil sobre todo para Y1/Y2)")
+            modo_referencias_mod = st.radio(
+                "¿Cómo vas a indicar las referencias?",
+                ["✍️ Escribir manualmente (1-2 referencias)", "📄 Subir Excel (muchas referencias)"],
+                horizontal=True, key="modo_referencias_mod", label_visibility="collapsed"
+            )
+            lista_referencias_mod = []
+            if modo_referencias_mod.startswith("✍️"):
+                texto_referencias_mod = st.text_area(
+                    "Escribe una referencia por línea", key="txt_referencias_manual_mod",
+                    placeholder="Ej:\nIMEC10\nIMEC12"
+                )
+                lista_referencias_mod = [
+                    r.strip() for r in texto_referencias_mod.split("\n") if r.strip()
+                ]
+            else:
+                archivo_referencias_mod = st.file_uploader(
+                    "Sube el Excel de referencias (una sola columna, sin encabezado)",
+                    type=["xlsx"], key="uploader_referencias_mod"
+                )
+                if archivo_referencias_mod is not None:
+                    try:
+                        df_refs_mod = pd.read_excel(archivo_referencias_mod, header=None, dtype=str)
+                        lista_referencias_mod = [
+                            r for r in df_refs_mod[0].astype(str).str.strip().tolist()
+                            if r and r.lower() != "nan"
+                        ]
+                        st.success(f"✅ {len(lista_referencias_mod)} referencia(s) cargada(s).")
+                    except Exception as e:
+                        st.error(f"No se pudo leer el archivo de referencias: {e}")
+
             st.markdown("##### 2. Tipo(s) de modificación a realizar")
             st.caption("Marca todos los códigos que apliquen — puedes combinar legales y técnicos en el mismo trámite.")
 
@@ -3769,6 +3812,10 @@ else:
                             with pd.ExcelWriter(output_resumen_mod, engine='openpyxl') as writer:
                                 df_cobertura_mod.to_excel(writer, sheet_name="Cobertura", index=False)
                                 df_resultados_mod.to_excel(writer, sheet_name="Detalle por archivo", index=False)
+                                if lista_referencias_mod:
+                                    pd.DataFrame({"Referencia": lista_referencias_mod}).to_excel(
+                                        writer, sheet_name="Referencias", index=False
+                                    )
                             zf_out.writestr("Resumen_Modificacion.xlsx", output_resumen_mod.getvalue())
 
                         st.download_button(
@@ -3781,7 +3828,7 @@ else:
 
                     registrar_log(
                         st.session_state["usuario_activo_real"],
-                        f"Creación de Dossier (Modificaciones) - {equipo_mod} "
+                        f"Creación de Dossier (Modificaciones) - {equipo_mod} ({len(lista_referencias_mod)} referencias) "
                         f"({'/'.join(codigos_elegidos_mod)}) ({len(resultados_mod)} documentos, {total_faltan_mod} faltantes)",
                         len(resultados_mod)
                     )
