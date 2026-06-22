@@ -3027,7 +3027,16 @@ else:
 
         st.markdown("<br><br>", unsafe_allow_html=True)
         if st.button("🚪 Cerrar Sesión", key="btn_cerrar_sesion", use_container_width=True):
+            # Se limpia todo lo que sea específico de esta sesión de usuario,
+            # para que si otra persona inicia sesión en el mismo navegador no
+            # vea ni herede nada de lo anterior (sección activa, cachés de
+            # resultados, etc.).
             st.session_state["autenticado"] = False
+            st.session_state["usuario_activo_real"] = ""
+            st.session_state["seccion_activa"] = "Inicio"
+            st.session_state["_avisos_72h_revisados"] = False
+            for clave_cache in ["mod_cache", "dm_cache", "analisis_remisiones"]:
+                st.session_state.pop(clave_cache, None)
             st.rerun()
 
     # ── HEADER ──────────────────────────────────────────
