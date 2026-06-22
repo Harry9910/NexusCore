@@ -2549,7 +2549,10 @@ def guardar_resultados_eudamed(usuario, filas, nombre_hoja="ResultadosEudamed"):
 # ==========================================================
 # CONFIGURACIÓN DE LA PÁGINA
 # ==========================================================
-st.set_page_config(page_title="Extractor AccessGUDID FDA", page_icon="🔬", layout="wide")
+st.set_page_config(
+    page_title="Extractor AccessGUDID FDA", page_icon="🔬", layout="wide",
+    initial_sidebar_state="expanded"
+)
 
 b64_gudid   = buscar_logo("logo_gudid")
 b64_invima  = buscar_logo("logo_invima")
