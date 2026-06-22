@@ -1570,98 +1570,115 @@ def _ejecutar_copia_seleccionada(token, carpeta_raiz_id, grupos, obtener_selecci
 # la extracción masiva sin perder ninguna lógica existente)
 # ==========================================================
 
-def _procesar_detalle_accessgudid(href, ref, session, headers, company_names_filtro):
-    """Descarga y procesa la ficha de detalle de UN dispositivo. Se separó
-    de _buscar_referencia_accessgudid para poder pedir varios detalles de
-    la misma referencia en paralelo (antes se pedían uno por uno, lo cual
-    era lento cuando una referencia tenía varios dispositivos coincidentes)."""
-    try:
-        res = session.get(f"https://accessgudid.nlm.nih.gov{href}", headers=headers, timeout=15)
-        if res.status_code != 200:
+def _procesar_detalle_accessgudid(href, ref, session, headers, company_names_filtro, reintentos=1):
+    """Descarga y procesa la ficha de detalle de UN dispositivo. Devuelve:
+    - un dict con los datos, si tuvo éxito
+    - el string 'FILTRADO_FABRICANTE' si no coincide con el filtro de fabricante
+    - None si falló técnicamente incluso después de reintentar — así un
+      corte de red puntual no se confunde con 'filtrado' ni con 'no existe'."""
+    intentos_totales = reintentos + 1
+    for intento in range(intentos_totales):
+        try:
+            res = session.get(f"https://accessgudid.nlm.nih.gov{href}", headers=headers, timeout=20)
+            if res.status_code != 200:
+                if intento < intentos_totales - 1:
+                    time.sleep(2 * (intento + 1))
+                    continue
+                return None
+            soup2 = BeautifulSoup(res.text, 'html.parser')
+            texto = soup2.get_text()
+            lineas = [l.strip() for l in texto.split('\n') if l.strip()]
+
+            company = "No encontrado"
+            for i2, l in enumerate(lineas):
+                if "Company Name" in l:
+                    company = lineas[i2+1] if l.replace(":", "").strip() == "Company Name" and i2+1 < len(lineas) else l.replace("Company Name", "").replace(":", "").strip()
+                    break
+            company = " ".join(company.split()).strip() or "No encontrado"
+            if company_names_filtro and not any(n in company.upper() for n in company_names_filtro):
+                return "FILTRADO_FABRICANTE"
+
+            gmdn_code = "No encontrado"
+            for p in texto.replace(':', ' ').replace('(', ' ').replace(')', ' ').split():
+                if p.isdigit() and len(p) == 5:
+                    gmdn_code = p
+                    break
+
+            gmdn_def, gmdn_status = "No encontrado", "No encontrado"
+            for i2, l in enumerate(lineas):
+                if "GMDN Term Definition" in l:
+                    candidatos = [
+                        x.replace("[?]", "").strip() for x in lineas[i2:]
+                        if x.replace("[?]", "").strip() and not any(
+                            h in x for h in ["GMDN Term Code", "GMDN Term Name",
+                            "GMDN Term Definition", "GMDN Term Status", "Implantable?"]
+                        ) and not (x.strip().isdigit() and len(x.strip()) == 5)
+                    ]
+                    if len(candidatos) >= 2:
+                        gmdn_def, gmdn_status = candidatos[1], candidatos[2] if len(candidatos) > 2 else candidatos[1]
+                    elif len(candidatos) == 1:
+                        gmdn_def = candidatos[0]
+                    break
+
+            diccionario_estados = {"active": "Activo", "obsolete": "Obsoleto", "no encontrado": "No encontrado"}
+            gmdn_status = diccionario_estados.get(gmdn_status.lower(), gmdn_status)
+
+            # NOTA: la traducción con IA ya NO se hace aquí. Se hace después,
+            # una sola vez para todas las definiciones únicas encontradas, para
+            # no saturar el límite de peticiones por minuto de Gemini.
+            if gmdn_def and gmdn_def.lower() != "no encontrado":
+                gmdn_def = gmdn_def.replace('"', '').replace("'", "")
+
+            issuing = "No encontrado"
+            for i2, l in enumerate(lineas):
+                if "Issuing Agency" in l:
+                    issuing = lineas[i2+1] if l.replace(":", "").strip() == "Issuing Agency" and i2+1 < len(lineas) else l.replace("Issuing Agency", "").replace(":", "").strip()
+                    break
+            issuing = " ".join(issuing.split()).strip() or "No encontrado"
+
+            return {
+                "Referencia_Original": ref,
+                "Primary_DI_Number": href.split('/')[-1].strip(),
+                "Nombre_Empresa_FDA": company,
+                "Codigo_GMDN": gmdn_code,
+                "Definicion_GMDN": " ".join(str(gmdn_def).split()).strip(),
+                "Estado_GMDN": " ".join(str(gmdn_status).split()).strip(),
+                "Issuing_Agency": issuing
+            }
+        except Exception:
+            if intento < intentos_totales - 1:
+                time.sleep(2 * (intento + 1))
+                continue
             return None
-        soup2 = BeautifulSoup(res.text, 'html.parser')
-        texto = soup2.get_text()
-        lineas = [l.strip() for l in texto.split('\n') if l.strip()]
-
-        company = "No encontrado"
-        for i2, l in enumerate(lineas):
-            if "Company Name" in l:
-                company = lineas[i2+1] if l.replace(":", "").strip() == "Company Name" and i2+1 < len(lineas) else l.replace("Company Name", "").replace(":", "").strip()
-                break
-        company = " ".join(company.split()).strip() or "No encontrado"
-        if company_names_filtro and not any(n in company.upper() for n in company_names_filtro):
-            return None
-
-        gmdn_code = "No encontrado"
-        for p in texto.replace(':', ' ').replace('(', ' ').replace(')', ' ').split():
-            if p.isdigit() and len(p) == 5:
-                gmdn_code = p
-                break
-
-        gmdn_def, gmdn_status = "No encontrado", "No encontrado"
-        for i2, l in enumerate(lineas):
-            if "GMDN Term Definition" in l:
-                candidatos = [
-                    x.replace("[?]", "").strip() for x in lineas[i2:]
-                    if x.replace("[?]", "").strip() and not any(
-                        h in x for h in ["GMDN Term Code", "GMDN Term Name",
-                        "GMDN Term Definition", "GMDN Term Status", "Implantable?"]
-                    ) and not (x.strip().isdigit() and len(x.strip()) == 5)
-                ]
-                if len(candidatos) >= 2:
-                    gmdn_def, gmdn_status = candidatos[1], candidatos[2] if len(candidatos) > 2 else candidatos[1]
-                elif len(candidatos) == 1:
-                    gmdn_def = candidatos[0]
-                break
-
-        diccionario_estados = {"active": "Activo", "obsolete": "Obsoleto", "no encontrado": "No encontrado"}
-        gmdn_status = diccionario_estados.get(gmdn_status.lower(), gmdn_status)
-
-        # NOTA: la traducción con IA ya NO se hace aquí. Se hace después,
-        # una sola vez para todas las definiciones únicas encontradas, para
-        # no saturar el límite de peticiones por minuto de Gemini.
-        if gmdn_def and gmdn_def.lower() != "no encontrado":
-            gmdn_def = gmdn_def.replace('"', '').replace("'", "")
-
-        issuing = "No encontrado"
-        for i2, l in enumerate(lineas):
-            if "Issuing Agency" in l:
-                issuing = lineas[i2+1] if l.replace(":", "").strip() == "Issuing Agency" and i2+1 < len(lineas) else l.replace("Issuing Agency", "").replace(":", "").strip()
-                break
-        issuing = " ".join(issuing.split()).strip() or "No encontrado"
-
-        return {
-            "Referencia_Original": ref,
-            "Primary_DI_Number": href.split('/')[-1].strip(),
-            "Nombre_Empresa_FDA": company,
-            "Codigo_GMDN": gmdn_code,
-            "Definicion_GMDN": " ".join(str(gmdn_def).split()).strip(),
-            "Estado_GMDN": " ".join(str(gmdn_status).split()).strip(),
-            "Issuing_Agency": issuing
-        }
-    except Exception:
-        return None
+    return None
 
 
 def _buscar_referencia_accessgudid(ref, session, headers, company_names_filtro):
     """Busca una referencia en AccessGUDID y devuelve la lista de filas
-    encontradas (puede ser más de un dispositivo, o una fila de aviso si
-    no hay coincidencias / hubo error). Las fichas de detalle de los
-    dispositivos encontrados se piden en paralelo (hasta 4 a la vez) para
-    acelerar referencias con muchas coincidencias."""
+    encontradas (puede ser más de un dispositivo, o una sola fila que
+    indica POR QUÉ no hubo resultados: 'No encontrado' (de verdad no hay
+    coincidencias), 'Filtrado por fabricante' (sí hay dispositivo pero no
+    pasa tu filtro) o 'Error de red' (falló la conexión — no significa
+    que no exista, conviene reintentar esa referencia). 'Referencia_Original'
+    SIEMPRE conserva el valor real, nunca se sobrescribe con un estado."""
     url_busqueda = f"https://accessgudid.nlm.nih.gov/devices/search?query={urllib.parse.quote(ref)}"
     try:
         response = session.get(url_busqueda, headers=headers, timeout=15)
         if response.status_code == 429:
             time.sleep(8)
             response = session.get(url_busqueda, headers=headers, timeout=15)
+        if response.status_code != 200:
+            # Un solo reintento más ante un fallo puntual del servidor de
+            # búsqueda, antes de darlo por error de red definitivo.
+            time.sleep(3)
+            response = session.get(url_busqueda, headers=headers, timeout=15)
 
         if response.status_code != 200:
             return [{
-                "Referencia_Original": ref, "Primary_DI_Number": "No encontrado",
-                "Nombre_Empresa_FDA": "No encontrado", "Codigo_GMDN": "No encontrado",
-                "Definicion_GMDN": "No encontrado", "Estado_GMDN": "No encontrado",
-                "Issuing_Agency": "No encontrado"
+                "Referencia_Original": ref, "Primary_DI_Number": "Error de red (reintentar)",
+                "Nombre_Empresa_FDA": "Error de red", "Codigo_GMDN": "Error de red",
+                "Definicion_GMDN": "Error de red", "Estado_GMDN": "Error de red",
+                "Issuing_Agency": "Error de red"
             }]
 
         soup = BeautifulSoup(response.text, 'html.parser')
@@ -1670,30 +1687,62 @@ def _buscar_referencia_accessgudid(ref, session, headers, company_names_filtro):
             if '/devices/' in a['href'] and 'search' not in a['href']
         ]))
 
+        if not enlaces:
+            return [{
+                "Referencia_Original": ref, "Primary_DI_Number": "No encontrado",
+                "Nombre_Empresa_FDA": "No encontrado", "Codigo_GMDN": "No encontrado",
+                "Definicion_GMDN": "No encontrado", "Estado_GMDN": "No encontrado",
+                "Issuing_Agency": "No encontrado"
+            }]
+
         coincidencias = []
-        if enlaces:
-            with ThreadPoolExecutor(max_workers=min(4, len(enlaces))) as executor_detalle:
-                futuros_detalle = [
-                    executor_detalle.submit(_procesar_detalle_accessgudid, href, ref, session, headers, company_names_filtro)
-                    for href in enlaces
-                ]
-                for futuro_detalle in futuros_detalle:
-                    resultado = futuro_detalle.result()
-                    if resultado is not None:
-                        coincidencias.append(resultado)
+        hubo_filtrado = False
+        hubo_error_tecnico = False
+        with ThreadPoolExecutor(max_workers=min(4, len(enlaces))) as executor_detalle:
+            futuros_detalle = [
+                executor_detalle.submit(_procesar_detalle_accessgudid, href, ref, session, headers, company_names_filtro)
+                for href in enlaces
+            ]
+            for futuro_detalle in futuros_detalle:
+                resultado = futuro_detalle.result()
+                if resultado is None:
+                    hubo_error_tecnico = True
+                elif resultado == "FILTRADO_FABRICANTE":
+                    hubo_filtrado = True
+                else:
+                    coincidencias.append(resultado)
 
         if coincidencias:
             return coincidencias
+
+        if hubo_error_tecnico:
+            # Si ALGÚN detalle falló técnicamente, no se puede afirmar con
+            # certeza que no había coincidencias — se marca para reintentar,
+            # en vez de decir 'no encontrado' o 'filtrado' sin estar seguros.
+            return [{
+                "Referencia_Original": ref, "Primary_DI_Number": "Error de red (reintentar)",
+                "Nombre_Empresa_FDA": "Error de red", "Codigo_GMDN": "Error de red",
+                "Definicion_GMDN": "Error de red", "Estado_GMDN": "Error de red",
+                "Issuing_Agency": "Error de red"
+            }]
+        if hubo_filtrado:
+            return [{
+                "Referencia_Original": ref, "Primary_DI_Number": "Filtrado por fabricante",
+                "Nombre_Empresa_FDA": "No coincide con el filtro", "Codigo_GMDN": "-",
+                "Definicion_GMDN": "-", "Estado_GMDN": "-", "Issuing_Agency": "-"
+            }]
         return [{
-            "Referencia_Original": "Filtrado", "Primary_DI_Number": "Filtrado",
-            "Nombre_Empresa_FDA": "No coincide", "Codigo_GMDN": "Filtrado",
-            "Definicion_GMDN": "Filtrado", "Estado_GMDN": "Filtrado", "Issuing_Agency": "Filtrado"
+            "Referencia_Original": ref, "Primary_DI_Number": "No encontrado",
+            "Nombre_Empresa_FDA": "No encontrado", "Codigo_GMDN": "No encontrado",
+            "Definicion_GMDN": "No encontrado", "Estado_GMDN": "No encontrado",
+            "Issuing_Agency": "No encontrado"
         }]
     except Exception:
         return [{
-            "Referencia_Original": ref, "Primary_DI_Number": "Error de Red",
-            "Nombre_Empresa_FDA": "Error", "Codigo_GMDN": "Error",
-            "Definicion_GMDN": "Error", "Estado_GMDN": "Error", "Issuing_Agency": "Error"
+            "Referencia_Original": ref, "Primary_DI_Number": "Error de red (reintentar)",
+            "Nombre_Empresa_FDA": "Error de red", "Codigo_GMDN": "Error de red",
+            "Definicion_GMDN": "Error de red", "Estado_GMDN": "Error de red",
+            "Issuing_Agency": "Error de red"
         }]
 
 
@@ -3037,6 +3086,9 @@ else:
                         )
 
                     completados = 0
+                    indice_guardado_gudid = 0  # hasta dónde de lista_resultados ya quedó guardado en Sheets
+                    INTERVALO_GUARDADO_GUDID = 500  # cada cuántas completadas se guarda un checkpoint
+
                     with ThreadPoolExecutor(max_workers=MAX_HILOS_GUDID) as executor:
                         futuros = {
                             executor.submit(
@@ -3050,9 +3102,10 @@ else:
                                 filas_ref = futuro.result()
                             except Exception:
                                 filas_ref = [{
-                                    "Referencia_Original": ref_actual, "Primary_DI_Number": "Error",
-                                    "Nombre_Empresa_FDA": "Error", "Codigo_GMDN": "Error",
-                                    "Definicion_GMDN": "Error", "Estado_GMDN": "Error", "Issuing_Agency": "Error"
+                                    "Referencia_Original": ref_actual, "Primary_DI_Number": "Error de red (reintentar)",
+                                    "Nombre_Empresa_FDA": "Error de red", "Codigo_GMDN": "Error de red",
+                                    "Definicion_GMDN": "Error de red", "Estado_GMDN": "Error de red",
+                                    "Issuing_Agency": "Error de red"
                                 }]
                             lista_resultados.extend(filas_ref)
                             completados += 1
@@ -3066,10 +3119,29 @@ else:
                             actualizar_barra_gudid(int(completados / total_refs * 100))
                             tabla_viva.dataframe(pd.DataFrame(lista_resultados), use_container_width=True, height=260)
 
+                            # GUARDADO PROGRESIVO: en corridas largas (miles de
+                            # referencias, varias horas) esto evita perder todo
+                            # el avance si la app llega a reiniciarse a mitad
+                            # de camino — solo se perdería, como máximo, lo
+                            # avanzado desde el último checkpoint.
+                            if completados % INTERVALO_GUARDADO_GUDID == 0:
+                                filas_nuevas_gudid = lista_resultados[indice_guardado_gudid:]
+                                if filas_nuevas_gudid:
+                                    try:
+                                        guardar_resultados_accessgudid(
+                                            st.session_state["usuario_activo_real"], filas_nuevas_gudid
+                                        )
+                                        indice_guardado_gudid = len(lista_resultados)
+                                    except Exception:
+                                        pass  # si falla un checkpoint puntual, se reintenta en el siguiente
+
                     texto_estado.empty(); barra_custom.empty()
                     st.success(f"✨ ¡Completado! ({int(time.time()-inicio_tiempo)}s)")
                     registrar_log(st.session_state["usuario_activo_real"], f"Extracción masiva AccessGudid ({total_refs} refs)", len(lista_resultados))
-                    guardar_resultados_accessgudid(st.session_state["usuario_activo_real"], lista_resultados)
+                    # Guarda lo que quedó pendiente desde el último checkpoint
+                    filas_pendientes_gudid = lista_resultados[indice_guardado_gudid:]
+                    if filas_pendientes_gudid:
+                        guardar_resultados_accessgudid(st.session_state["usuario_activo_real"], filas_pendientes_gudid)
 
                     df_final = pd.DataFrame(lista_resultados)
                     output = io.BytesIO()
