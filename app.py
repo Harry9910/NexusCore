@@ -648,6 +648,243 @@ def _analizar_remision_con_ia(texto_pdf, arbol_referencias):
     return json.loads(texto_json)
 
 
+# ==========================================================
+# CREACIÓN DE DOSSIER — (DM) DISPOSITIVOS MÉDICOS
+# ==========================================================
+# Checklist tomado de la pestaña "(DM)DISPOSITIVOS MÉDICOS" del formato
+# ASS-RSA-FM007 v.17 (filas ~63-100), basado en el Decreto 4725 de 2005.
+# 'riesgos' indica para qué clasificación de riesgo aplica cada ítem,
+# según la nota "OTROS ELEMENTOS DE TRÁMITE" del mismo formato:
+#   Riesgo I:        ítems 1-14, 17, 18
+#   Riesgo IIa:      ítems 1-18
+#   Riesgo IIb y III: todos los ítems (1-20)
+CHECKLIST_DM = [
+    {"item": 1,  "articulo": "Art.18 lit. a", "titulo": "Formulario debidamente diligenciado en medio digital",
+     "sigla": "FORMULARIO",
+     "descripcion": "Debe estar avalado por el director técnico y firmado por el representante legal o apoderado. Si el formulario contiene anexos, deben incluirse de la misma forma.",
+     "riesgos": ["I", "IIA", "IIB", "III"]},
+    {"item": 2,  "articulo": "Art.19 lit. b", "titulo": "Poder (si aplica)",
+     "sigla": "PODER",
+     "descripcion": "Poder para tramitar el registro sanitario, cuando la solicitud sea presentada por un apoderado. Puede ser especial (nombre del poderdante, nombre del abogado titulado, trámites para los que está facultado) o general (escritura pública o certificado de existencia y representación legal). Si fue otorgado en el extranjero debe estar consularizado/legalizado o apostillado.",
+     "riesgos": ["I", "IIA", "IIB", "III"]},
+    {"item": 3,  "articulo": "",              "titulo": "Comprobante de pago",
+     "sigla": "PAGO",
+     "descripcion": "Debe corresponder al concepto del trámite por la tarifa legal correspondiente.",
+     "riesgos": ["I", "IIA", "IIB", "III"]},
+    {"item": 4,  "articulo": "Art.29 lit. b", "titulo": "Certificado de Venta Libre — CVL (productos importados)",
+     "sigla": "CVL",
+     "descripcion": "Emitido por la autoridad sanitaria del país de origen o de referencia (Canadá, Japón, Australia, Unión Europea o EE.UU.). Debe indicar el fabricante y el nombre del dispositivo con sus referencias. Vigencia de 1 año si no se declara otra. Debe estar consularizado/legalizado o apostillado, y acompañado de traducción oficial.",
+     "riesgos": ["I", "IIA", "IIB", "III"]},
+    {"item": 5,  "articulo": "Art.29 lit. d", "titulo": "Autorización del fabricante (productos importados)",
+     "sigla": "AUT FABRICANTE",
+     "descripcion": "Debe indicar el nombre e domicilio del importador, los roles/actividades que desempeñará, y estar firmada y autorizada por el titular del registro sanitario y/o permiso de comercialización.",
+     "riesgos": ["I", "IIA", "IIB", "III"]},
+    {"item": 6,  "articulo": "Art.29 lit. c", "titulo": "Existencia y Representación Legal",
+     "sigla": "ERL",
+     "descripcion": "Empresas nacionales: se valida en RUES (rues.org.co). Empresas extranjeras: prueba de constitución, existencia y representación legal del titular y del fabricante, expedida por el organismo competente del país de origen.",
+     "riesgos": ["I", "IIA", "IIB", "III"]},
+    {"item": 7,  "articulo": "Art.18 lit. b", "titulo": "Certificado de Capacidad de Almacenamiento (CCAA) o BPM / Condiciones Técnico Sanitarias",
+     "sigla": "CCAA",
+     "descripcion": "Fabricantes nacionales: indicar fecha y número de radicado del CCAA/BPM/Condiciones Técnico Sanitarias. Producto importado para uso propio: certificación de que no se comercializará. Producto importado para comercializar: la línea debe estar aprobada dentro del CCAA vigente del importador.",
+     "riesgos": ["I", "IIA", "IIB", "III"]},
+    {"item": 8,  "articulo": "Art.18 lit. c", "titulo": "Descripción del dispositivo médico",
+     "sigla": "DESCRIPCION DM",
+     "descripcion": "Debe contener indicaciones, contraindicaciones, advertencias, componentes principales, accesorios, relación con pacientes, todo en español, y la presentación comercial (unidades/contenido por empaque).",
+     "riesgos": ["I", "IIA", "IIB", "III"]},
+    {"item": 9,  "articulo": "Art.18 lit. d", "titulo": "Estudios técnicos y comprobaciones analíticas",
+     "sigla": "ESTUDIOS TECNICOS",
+     "descripcion": "Resumen de los documentos de verificación y validación del diseño (pruebas durante fabricación), y certificado de análisis del producto terminado con especificaciones y rangos de aceptación.",
+     "riesgos": ["I", "IIA", "IIB", "III"]},
+    {"item": 10, "articulo": "Art.18 lit. i", "titulo": "Declaración de conformidad emitida por el fabricante",
+     "sigla": "DECL CONFORMIDAD",
+     "descripcion": "Emitida por el fabricante: razón social y domicilio, nombre del producto, referencias/códigos/modelos, y normas empleadas en diseño y fabricación. No reemplaza el CVL.",
+     "riesgos": ["I", "IIA", "IIB", "III"]},
+    {"item": 11, "articulo": "Art.18 lit. e", "titulo": "Método de esterilización",
+     "sigla": "MET ESTERILIZACION",
+     "descripcion": "Indicar el o los métodos empleados, procedimiento, norma de referencia y estudios/resultados/conclusiones. Si usa óxido de etileno, adjuntar estudio de residuos (EO/ECH). Debe coincidir con inserto y etiqueta.",
+     "riesgos": ["I", "IIA", "IIB", "III"]},
+    {"item": 12, "articulo": "Art.18 lit. f", "titulo": "Método de desecho o disposición final",
+     "sigla": "MET DESECHO",
+     "descripcion": "Documento emitido por el fabricante describiendo el método de desecho/disposición final, junto con el inserto donde se especifique.",
+     "riesgos": ["I", "IIA", "IIB", "III"]},
+    {"item": 13, "articulo": "Art.18 lit. d", "titulo": "Vida útil (cuando aplique)",
+     "sigla": "VIDA UTIL",
+     "descripcion": "Estudios de estabilidad (esterilidad, envejecimiento natural/acelerado o almacenamiento) que validen la vida útil declarada, con resumen del método, verificación, validación y conclusión.",
+     "riesgos": ["I", "IIA", "IIB", "III"]},
+    {"item": 14, "articulo": "Art.18 lit. g", "titulo": "Artes originales de etiquetas e insertos",
+     "sigla": "ETIQUETAS INSERTOS",
+     "descripcion": "Etiquetas originales del fabricante (nombre/referencia, fabricante, símbolos de seguridad), sticker del importador (producto, modelo/referencia, importador, número de registro sanitario), e inserto (IFU) en castellano con uso, presentación comercial, precauciones, disposición final, limpieza/desinfección/esterilización, almacenamiento.",
+     "riesgos": ["I", "IIA", "IIB", "III"]},
+    {"item": 15, "articulo": "Art.18 lit. j", "titulo": "Información científica que respalde la seguridad (riesgo IIa, IIb, III)",
+     "sigla": "INFO CIENTIFICA",
+     "descripcion": "Pruebas de evaluación biológica (citotoxicidad, toxicidad sistémica, pirogenicidad, sensibilización, irritación, genotoxicidad, alergenicidad, hemocompatibilidad, carcinogenicidad) para productos en contacto con el paciente. Para dispositivos activos: pruebas eléctricas y de compatibilidad electromagnética (ej. normas IEC).",
+     "riesgos": ["IIA", "IIB", "III"]},
+    {"item": 16, "articulo": "Art.18 lit. j", "titulo": "Análisis de riesgos emitido por el fabricante (clase IIa, IIb, III)",
+     "sigla": "ANALISIS RIESGOS",
+     "descripcion": "Riesgos detectados en diseño y manufactura: causas, severidad, ocurrencia, detectabilidad, soluciones de mitigación (ej. norma ISO 14971).",
+     "riesgos": ["IIA", "IIB", "III"]},
+    {"item": 17, "articulo": "Art.18 lit. j", "titulo": "Lista de normas empleadas",
+     "sigla": "LISTA NORMAS",
+     "descripcion": "Listado de las normas de referencia internacional aplicadas total o parcialmente.",
+     "riesgos": ["I", "IIA", "IIB", "III"]},
+    {"item": 18, "articulo": "Art.29 lit. a", "titulo": "Historial comercial del dispositivo médico (productos importados)",
+     "sigla": "HIST COMERCIAL",
+     "descripcion": "Países en los que se vende el dispositivo, indicando si ha presentado alertas sanitarias asociadas, expedido por el fabricante.",
+     "riesgos": ["I", "IIA", "IIB", "III"]},
+    {"item": 19, "articulo": "Art.18 lit. k", "titulo": "Estudios clínicos (clase IIb, III)",
+     "sigla": "ESTUDIOS CLINICOS",
+     "descripcion": "Realizados en pacientes para demostrar seguridad y efectividad, o estudios publicados de tecnologías similares/equivalentes.",
+     "riesgos": ["IIB", "III"]},
+    {"item": 20, "articulo": "Art.40",         "titulo": "Tarjeta implantable",
+     "sigla": "TARJETA IMPLANTABLE",
+     "descripcion": "Arte con nombre y modelo del dispositivo, lote, serie, dirección del fabricante, institución donde se implantó, fecha e identificación del paciente. Aplica para implantables que duran más de 30 días en el cuerpo, riesgo IIb y III.",
+     "riesgos": ["IIB", "III"]},
+]
+
+
+def _obtener_items_aplicables_dm(riesgo):
+    """Filtra el checklist según la clasificación de riesgo elegida."""
+    return [it for it in CHECKLIST_DM if riesgo in it["riesgos"]]
+
+
+def _analizar_documento_dossier_dm(texto_pdf, items_aplicables):
+    """Le pide a Gemini que determine a cuál ítem del checklist corresponde
+    un documento (por su contenido), y si parece cumplir lo que exige ese
+    ítem o si encuentra algo claramente mal/faltante. Devuelve un dict ya
+    parseado desde el JSON de la respuesta."""
+    lista_items = "\n".join(
+        f"{it['item']}. {it['titulo']} ({it['articulo']}): {it['descripcion']}"
+        for it in items_aplicables
+    )
+    system_prompt = (
+        "Eres un experto en trámites regulatorios del INVIMA (Colombia) para "
+        "dispositivos médicos, con base en el Decreto 4725 de 2005 y el Formato "
+        "Único ASS-RSA-FM007.\n\n"
+        "Te doy una lista de documentos requeridos para este trámite (número de "
+        "ítem, título y los requisitos exactos que debe cumplir cada uno), y el "
+        "texto extraído de UN documento en PDF que el usuario subió (el orden de "
+        "las líneas puede venir un poco desordenado por la extracción automática, "
+        "interpreta el contenido de todas formas).\n\n"
+        "1. Determina a cuál ítem de la lista corresponde este documento, según "
+        "su CONTENIDO (no el nombre del archivo). Si no corresponde claramente a "
+        "ninguno, indica null.\n"
+        "2. Evalúa si el documento, según lo que se puede leer, CUMPLE lo exigido "
+        "para ese ítem (fechas de vigencia, firmas, datos exigidos, etc., en la "
+        "medida en que el texto lo permita determinar). Si encuentras algo que "
+        "claramente falta o está mal (ej: vigencia vencida, falta firma o sello, "
+        "no menciona un dato exigido), indícalo en el comentario.\n"
+        "3. Si el texto es muy corto o no se puede interpretar bien, dilo en el "
+        "comentario y usa conforme='no_determinable'.\n\n"
+        f"LISTA DE DOCUMENTOS REQUERIDOS PARA ESTE TRÁMITE:\n{lista_items}\n\n"
+        "Responde ÚNICAMENTE con un JSON con este formato exacto, sin texto "
+        "adicional, sin comentarios y sin marcado markdown (sin ```):\n"
+        '{"item": numero_o_null, "confianza": "alta|media|baja", '
+        '"conforme": true_o_false_o_"no_determinable", "comentario": "explicación breve en español, máximo 3 líneas"}'
+    )
+    respuesta_texto = _llamar_gemini_api(
+        system_prompt=system_prompt,
+        mensajes=[{"role": "user", "content": texto_pdf[:15000]}],
+        modelo=MODELO_IA_CALIDAD,
+        max_tokens=500,
+    )
+    texto_json = respuesta_texto.strip()
+    if texto_json.startswith("```"):
+        texto_json = texto_json.strip("`")
+        if texto_json.lower().startswith("json"):
+            texto_json = texto_json[4:]
+    inicio = texto_json.find("{")
+    fin = texto_json.rfind("}")
+    if inicio != -1 and fin != -1:
+        texto_json = texto_json[inicio:fin + 1]
+    return json.loads(texto_json)
+
+
+def _procesar_documentos_dossier_dm(archivos_subidos, items_aplicables, callback_progreso=None):
+    """Analiza cada PDF subido, lo asigna al ítem del checklist que mejor le
+    corresponde, y arma: (1) una tabla de resultados por archivo, (2) un
+    resumen de cobertura del checklist completo (qué falta), y (3) los
+    nombres finales sugeridos ('{item}. {SIGLA}.pdf'), manejando duplicados
+    cuando dos archivos caen en el mismo ítem."""
+    resultados_archivos = []  # uno por PDF subido
+    asignaciones_por_item = {}  # item -> lista de nombres finales ya usados (para numerar duplicados)
+    archivos_para_zip = []  # (nombre_final, bytes)
+
+    total = len(archivos_subidos)
+    for idx, archivo in enumerate(archivos_subidos):
+        if callback_progreso:
+            callback_progreso(idx, total, archivo.name)
+
+        try:
+            bytes_pdf = archivo.read()
+            texto_pdf = _extraer_texto_pdf(bytes_pdf)
+            if len(texto_pdf) < 30:
+                resultados_archivos.append({
+                    "Archivo_Original": archivo.name, "Item": "-", "Documento": "-",
+                    "Conforme": "-", "Comentario": "⚠ No se pudo leer texto del PDF (¿escaneado como imagen?)",
+                    "Nombre_Final": None
+                })
+                continue
+
+            analisis = _analizar_documento_dossier_dm(texto_pdf, items_aplicables)
+        except Exception as e:
+            resultados_archivos.append({
+                "Archivo_Original": archivo.name, "Item": "-", "Documento": "-",
+                "Conforme": "-", "Comentario": f"❌ Error analizando con IA: {e}",
+                "Nombre_Final": None
+            })
+            continue
+
+        item_num = analisis.get("item")
+        conforme = analisis.get("conforme")
+        comentario = (analisis.get("comentario") or "").strip()
+
+        item_info = next((it for it in items_aplicables if it["item"] == item_num), None)
+
+        if item_info is None:
+            resultados_archivos.append({
+                "Archivo_Original": archivo.name, "Item": "-", "Documento": "Sin clasificar",
+                "Conforme": "-", "Comentario": comentario or "No se identificó a qué ítem del checklist corresponde.",
+                "Nombre_Final": None
+            })
+            archivos_para_zip.append((f"SIN CLASIFICAR - {archivo.name}", bytes_pdf))
+            continue
+
+        # Nombre final, manejando duplicados (dos archivos para el mismo ítem)
+        base_nombre = f"{item_info['item']}. {item_info['sigla']}"
+        usados = asignaciones_por_item.setdefault(item_info["item"], [])
+        if not usados:
+            nombre_final = base_nombre
+        else:
+            nombre_final = f"{base_nombre} ({len(usados) + 1})"
+        usados.append(nombre_final)
+
+        if conforme is True:
+            estado_conforme = "✅ Conforme"
+        elif conforme is False:
+            estado_conforme = "⚠ Con observación"
+        else:
+            estado_conforme = "❓ No determinable"
+
+        resultados_archivos.append({
+            "Archivo_Original": archivo.name, "Item": item_info["item"], "Documento": item_info["titulo"],
+            "Conforme": estado_conforme, "Comentario": comentario or "-",
+            "Nombre_Final": f"{nombre_final}.pdf"
+        })
+        archivos_para_zip.append((f"{nombre_final}.pdf", bytes_pdf))
+
+    # Resumen de cobertura: qué ítems del checklist aplicable quedaron cubiertos
+    items_cubiertos = set(asignaciones_por_item.keys())
+    resumen_cobertura = []
+    for it in items_aplicables:
+        cubierto = it["item"] in items_cubiertos
+        resumen_cobertura.append({
+            "Item": it["item"], "Documento": it["titulo"], "Sigla": it["sigla"],
+            "Estado": "✅ Subido" if cubierto else "❌ FALTA"
+        })
+
+    return resultados_archivos, resumen_cobertura, archivos_para_zip
+
+
 def _analizar_zip_remisiones(bytes_zip, token, carpeta_raiz_id, callback_progreso=None):
     """FASE 1: analiza el .zip de remisiones con IA y arma la lista de
     'grupos' (remisión + equipo encontrado, con sus archivos disponibles
@@ -1473,49 +1710,6 @@ def _llamar_gemini_api(system_prompt, mensajes, modelo=MODELO_IA_CALIDAD, max_to
     return texto
 
 
-def _traducir_gmdn_con_ia(texto_ingles):
-    texto_ingles = (texto_ingles or "").strip()
-    if not texto_ingles or texto_ingles.lower() == "no encontrado":
-        return texto_ingles
-    try:
-        traduccion = _llamar_gemini_api(
-            system_prompt=(
-                "Eres un traductor especializado en terminología médica de "
-                "dispositivos (nomenclatura GMDN). Traduce el siguiente texto "
-                "del inglés al español de forma precisa y natural. Responde "
-                "ÚNICAMENTE con la traducción, sin comillas ni comentarios."
-            ),
-            mensajes=[{"role": "user", "content": texto_ingles}],
-            modelo=MODELO_IA_RAPIDO,
-            max_tokens=400,
-        )
-        return traduccion if traduccion else texto_ingles
-    except Exception:
-        return texto_ingles
-
-
-def _generar_resumen_ia(df, etiqueta_fuente):
-    if df is None or df.empty:
-        return "No hay datos para resumir."
-    texto_datos = df.to_csv(index=False)
-    if len(texto_datos) > 12000:
-        texto_datos = texto_datos[:12000] + "\n... (datos truncados por espacio)"
-    return _llamar_gemini_api(
-        system_prompt=(
-            f"Eres un analista que resume datos de dispositivos médicos "
-            f"extraídos de {etiqueta_fuente}. Con la tabla en formato CSV que "
-            "se te entrega a continuación, escribe un resumen breve en "
-            "español (máximo 8 líneas, en viñetas) destacando: fabricantes "
-            "más frecuentes, posibles duplicados o inconsistencias, y "
-            "cuántos registros quedaron sin encontrar o con error. No "
-            "inventes datos que no estén en la tabla."
-        ),
-        mensajes=[{"role": "user", "content": texto_datos}],
-        modelo=MODELO_IA_CALIDAD,
-        max_tokens=700,
-    )
-
-
 def _obtener_o_crear_hoja(nombre_hoja, encabezados):
     client = get_gspread_client()
     doc = client.open_by_key(SHEET_ID)
@@ -1622,133 +1816,6 @@ def guardar_resultados_eudamed(usuario, filas):
         st.warning(f"No se pudieron guardar los resultados en el histórico de Google Sheets: {e}")
 
 
-def _construir_contexto_chat_ia():
-    try:
-        client = get_gspread_client()
-        doc = client.open_by_key(SHEET_ID)
-        partes = []
-        for nombre_hoja, max_filas in [("Logs", 150), ("ResultadosAccessGudid", 300), ("ResultadosEudamed", 300)]:
-            try:
-                hoja = doc.worksheet(nombre_hoja)
-                datos = hoja.get_all_values()
-                if len(datos) > 1:
-                    encabezado, filas = datos[0], datos[1:][-max_filas:]
-                    texto_tabla = " | ".join(encabezado) + "\n"
-                    texto_tabla += "\n".join(" | ".join(f) for f in filas)
-                    partes.append(f"### Hoja: {nombre_hoja} (mostrando {len(filas)} filas más recientes)\n{texto_tabla}")
-            except Exception:
-                continue
-        return "\n\n".join(partes) if partes else "Todavía no hay datos históricos guardados."
-    except Exception as e:
-        return f"(No se pudo cargar el contexto desde Google Sheets: {e})"
-
-
-def _responder_chat_ia(pregunta):
-    if st.session_state.get("contexto_chat_ia") is None:
-        with st.spinner("Cargando datos históricos..."):
-            st.session_state["contexto_chat_ia"] = _construir_contexto_chat_ia()
-
-    system_prompt = (
-        "Eres el asistente de la plataforma 'Oficina Virtual de Dispositivos "
-        "Médicos'. Ayudas a interpretar datos de dispositivos médicos "
-        "extraídos de AccessGUDID (FDA) y Eudamed (UE). Responde siempre en "
-        "español, de forma breve y concreta, basándote ÚNICAMENTE en los "
-        "datos proporcionados a continuación. Si la respuesta no se puede "
-        "deducir de estos datos, dilo claramente en vez de inventar.\n\n"
-        f"DATOS DISPONIBLES:\n{st.session_state['contexto_chat_ia']}"
-    )
-    historial_reciente = st.session_state["historial_chat_ia"][-8:]
-    mensajes = historial_reciente + [{"role": "user", "content": pregunta}]
-    return _llamar_gemini_api(system_prompt, mensajes, modelo=MODELO_IA_CALIDAD, max_tokens=900)
-
-
-# ==========================================================
-# ASISTENTE IA — POPOVER CON BURBUJAS DE CHAT
-# ==========================================================
-def _renderizar_asistente_popover_ia():
-    with st.popover("🤖 Asistente IA", use_container_width=True):
-        st.caption("Pregunta sobre tu historial y resultados extraídos.")
-
-        with st.container(height=300):
-            if not st.session_state["historial_chat_ia"]:
-                st.caption("👋 Aún no hay mensajes. ¡Hazme una pregunta!")
-            for m in st.session_state["historial_chat_ia"]:
-                if m["role"] == "user":
-                    st.markdown(
-                        f"""
-                        <div style="display:flex;justify-content:flex-end;margin-bottom:10px;">
-                            <div style="
-                                background-color:#1a365d;
-                                color:#ffffff;
-                                border-radius:14px 14px 2px 14px;
-                                padding:9px 14px;
-                                max-width:85%;
-                                font-size:13px;
-                                line-height:1.5;
-                                box-shadow:0 1px 3px rgba(0,0,0,0.18);">
-                                <span style="
-                                    font-size:10px;
-                                    font-weight:700;
-                                    opacity:0.80;
-                                    display:block;
-                                    margin-bottom:4px;
-                                    text-align:right;
-                                    letter-spacing:0.4px;">
-                                    👤 TÚ
-                                </span>
-                                {m["content"]}
-                            </div>
-                        </div>
-                        """,
-                        unsafe_allow_html=True
-                    )
-                else:
-                    st.markdown(
-                        f"""
-                        <div style="display:flex;justify-content:flex-start;margin-bottom:10px;">
-                            <div style="
-                                background-color:#f1f5f9;
-                                color:#1e293b;
-                                border-radius:14px 14px 14px 2px;
-                                padding:9px 14px;
-                                max-width:85%;
-                                font-size:13px;
-                                line-height:1.5;
-                                border:1px solid #e2e8f0;
-                                box-shadow:0 1px 3px rgba(0,0,0,0.07);">
-                                <span style="
-                                    font-size:10px;
-                                    font-weight:700;
-                                    color:#1a365d;
-                                    display:block;
-                                    margin-bottom:4px;
-                                    letter-spacing:0.4px;">
-                                    🤖 ASISTENTE IA
-                                </span>
-                                {m["content"]}
-                            </div>
-                        </div>
-                        """,
-                        unsafe_allow_html=True
-                    )
-
-        with st.form(key="form_chat_ia", clear_on_submit=True):
-            pregunta_ia = st.text_input(
-                "Pregunta", key="txt_chat_ia", label_visibility="collapsed",
-                placeholder="Ej: ¿qué fabricantes se repiten más?"
-            )
-            enviado_ia = st.form_submit_button("Enviar", use_container_width=True)
-
-        if enviado_ia and pregunta_ia.strip():
-            st.session_state["historial_chat_ia"].append({"role": "user", "content": pregunta_ia.strip()})
-            try:
-                with st.spinner("Pensando..."):
-                    respuesta_ia = _responder_chat_ia(pregunta_ia.strip())
-            except Exception as e:
-                respuesta_ia = f"⚠️ No se pudo responder: {e}"
-            st.session_state["historial_chat_ia"].append({"role": "assistant", "content": respuesta_ia})
-            st.rerun()
-
 # ==========================================================
 # CONFIGURACIÓN DE LA PÁGINA
 # ==========================================================
@@ -1769,8 +1836,6 @@ if "usuario_activo_real"     not in st.session_state: st.session_state["usuario_
 if "seccion_activa"          not in st.session_state: st.session_state["seccion_activa"]          = "Inicio"
 if "lista_filtros_company"   not in st.session_state: st.session_state["lista_filtros_company"]   = [""]
 if "mostrar_modal_perfil"    not in st.session_state: st.session_state["mostrar_modal_perfil"]    = False
-if "historial_chat_ia"       not in st.session_state: st.session_state["historial_chat_ia"]       = []
-if "contexto_chat_ia"        not in st.session_state: st.session_state["contexto_chat_ia"]        = None
 if "eudamed_iniciar"         not in st.session_state: st.session_state["eudamed_iniciar"]         = False
 if "eudamed_archivo_bytes"   not in st.session_state: st.session_state["eudamed_archivo_bytes"]   = None
 if "eudamed_archivo_nombre"  not in st.session_state: st.session_state["eudamed_archivo_nombre"]  = ""
@@ -2210,6 +2275,7 @@ else:
             ("🚀 Extracción Masiva",     "ExtraccionMasiva"),
             ("📄 Documentación Post-Venta", "DocumentacionPostVenta"),
             ("🔢 Codificación",          "Codificacion"),
+            ("📁 Creación de Dossier",   "CreacionDossier"),
             ("📋 Historiales y Reportes", "Historiales"),
         ]
         for label, seccion in nav_items:
@@ -2240,7 +2306,7 @@ else:
     # ── HEADER ──────────────────────────────────────────
     badge = '<span class="badge-admin">ADMIN</span>' if es_admin else ""
 
-    col_titulo, col_inicio_btn, col_perfil_btn, col_ia_btn = st.columns([3.6, 1, 1, 1.3])
+    col_titulo, col_inicio_btn, col_perfil_btn = st.columns([4.6, 1, 1])
     with col_titulo:
         st.markdown(
             f'<div style="background:#ffffff;padding:12px 24px;border-radius:10px;'
@@ -2263,8 +2329,6 @@ else:
             st.session_state["seccion_activa"] = "Perfil"
             st.rerun()
         st.markdown('</div>', unsafe_allow_html=True)
-    with col_ia_btn:
-        _renderizar_asistente_popover_ia()
 
     # ==========================================================
     # VISTA 0: MI PERFIL
@@ -2413,12 +2477,6 @@ else:
                 c.strip().upper() for c in st.session_state["lista_filtros_company"] if c.strip()
             ]
 
-            traducir_gmdn = st.checkbox(
-                "🌐 Traducir definiciones GMDN con IA (más lento)",
-                value=False, key="chk_traducir_gmdn",
-                help="Si lo desactivas, la Definición_GMDN queda en inglés pero la extracción es mucho más rápida."
-            )
-
             conectar_boton = st.button(
                 "🚀 Iniciar Extracción AccessGudid", disabled=(archivo_cargado is None),
                 use_container_width=True, key="btn_iniciar_gudid"
@@ -2490,35 +2548,10 @@ else:
                             actualizar_barra_gudid(int(completados / total_refs * 100))
                             tabla_viva.dataframe(pd.DataFrame(lista_resultados), use_container_width=True, height=260)
 
-                    # ── TRADUCCIÓN (un solo paso, sin concurrencia, opcional) ──
-                    # Se traduce aquí, después de la búsqueda en paralelo, para
-                    # no saturar el límite de peticiones por minuto de Gemini.
-                    # Además, se cachean los textos repetidos (varias referencias
-                    # pueden compartir la misma definición GMDN) para no pedirle
-                    # a la IA la misma traducción más de una vez. Solo se hace
-                    # si el usuario activó el checkbox (por defecto está apagado
-                    # para que la extracción sea lo más rápida posible).
-                    if traducir_gmdn:
-                        definiciones_unicas = sorted(set(
-                            f.get("Definicion_GMDN", "") for f in lista_resultados
-                            if f.get("Definicion_GMDN", "") and f.get("Definicion_GMDN", "").lower() != "no encontrado"
-                        ))
-                        if definiciones_unicas:
-                            texto_estado.info(f"🌐 Traduciendo {len(definiciones_unicas)} definiciones GMDN...")
-                            cache_traduccion = {}
-                            for texto_original in definiciones_unicas:
-                                cache_traduccion[texto_original] = _traducir_gmdn_con_ia(texto_original)
-                            for f in lista_resultados:
-                                original = f.get("Definicion_GMDN", "")
-                                if original in cache_traduccion:
-                                    f["Definicion_GMDN"] = cache_traduccion[original]
-                            tabla_viva.dataframe(pd.DataFrame(lista_resultados), use_container_width=True, height=260)
-
                     texto_estado.empty(); barra_custom.empty()
                     st.success(f"✨ ¡Completado! ({int(time.time()-inicio_tiempo)}s)")
                     registrar_log(st.session_state["usuario_activo_real"], f"Extracción masiva AccessGudid ({total_refs} refs)", len(lista_resultados))
                     guardar_resultados_accessgudid(st.session_state["usuario_activo_real"], lista_resultados)
-                    st.session_state["contexto_chat_ia"] = None
 
                     df_final = pd.DataFrame(lista_resultados)
                     output = io.BytesIO()
@@ -2531,13 +2564,6 @@ else:
                         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                         use_container_width=True, key="dl_gudid"
                     )
-
-                    if st.button("🤖 Resumen con IA", key="btn_resumen_ia_accessgudid", use_container_width=True):
-                        with st.spinner("Generando resumen..."):
-                            try:
-                                st.info(_generar_resumen_ia(df_final, "AccessGUDID (FDA)"))
-                            except Exception as e:
-                                st.error(f"No se pudo generar el resumen: {e}")
             elif not archivo_cargado:
                 st.info("👈 Sube un archivo para activar la monitorización.")
 
@@ -2701,7 +2727,6 @@ else:
                         len(lista_resultados_eu)
                     )
                     guardar_resultados_eudamed(st.session_state["usuario_activo_real"], lista_resultados_eu)
-                    st.session_state["contexto_chat_ia"] = None
 
                     df_final_eu = pd.DataFrame(lista_resultados_eu)
                     output_eu   = io.BytesIO()
@@ -2714,13 +2739,6 @@ else:
                         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                         use_container_width=True, key="dl_eudamed"
                     )
-
-                    if st.button("🤖 Resumen con IA", key="btn_resumen_ia_eudamed", use_container_width=True):
-                        with st.spinner("Generando resumen..."):
-                            try:
-                                st.info(_generar_resumen_ia(df_final_eu, "Eudamed (Unión Europea)"))
-                            except Exception as e:
-                                st.error(f"No se pudo generar el resumen: {e}")
             elif not hay_archivo_eu:
                 st.info("👈 Sube un archivo para activar la monitorización.")
 
@@ -3081,6 +3099,136 @@ else:
 
         elif not archivo_cod_1 or not archivo_cod_2:
             st.info("👈 Sube ambos archivos para activar la comparación.")
+
+    # ==========================================================
+    # VISTA 2-E: CREACIÓN DE DOSSIER
+    # ==========================================================
+    elif st.session_state["seccion_activa"] == "CreacionDossier":
+        st.markdown("<h3 style='color:#0b1d3a;'>📁 Creación de Dossier</h3>", unsafe_allow_html=True)
+        st.markdown(
+            "<p style='color:#475569;'>Elige el trámite que vas a realizar (numeral 1.3 del Formato Único "
+            "ASS-RSA-FM007). Según el trámite y la clasificación de riesgo, te muestro qué documentos "
+            "necesitas, y la IA revisa los PDF que subas para indicarte a cuál ítem corresponde cada uno "
+            "y si parece estar conforme — basado en el Decreto 4725 de 2005.</p>",
+            unsafe_allow_html=True
+        )
+
+        OPCIONES_TRAMITE = [
+            "(DM) Expedición de Registro Sanitario para Dispositivos Médicos",
+            "(DM) Renovación para Dispositivos Médicos",
+            "(EB) Expedición de Registro/Permiso de Comercialización Equipos Biomédicos",
+            "(EB) Renovación para Equipos Biomédicos",
+            "Modificaciones Automáticas",
+            "(AUT 32) Autorización de Agotamiento de Existencia",
+            "(AUT EB) Autorización Equipos Biomédicos (usado/repotenciado/reparado)",
+            "(AUT VUCE) Accesorios, Partes y Repuestos (RS-PC) VUCE",
+            "(CERT. CON RS) Certificación con Registro Sanitario (CVL)",
+            "(CERT. SIN RS) Certificación sin Registro Sanitario",
+            "(DESG) Desglose",
+            "(CPFE) Pérdida de Fuerza Ejecutoria",
+            "(AUT 46) Autorización Art.46",
+        ]
+        tramite_elegido = st.selectbox(
+            "1.3 — Tipo de trámite que desea realizar", OPCIONES_TRAMITE, key="select_tramite_dossier"
+        )
+
+        if tramite_elegido != OPCIONES_TRAMITE[0]:
+            st.info(
+                "🚧 Este trámite todavía no está construido — por ahora empezamos con "
+                "**(DM) Expedición de Registro Sanitario para Dispositivos Médicos**. "
+                "Cuéntame cuándo quieres que sigamos con los demás."
+            )
+        else:
+            st.markdown("##### Datos del trámite")
+            col_equipo_doss, col_ref_doss, col_riesgo_doss = st.columns([2, 2, 1.4])
+            with col_equipo_doss:
+                equipo_dossier = st.text_input("Nombre del equipo", key="txt_equipo_dossier")
+            with col_ref_doss:
+                referencia_dossier = st.text_input("Referencia(s)", key="txt_referencia_dossier")
+            with col_riesgo_doss:
+                riesgo_dossier = st.selectbox(
+                    "Clasificación de riesgo", ["I", "IIA", "IIB", "III"], key="select_riesgo_dossier"
+                )
+
+            items_aplicables_dm = _obtener_items_aplicables_dm(riesgo_dossier)
+
+            with st.expander(
+                f"📋 Ver los {len(items_aplicables_dm)} documentos requeridos para riesgo {riesgo_dossier}",
+                expanded=False
+            ):
+                df_checklist_dm = pd.DataFrame([
+                    {"Ítem": it["item"], "Documento": it["titulo"], "Sigla": it["sigla"], "Artículo": it["articulo"]}
+                    for it in items_aplicables_dm
+                ])
+                st.dataframe(df_checklist_dm, use_container_width=True, hide_index=True)
+
+            st.markdown("##### Sube los documentos (PDF)")
+            archivos_dossier_dm = st.file_uploader(
+                "Puedes subir varios PDF a la vez", type=["pdf"], accept_multiple_files=True,
+                key="uploader_dossier_dm"
+            )
+
+            if archivos_dossier_dm and st.button(
+                "🔍 Analizar y Organizar Documentos", use_container_width=True, key="btn_analizar_dossier_dm"
+            ):
+                texto_estado_dossier = st.empty()
+
+                def _avisar_progreso_dossier(idx, total, nombre_archivo):
+                    texto_estado_dossier.info(f"⏳ Analizando {idx+1}/{total}: {nombre_archivo}...")
+
+                with st.spinner("Analizando documentos con IA..."):
+                    resultados_dm, cobertura_dm, archivos_zip_dm = _procesar_documentos_dossier_dm(
+                        archivos_dossier_dm, items_aplicables_dm,
+                        callback_progreso=_avisar_progreso_dossier
+                    )
+
+                texto_estado_dossier.empty()
+
+                df_cobertura_dm = pd.DataFrame(cobertura_dm)
+                total_faltan = (df_cobertura_dm["Estado"] == "❌ FALTA").sum() if not df_cobertura_dm.empty else 0
+                df_resultados_dm = pd.DataFrame(resultados_dm)
+                total_observacion = (df_resultados_dm["Conforme"] == "⚠ Con observación").sum() if not df_resultados_dm.empty else 0
+
+                if total_faltan == 0:
+                    st.success("✨ ¡Checklist completo! Todos los documentos requeridos para este riesgo están cubiertos.")
+                else:
+                    st.warning(f"⚠ Faltan {total_faltan} documento(s) del checklist para este riesgo.")
+                if total_observacion > 0:
+                    st.warning(f"🔎 {total_observacion} documento(s) tienen alguna observación — revísalos antes de radicar.")
+
+                st.markdown("###### Cobertura del checklist")
+                st.dataframe(df_cobertura_dm, use_container_width=True, hide_index=True)
+
+                st.markdown("###### Resultado por cada archivo subido")
+                st.dataframe(df_resultados_dm, use_container_width=True, hide_index=True)
+
+                if archivos_zip_dm:
+                    output_zip_dossier = io.BytesIO()
+                    with zipfile.ZipFile(output_zip_dossier, "w") as zf_out:
+                        for nombre_final, bytes_archivo in archivos_zip_dm:
+                            zf_out.writestr(f"{nombre_final}", bytes_archivo)
+                        output_resumen_dm = io.BytesIO()
+                        with pd.ExcelWriter(output_resumen_dm, engine='openpyxl') as writer:
+                            df_cobertura_dm.to_excel(writer, sheet_name="Cobertura", index=False)
+                            df_resultados_dm.to_excel(writer, sheet_name="Detalle por archivo", index=False)
+                        zf_out.writestr("Resumen_Dossier.xlsx", output_resumen_dm.getvalue())
+
+                    st.download_button(
+                        label="📥 Descargar Dossier Organizado (.zip)",
+                        data=output_zip_dossier.getvalue(),
+                        file_name=f"Dossier_DM_{equipo_dossier or 'equipo'}.zip",
+                        mime="application/zip",
+                        use_container_width=True
+                    )
+
+                registrar_log(
+                    st.session_state["usuario_activo_real"],
+                    f"Creación de Dossier (DM) - {equipo_dossier} {referencia_dossier} riesgo {riesgo_dossier} "
+                    f"({len(resultados_dm)} documentos, {total_faltan} faltantes)",
+                    len(resultados_dm)
+                )
+            elif not archivos_dossier_dm:
+                st.info("👈 Sube los documentos PDF para comenzar el análisis.")
 
     # ==========================================================
     # VISTA 3: HISTORIALES
