@@ -331,20 +331,6 @@ def _drive_obtener_o_crear_carpeta(token, nombre, parent_id, cache_hijos=None):
     return nuevo_id, True  # True = se creó ahora
 
 
-def _drive_descargar_archivo(token, file_id):
-    """Descarga el contenido binario de un archivo de Drive. Se usa para
-    procesar .zip grandes que el usuario subió directamente a su carpeta
-    de Drive (sin pasar por el límite de carga de Streamlit)."""
-    respuesta = requests.get(
-        f"https://www.googleapis.com/drive/v3/files/{file_id}",
-        headers={"Authorization": f"Bearer {token}"},
-        params={"alt": "media"},
-        timeout=600,
-    )
-    respuesta.raise_for_status()
-    return respuesta.content
-
-
 def _drive_subir_archivo(token, nombre, contenido_bytes, mimetype, parent_id):
     """Sube un archivo a Drive usando 'multipart upload' construido a mano
     (multipart/related), siguiendo el formato exacto que pide la API de
@@ -596,11 +582,15 @@ def _construir_arbol_referencias_drive(token, carpeta_raiz_id):
     return arbol
 
 
-def _analizar_remision_con_ia(texto_pdf, arbol_referencias):
+def _analizar_remision_con_ia(texto_pdf, arbol_referencias, pdf_bytes=None):
     """Le pide a Gemini que extraiga pedido/remisión/cliente y la lista de
     equipos de la tabla, y que cruce cada equipo con la lista de carpetas
     (Fabricante/Equipo/Referencia) que ya existen en Drive. Devuelve un
-    dict ya parseado desde el JSON de la respuesta."""
+    dict ya parseado desde el JSON de la respuesta.
+
+    Si 'pdf_bytes' viene informado (remisión escaneada, sin texto
+    extraíble), se adjunta el PDF directamente para que Gemini lo lea
+    como imagen."""
     lista_candidatos = "\n".join(
         f"{e['fabricante']} | {e['equipo']} | {e['referencia']}" for e in arbol_referencias
     )
@@ -608,9 +598,11 @@ def _analizar_remision_con_ia(texto_pdf, arbol_referencias):
         "Eres un asistente que extrae información de documentos de remisión/entrega "
         "en español, y la cruza con una lista de carpetas de documentación técnica "
         "ya organizadas por Fabricante, Equipo y Referencia.\n\n"
-        "El texto del PDF puede venir con el orden de las líneas un poco desordenado "
-        "(es normal en la extracción automática de texto de PDF), interpreta el "
-        "contenido de todas formas.\n\n"
+        "El documento puede venir como texto extraído de un PDF (el orden de las "
+        "líneas puede salir un poco desordenado por la extracción automática), o "
+        "como el archivo PDF adjunto directamente (cuando es una remisión "
+        "escaneada, en cuyo caso debes leerla visualmente como si fuera una "
+        "imagen). Interpreta el contenido de todas formas.\n\n"
         "Identifica cada línea de la tabla que corresponda a un EQUIPO/DISPOSITIVO "
         "MÉDICO real (ignora líneas de garantías, mantenimientos, servicios, fletes, "
         "descuentos u otros conceptos que no sean un equipo físico).\n\n"
@@ -630,11 +622,17 @@ def _analizar_remision_con_ia(texto_pdf, arbol_referencias):
         "Si algún campo no se encuentra en el documento, usa cadena vacía. Si "
         "'coincidencia' es 'sin_coincidencia', deja fabricante/equipo/referencia vacíos."
     )
+    mensaje_usuario = texto_pdf[:15000] if texto_pdf else (
+        "(Esta remisión no tiene texto extraíble por métodos normales — "
+        "probablemente está escaneada como imagen. Léela directamente del "
+        "archivo PDF adjunto.)"
+    )
     respuesta_texto = _llamar_gemini_api(
         system_prompt=system_prompt,
-        mensajes=[{"role": "user", "content": texto_pdf[:15000]}],
+        mensajes=[{"role": "user", "content": mensaje_usuario}],
         modelo=MODELO_IA_CALIDAD,
         max_tokens=1500,
+        pdf_bytes=pdf_bytes,
     )
     texto_json = respuesta_texto.strip()
     if texto_json.startswith("```"):
@@ -747,11 +745,15 @@ def _obtener_items_aplicables_dm(riesgo):
     return [it for it in CHECKLIST_DM if riesgo in it["riesgos"]]
 
 
-def _analizar_documento_dossier_dm(texto_pdf, items_aplicables):
+def _analizar_documento_dossier_dm(texto_pdf, items_aplicables, pdf_bytes=None):
     """Le pide a Gemini que determine a cuál ítem del checklist corresponde
     un documento (por su contenido), y si parece cumplir lo que exige ese
     ítem o si encuentra algo claramente mal/faltante. Devuelve un dict ya
-    parseado desde el JSON de la respuesta."""
+    parseado desde el JSON de la respuesta.
+
+    Si 'pdf_bytes' viene informado (PDF escaneado, sin texto extraíble),
+    se le adjunta el archivo directamente a Gemini para que lo lea como
+    imagen, en vez de descartarlo."""
     lista_items = "\n".join(
         f"{it['item']}. {it['titulo']} ({it['articulo']}): {it['descripcion']}"
         for it in items_aplicables
@@ -761,31 +763,40 @@ def _analizar_documento_dossier_dm(texto_pdf, items_aplicables):
         "dispositivos médicos, con base en el Decreto 4725 de 2005 y el Formato "
         "Único ASS-RSA-FM007.\n\n"
         "Te doy una lista de documentos requeridos para este trámite (número de "
-        "ítem, título y los requisitos exactos que debe cumplir cada uno), y el "
-        "texto extraído de UN documento en PDF que el usuario subió (el orden de "
-        "las líneas puede venir un poco desordenado por la extracción automática, "
-        "interpreta el contenido de todas formas).\n\n"
+        "ítem, título y los requisitos exactos que debe cumplir cada uno), y un "
+        "documento que el usuario subió — puede venir como texto extraído de un "
+        "PDF (el orden de las líneas puede salir un poco desordenado por la "
+        "extracción automática), o como el archivo PDF adjunto directamente "
+        "(cuando es un documento escaneado, en cuyo caso debes leerlo "
+        "visualmente como si fuera una imagen).\n\n"
         "1. Determina a cuál ítem de la lista corresponde este documento, según "
         "su CONTENIDO (no el nombre del archivo). Si no corresponde claramente a "
         "ninguno, indica null.\n"
         "2. Evalúa si el documento, según lo que se puede leer, CUMPLE lo exigido "
         "para ese ítem (fechas de vigencia, firmas, datos exigidos, etc., en la "
-        "medida en que el texto lo permita determinar). Si encuentras algo que "
+        "medida en que el contenido lo permita determinar). Si encuentras algo que "
         "claramente falta o está mal (ej: vigencia vencida, falta firma o sello, "
         "no menciona un dato exigido), indícalo en el comentario.\n"
-        "3. Si el texto es muy corto o no se puede interpretar bien, dilo en el "
-        "comentario y usa conforme='no_determinable'.\n\n"
+        "3. Si el contenido es muy corto, está en blanco, o no se puede "
+        "interpretar bien (incluso como imagen), dilo en el comentario y usa "
+        "conforme='no_determinable'.\n\n"
         f"LISTA DE DOCUMENTOS REQUERIDOS PARA ESTE TRÁMITE:\n{lista_items}\n\n"
         "Responde ÚNICAMENTE con un JSON con este formato exacto, sin texto "
         "adicional, sin comentarios y sin marcado markdown (sin ```):\n"
         '{"item": numero_o_null, "confianza": "alta|media|baja", '
         '"conforme": true_o_false_o_"no_determinable", "comentario": "explicación breve en español, máximo 3 líneas"}'
     )
+    mensaje_usuario = texto_pdf[:15000] if texto_pdf else (
+        "(Este documento no tiene texto extraíble por métodos normales — "
+        "probablemente está escaneado como imagen. Léelo directamente del "
+        "archivo PDF adjunto.)"
+    )
     respuesta_texto = _llamar_gemini_api(
         system_prompt=system_prompt,
-        mensajes=[{"role": "user", "content": texto_pdf[:15000]}],
+        mensajes=[{"role": "user", "content": mensaje_usuario}],
         modelo=MODELO_IA_CALIDAD,
         max_tokens=500,
+        pdf_bytes=pdf_bytes,
     )
     texto_json = respuesta_texto.strip()
     if texto_json.startswith("```"):
@@ -818,14 +829,11 @@ def _procesar_documentos_dossier_dm(archivos_subidos, items_aplicables, callback
             bytes_pdf = archivo.read()
             texto_pdf = _extraer_texto_pdf(bytes_pdf)
             if len(texto_pdf) < 30:
-                resultados_archivos.append({
-                    "Archivo_Original": archivo.name, "Item": "-", "Documento": "-",
-                    "Conforme": "-", "Comentario": "⚠ No se pudo leer texto del PDF (¿escaneado como imagen?)",
-                    "Nombre_Final": None
-                })
-                continue
-
-            analisis = _analizar_documento_dossier_dm(texto_pdf, items_aplicables)
+                # Probablemente escaneado: en vez de descartarlo, se le manda
+                # el PDF directo a Gemini para que lo lea como imagen.
+                analisis = _analizar_documento_dossier_dm("", items_aplicables, pdf_bytes=bytes_pdf)
+            else:
+                analisis = _analizar_documento_dossier_dm(texto_pdf, items_aplicables)
         except Exception as e:
             resultados_archivos.append({
                 "Archivo_Original": archivo.name, "Item": "-", "Documento": "-",
@@ -885,6 +893,417 @@ def _procesar_documentos_dossier_dm(archivos_subidos, items_aplicables, callback
     return resultados_archivos, resumen_cobertura, archivos_para_zip
 
 
+# ==========================================================
+# CREACIÓN DE DOSSIER — MODIFICACIONES AUTOMÁTICAS
+# ==========================================================
+# Estructura tomada de la pestaña "MODIFICACIONES AUTOMATICAS" del formato
+# ASS-RSA-FM007 v.17 (filas 13-189). A diferencia de (DM), aquí no hay una
+# numeración única 1-20: cada código (o grupo de códigos que comparten
+# requisitos) tiene su propio bloque de documentos. El ítem "Formulario
+# debidamente diligenciado" (aplica a todas las modificaciones) se omite
+# por la misma razón que en (DM). Los otros 2 documentos universales
+# (Comprobante de pago, Poder si aplica) sí se mantienen.
+
+CODIGOS_MOD_LEGAL = [
+    ("TITULAR",         [("A", "Cambio"), ("B", "Cambio de Razón Social"), ("C", "Adición"), ("D", "Cambio de Domicilio")]),
+    ("FABRICANTE",      [("E", "Cambio"), ("F", "Cambio de Razón Social"), ("G", "Cambio de Domicilio"), ("H", "Adición"), ("I", "Exclusión")]),
+    ("IMPORTADOR",      [("J", "Cambio"), ("K", "Cambio de Razón Social"), ("L", "Cambio de Domicilio"), ("M", "Adición"), ("N", "Exclusión")]),
+    ("ACONDICIONADOR",  [("Ñ1", "Cambio"), ("Ñ2", "Cambio de Razón Social"), ("Ñ3", "Cambio de Domicilio"), ("Ñ4", "Adición"), ("Ñ5", "Exclusión")]),
+]
+
+CODIGOS_MOD_TECNICO = [
+    ("O1", "Cambio del Nombre del Producto"),
+    ("O2", "Cambio de Nombre Genérico"),
+    ("P1", "Presentación Comercial — Adición"),
+    ("P2", "Presentación Comercial — Cambio"),
+    ("P3", "Presentación Comercial — Exclusión"),
+    ("Q1", "Sistemas y Subsistemas — Adición"),
+    ("Q2", "Sistemas y Subsistemas — Exclusión"),
+    ("R1", "Material de Envase — Adición"),
+    ("R2", "Material de Envase — Cambio"),
+    ("R3", "Material de Envase — Exclusión"),
+    ("S1", "Etiquetas/Insertos/Stickers — Adición"),
+    ("S2", "Etiquetas/Insertos/Stickers — Cambio"),
+    ("S3", "Etiquetas/Insertos/Stickers — Exclusión"),
+    ("T1", "Vida Útil — Adición"),
+    ("T2", "Vida Útil — Cambio"),
+    ("T3", "Vida Útil — Exclusión"),
+    ("U1", "Marca — Adición"),
+    ("U2", "Marca — Cambio"),
+    ("U3", "Marca — Exclusión"),
+    ("V",  "Cambio de la Modalidad"),
+    ("W1", "Indicaciones de Uso — Adición"),
+    ("W2", "Indicaciones de Uso — Cambio"),
+    ("W3", "Indicaciones de Uso — Exclusión"),
+    ("X",  "Cambio de la Clasificación de Riesgo"),
+    ("Y1", "Adición de Referencias"),
+    ("Y2", "Exclusión de Referencias"),
+    ("Z1", "Observaciones/Advertencias — Adición"),
+    ("Z2", "Observaciones/Advertencias — Cambio"),
+    ("Z3", "Observaciones/Advertencias — Exclusión"),
+]
+
+DOCS_UNIVERSALES_MOD = [
+    {"sigla": "PAGO",  "documento": "Comprobante de pago",
+     "descripcion": "Comprobante de pago por concepto del trámite en original por la tarifa legal correspondiente."},
+    {"sigla": "PODER", "documento": "Poder (si aplica)",
+     "descripcion": "Si la solicitud es presentada por un apoderado: poder especial (poderdante, abogado, trámites facultados) o general (escritura pública o certificado de existencia/representación legal). Si fue otorgado en el extranjero debe estar consularizado/legalizado o apostillado."},
+]
+
+BLOQUES_MOD = {
+    "A": {"titulo": "Cambio de Titular", "codigos": ["A"], "documentos": [
+        {"sigla": "CESION", "documento": "Documento de Cesión",
+         "descripcion": "Debe indicar (conjunta o separadamente) la intención de transferir y aceptar la cesión. Solo el titular del registro puede cederlo. Debe identificar plenamente el registro (número, expediente, nombre del producto, marca) y estar firmado por el representante legal del cedente y del cesionario."},
+        {"sigla": "AUT FABRICANTE", "documento": "Autorización del Fabricante o su Autorizado",
+         "descripcion": "Documento expedido por el fabricante o su autorizado, estableciendo la relación entre el cesionario y el fabricante responsable."},
+        {"sigla": "ERL", "documento": "Existencia y Representación Legal",
+         "descripcion": "Nacionales: validar en RUES (rues.org.co). Extranjeras: documento de autoridad competente del país de origen (no vale uno emitido por el mismo titular/fabricante)."},
+        {"sigla": "DILIG FORMULARIO", "documento": "Diligenciamiento del Formulario",
+         "descripcion": "En el ítem 2.2: señalar la letra del motivo, qué figura actualmente en el registro, y cómo debe quedar en la resolución."},
+    ]},
+    "BFKÑ2": {"titulo": "Cambio de Razón Social (Titular/Fabricante/Importador/Acondicionador)", "codigos": ["B", "F", "K", "Ñ2"], "documentos": [
+        {"sigla": "ERL", "documento": "Existencia y Representación Legal",
+         "descripcion": "Nacionales: validar cambio de razón social en RUES. Extranjeras: documento de autoridad competente del país de origen, o en su defecto CVL que refleje el nuevo nombre, acompañado de declaración del fabricante."},
+        {"sigla": "ETIQUETA STICKER", "documento": "Etiqueta del Fabricante y/o Sticker del Importador",
+         "descripcion": "Evidenciar el cambio de razón social en las etiquetas del fabricante, o en el sticker del importador (nombre, domicilio, número de registro). No se aceptan etiquetas con cambios distintos a los ya autorizados."},
+    ]},
+    "C": {"titulo": "Adición de Titular", "codigos": ["C"], "documentos": [
+        {"sigla": "CESION", "documento": "Documento de Cesión",
+         "descripcion": "Mismos requisitos que para Cambio de Titular: intención de transferir/aceptar, identificación plena del registro, firmado por representantes legales de cedente y cesionario."},
+        {"sigla": "AUT FABRICANTE", "documento": "Autorización del Fabricante o su Autorizado",
+         "descripcion": "Documento expedido por el fabricante o su autorizado, estableciendo la relación entre el cesionario y el fabricante responsable."},
+        {"sigla": "ERL", "documento": "Existencia y Representación Legal",
+         "descripcion": "Nacionales: validar en RUES. Extranjeras: documento de autoridad competente del país de origen."},
+    ]},
+    "DGLÑ3": {"titulo": "Cambio de Domicilio (Titular/Fabricante/Importador/Acondicionador)", "codigos": ["D", "G", "L", "Ñ3"], "documentos": [
+        {"sigla": "ERL", "documento": "Existencia y Representación Legal",
+         "descripcion": "Nacionales: validar cambio de domicilio en RUES. Extranjeras: documento de autoridad competente, o CVL con el nuevo domicilio acompañado de declaración del fabricante/titular."},
+        {"sigla": "ETIQUETA STICKER", "documento": "Etiqueta del Fabricante y/o Sticker del Importador",
+         "descripcion": "Evidenciar la nueva dirección en las etiquetas (fabricante) o rótulo/sticker (importador)."},
+        {"sigla": "CCAA", "documento": "Certificado de Capacidad de Almacenamiento y/o Acondicionamiento",
+         "descripcion": "Para cambio de domicilio de importador y acondicionador. Debe estar vigente; se valida con las bases de la Dirección de Dispositivos Médicos."},
+    ]},
+    "E": {"titulo": "Cambio de Fabricante", "codigos": ["E"], "documentos": [
+        {"sigla": "CERT FABRICANTE", "documento": "Certificación del Fabricante",
+         "descripcion": "Indicar el nombre del producto, precisar que mantiene sus características autorizadas, y estar rotulado y firmado por el fabricante."},
+        {"sigla": "BPM SGC", "documento": "Certificación del Sistema de Gestión de Calidad / BPM o equivalente",
+         "descripcion": "Nacionales: validar en RUES / bases de Certificaciones. Extranjeras: certificado de calidad (ISO 13485, ISO 9001, etc.) de autoridad competente, no emitido por el mismo titular/fabricante."},
+        {"sigla": "CVL", "documento": "Certificado de Venta Libre",
+         "descripcion": "Expedido por entidad competente, indicando el fabricante a cambiar y el producto con referencias/modelos autorizados. Vigencia 1 año si no se declara otra. Consularizado/legalizado o apostillado, con traducción oficial."},
+        {"sigla": "ETIQUETA FABRICANTE", "documento": "Etiqueta del Fabricante",
+         "descripcion": "Tal como provienen del país de origen: nombre y domicilio del fabricante, nombre del producto con referencias/modelos autorizados."},
+        {"sigla": "INSERTOS", "documento": "Insertos Originales",
+         "descripcion": "Nombre del producto, indicaciones, contraindicaciones y advertencias autorizadas; idioma original y castellano; información del fabricante con domicilio."},
+        {"sigla": "REL COMERCIAL FABR", "documento": "Documento de relación comercial entre el fabricante autorizado y el nuevo",
+         "descripcion": "Nacionales: contrato de maquila entre ambos fabricantes. Extranjeras: contrato de maquila, certificado de casa matriz (filiales/subsidiarias), o CVL que consigne fabricante legal y planta."},
+    ]},
+    "H": {"titulo": "Adición de Fabricante", "codigos": ["H"], "documentos": [
+        {"sigla": "ERL", "documento": "Existencia y Representación Legal",
+         "descripcion": "Nacionales: validar en RUES. Extranjeras: documento de autoridad competente del país de origen."},
+        {"sigla": "BPM SGC", "documento": "Certificación del Sistema de Gestión de Calidad / BPM o equivalente",
+         "descripcion": "Nacionales: validar en bases de Certificaciones. Extranjeras: certificado de calidad (ISO 13485, ISO 9001, etc.) de autoridad competente."},
+        {"sigla": "CERT FABRICANTE", "documento": "Certificación del Fabricante",
+         "descripcion": "Indicar el nombre del producto, precisar que mantiene sus características autorizadas, y estar rotulado y firmado por el fabricante."},
+        {"sigla": "CVL", "documento": "Certificado de Venta Libre",
+         "descripcion": "Expedido por entidad competente, indicando el fabricante y producto con referencias/modelos autorizados. Vigencia 1 año si no declara otra, consularizado/legalizado/apostillado con traducción."},
+        {"sigla": "ETIQUETA FABRICANTE", "documento": "Etiqueta del Fabricante",
+         "descripcion": "Tal como provienen del país de origen, con nombre/domicilio del fabricante y producto con referencias/modelos autorizados."},
+        {"sigla": "REL COMERCIAL FABR", "documento": "Documento de relación comercial entre el fabricante autorizado y el nuevo a adicionar",
+         "descripcion": "Nacionales: contrato de maquila. Extranjeras: contrato de maquila, certificado de casa matriz, o CVL que consigne fabricante legal y planta."},
+    ]},
+    "INÑ5": {"titulo": "Exclusión de Fabricante/Importador/Acondicionador", "codigos": ["I", "N", "Ñ5"], "documentos": [
+        {"sigla": "DILIG FORMULARIO", "documento": "Diligenciamiento del Formulario",
+         "descripcion": "En el ítem 2.2: señalar la letra del motivo, qué figura actualmente en el registro, y cómo debe quedar en la resolución."},
+    ]},
+    "JMÑ1Ñ4": {"titulo": "Adición o Cambio de Importador/Acondicionador", "codigos": ["J", "M", "Ñ1", "Ñ4"], "documentos": [
+        {"sigla": "AUT TITULAR", "documento": "Autorización del Titular",
+         "descripcion": "Indicar nombre y domicilio del importador, roles/actividades que desempeñará, firmada y autorizada por el titular del registro/permiso."},
+        {"sigla": "ERL", "documento": "Existencia y Representación Legal",
+         "descripcion": "Nacionales: validar en RUES."},
+        {"sigla": "CCAA", "documento": "Certificado de Capacidad de Almacenamiento y/o Acondicionamiento",
+         "descripcion": "Debe estar vigente, validado con las bases de la Dirección de Dispositivos Médicos."},
+        {"sigla": "STICKER IMPORTADOR", "documento": "Sticker o Rótulo Importador",
+         "descripcion": "Datos del nuevo importador con domicilio, nombre del producto, modelo/referencias, número de registro/permiso. No puede tapar información del fabricante."},
+        {"sigla": "DILIG FORMULARIO", "documento": "Diligenciamiento del Formulario",
+         "descripcion": "Señalar la letra del motivo, qué figura actualmente, y cómo debe quedar en la resolución. Diligenciar dirección/domicilio completo del importador y acondicionador."},
+    ]},
+    "O": {"titulo": "Cambio del Nombre del Producto / Nombre Genérico", "codigos": ["O1", "O2"], "documentos": [
+        {"sigla": "DILIG FORMULARIO", "documento": "Diligenciamiento del Formulario",
+         "descripcion": "Señalar la letra del motivo, el nombre actual autorizado, y cómo debe quedar en la resolución. Aclarar si el cambio es de nombre del producto o nombre genérico."},
+        {"sigla": "DOC JUSTIFICATIVO", "documento": "Documento Justificativo",
+         "descripcion": "Carta del titular evidenciando la justificación del cambio de nombre del producto."},
+        {"sigla": "CVL DECL CONFORMIDAD", "documento": "Certificado de Venta Libre y Declaración de Conformidad",
+         "descripcion": "Importados: el nombre debe coincidir con el CVL o la Declaración de Conformidad del fabricante. Nacionales: Declaración de Conformidad del Fabricante Nacional. CVL: expedido por entidad competente, vigencia 1 año si no declara otra, consularizado/legalizado/apostillado con traducción."},
+        {"sigla": "INSERTOS", "documento": "Insertos Originales",
+         "descripcion": "Nuevo nombre del producto, indicaciones, contraindicaciones y advertencias autorizadas; idioma original y castellano; información del fabricante con domicilio."},
+        {"sigla": "ETIQUETAS STICKER", "documento": "Etiquetas y/o Sticker",
+         "descripcion": "Etiquetas del fabricante y sticker del importador con el nuevo nombre, manteniendo las demás condiciones autorizadas."},
+    ]},
+    "P": {"titulo": "Presentación Comercial (Adición/Cambio/Exclusión)", "codigos": ["P1", "P2", "P3"], "documentos": [
+        {"sigla": "DILIG FORMULARIO", "documento": "Diligenciamiento del Formulario",
+         "descripcion": "Señalar la letra del motivo, qué figura actualmente, y la cantidad con unidades como se comercializa (caja por unidad, blíster, set, etc.). Si incluye muestras gratis, especificarlo."},
+        {"sigla": "INSERTOS", "documento": "Insertos Originales",
+         "descripcion": "Nombre del producto con sus presentaciones comerciales, indicaciones/contraindicaciones/advertencias autorizadas, idioma original y castellano, información del fabricante."},
+        {"sigla": "ETIQUETA ORIGINAL", "documento": "Etiqueta Original",
+         "descripcion": "Etiquetas del fabricante con las nuevas presentaciones comerciales, manteniendo las demás condiciones autorizadas."},
+    ]},
+    "Q": {"titulo": "Sistemas y Subsistemas (partes de Equipos Biomédicos)", "codigos": ["Q1", "Q2"], "documentos": [
+        {"sigla": "DOC JUSTIFICATIVO", "documento": "Documento Justificativo",
+         "descripcion": "Motivo de la adición de sistemas/subsistemas, precisando diferencias entre lo autorizado y lo que se quiere adicionar."},
+        {"sigla": "CATALOGOS", "documento": "Catálogos",
+         "descripcion": "Deben relacionar los subsistemas (partes) a adicionar, indicando el folio donde se evidencian."},
+        {"sigla": "DILIG FORMULARIO", "documento": "Diligenciamiento del Formulario",
+         "descripcion": "Señalar la letra del motivo, qué figura actualmente, y cómo debe quedar en la resolución."},
+    ]},
+    "R": {"titulo": "Material de Envase Primario/Secundario/Empaque", "codigos": ["R1", "R2", "R3"], "documentos": [
+        {"sigla": "ESTUDIOS TECNICOS", "documento": "Estudios Técnicos",
+         "descripcion": "Emitidos por el fabricante, justificando el cambio de envase y garantizando integridad del producto: parámetros, especificaciones y rangos de aceptabilidad (certificado de análisis o informe de pruebas)."},
+        {"sigla": "ESTUDIOS ESTABILIDAD", "documento": "Estudios de Estabilidad",
+         "descripcion": "Si la vida útil depende del empaque que se cambia: estudios que demuestren la vida útil aprobada dentro del nuevo empaque (metodología, resultados, conclusiones)."},
+        {"sigla": "ESPEC TECNICAS", "documento": "Especificaciones Técnicas",
+         "descripcion": "Documento del fabricante con las especificaciones de los nuevos materiales de envase, o declaración certificando dichas especificaciones."},
+        {"sigla": "ETIQUETA ORIGINAL", "documento": "Etiqueta Original",
+         "descripcion": "Etiquetas del fabricante con el nuevo material de envase primario/secundario o empaque."},
+    ]},
+    "S": {"titulo": "Etiquetas, Stickers e Insertos (Adición/Cambio/Exclusión)", "codigos": ["S1", "S2", "S3"], "documentos": [
+        {"sigla": "DOC JUSTIFICATIVO", "documento": "Documento Justificativo",
+         "descripcion": "Justificación descriptiva del cambio, adición y/o exclusión de etiquetas, stickers o insertos."},
+        {"sigla": "INSERTOS MANUALES", "documento": "Insertos o Manuales",
+         "descripcion": "Para adición o cambio: inserto/manual donde se evidencien los cambios (si aplica)."},
+        {"sigla": "ETIQUETA STICKER", "documento": "Etiqueta o Sticker",
+         "descripcion": "Debe evidenciar lo descrito en el documento justificativo."},
+        {"sigla": "DILIG FORMULARIO", "documento": "Diligenciamiento del Formulario",
+         "descripcion": "Señalar la letra del motivo, qué figura actualmente, y descripción de los cambios (no citar folios ni incluir imágenes)."},
+    ]},
+    "T": {"titulo": "Vida Útil (Adición/Cambio/Exclusión)", "codigos": ["T1", "T2", "T3"], "documentos": [
+        {"sigla": "ESTUDIOS ESTABILIDAD", "documento": "Estudios de Estabilidad (Dispositivos Médicos)",
+         "descripcion": "Estudios que validen la vida útil atribuida: resumen del método, verificación, validación y resultado final."},
+        {"sigla": "DECL FABR ESTABILIDAD", "documento": "Declaración del Fabricante y Estudios de Estabilidad (Equipos Biomédicos)",
+         "descripcion": "Estudios de estabilidad que validen la vida útil; si no se puede sustentar, declaración del fabricante certificando la vida útil del equipo (también aplica a accesorios/DM estériles usados con el equipo)."},
+    ]},
+    "U": {"titulo": "Marca (Adición/Cambio/Exclusión)", "codigos": ["U1", "U2", "U3"], "documentos": [
+        {"sigla": "DILIG FORMULARIO", "documento": "Diligenciamiento del Formulario",
+         "descripcion": "Señalar la letra del motivo, qué figura actualmente, y cómo debe quedar en la resolución."},
+        {"sigla": "ETIQUETA ORIGINAL", "documento": "Etiqueta Original",
+         "descripcion": "Etiquetas originales donde se evidencie el cambio o adición de marca."},
+    ]},
+    "V": {"titulo": "Cambio de la Modalidad del Registro Sanitario", "codigos": ["V"], "documentos": [
+        {"sigla": "DOC JUSTIFICATIVO", "documento": "Documento Justificativo",
+         "descripcion": "Justificación del cambio de modalidad. Solo se permite cambiar de 'importar y vender' a 'importar, empacar y vender'; para otras modalidades se requiere registro/permiso nuevo."},
+        {"sigla": "CCAA CONDICIONES", "documento": "Certificado de Capacidad de Almacenamiento/Acondicionamiento o Condiciones Sanitarias",
+         "descripcion": "Validado con las bases del Instituto; aportar el radicado del documento."},
+    ]},
+    "W": {"titulo": "Indicaciones de Uso (Adición/Cambio/Exclusión)", "codigos": ["W1", "W2", "W3"], "documentos": [
+        {"sigla": "DOC JUSTIFICATIVO", "documento": "Documento Justificativo",
+         "descripcion": "Justificación de la adición, cambio o exclusión de indicaciones de uso. No puede afectar diseño/seguridad ya autorizados (de lo contrario se requiere registro nuevo)."},
+        {"sigla": "INSERTO MANUALES", "documento": "Inserto o Manuales",
+         "descripcion": "El uso debe estar acorde con el inserto/manual de los modelos/referencias aprobadas."},
+        {"sigla": "ETIQUETA ORIGINAL", "documento": "Etiqueta Original",
+         "descripcion": "Si la indicación de uso está en las etiquetas, deben actualizarse también."},
+    ]},
+    "X": {"titulo": "Cambio de la Clasificación de Riesgo", "codigos": ["X"], "documentos": [
+        {"sigla": "DOC JUSTIFICATIVO", "documento": "Documento Justificativo",
+         "descripcion": "Justificación del cambio de clasificación de riesgo, expedida por el titular del registro/permiso."},
+        {"sigla": "DOC TECNICOS", "documento": "Documentos Técnicos",
+         "descripcion": "DM riesgo I→IIA: información científica de seguridad (evaluación biológica) y análisis de riesgos del fabricante. DM IIA→IIB/III: estudios clínicos. EB I→IIA: pruebas eléctricas/compatibilidad electromagnética, evaluación biológica de accesorios en contacto con paciente, análisis de riesgos. EB IIA→IIB/III: estudios clínicos, certificado de estándares de calidad, datos de la IPS donde se instalará, declaración del fabricante/representante (no en experimentación, usos, soporte de insumos/mantenimiento 5 años, capacitación, manuales en español)."},
+        {"sigla": "ETIQUETA INSERTO", "documento": "Etiqueta Original e Inserto",
+         "descripcion": "Para EB que cambian de IIA a IIB/III: sticker del importador indicando Permiso de Comercialización y nomenclatura EBC."},
+    ]},
+    "Y1": {"titulo": "Adición de Referencias y/o Modelos", "codigos": ["Y1"], "documentos": [
+        {"sigla": "DOC JUSTIFICATIVO", "documento": "Documento Justificativo",
+         "descripcion": "Justificación de la adición de referencias, destacando diferencias con las ya registradas, manteniendo misma indicación de uso y principio de funcionamiento."},
+        {"sigla": "CVL", "documento": "Certificado de Venta Libre",
+         "descripcion": "Importados: debe evidenciar las nuevas referencias/modelos, nombre del producto, fabricante. Vigencia 1 año si no declara otra, consularizado/legalizado/apostillado con traducción."},
+        {"sigla": "DECL CONFORMIDAD", "documento": "Declaración de Conformidad",
+         "descripcion": "DM: si el CVL solo declara familias, declaración del fabricante indicando que las subfamilias coinciden con las referencias a adicionar. EB: declaración de cumplimiento de normas internacionales con el nombre del equipo y modelos/referencias a adicionar."},
+        {"sigla": "CATALOGOS", "documento": "Catálogos",
+         "descripcion": "Deben contener las referencias/modelos a adicionar, con la misma indicación de uso autorizada."},
+        {"sigla": "ESTUDIOS TECNICOS", "documento": "Estudios Técnicos y Comprobaciones Analíticas",
+         "descripcion": "Certificado de análisis del producto terminado (especificaciones, rangos de aceptación) o resumen de verificación/validación del diseño, para las referencias a adicionar."},
+        {"sigla": "ETIQUETA INSERTO", "documento": "Etiqueta Original e Inserto",
+         "descripcion": "Etiquetas del fabricante con nombre del producto, referencias/modelos, fabricante, para las referencias que se desean adicionar."},
+    ]},
+    "Y2": {"titulo": "Exclusión de Referencias y/o Modelos", "codigos": ["Y2"], "documentos": [
+        {"sigla": "DILIG FORMULARIO", "documento": "Diligenciamiento del Formulario",
+         "descripcion": "Señalar la letra del motivo, qué figura actualmente en el registro, y cómo debe quedar en la resolución."},
+    ]},
+    "Z": {"titulo": "Observaciones, Advertencias, Contraindicaciones y Precauciones", "codigos": ["Z1", "Z2", "Z3"], "documentos": [
+        {"sigla": "DOC JUSTIFICATIVO", "documento": "Documento Justificativo",
+         "descripcion": "Justificación de la adición de observaciones/advertencias, destacando diferencias con lo ya registrado."},
+        {"sigla": "DILIG FORMULARIO", "documento": "Diligenciamiento del Formulario",
+         "descripcion": "Señalar la letra del motivo, qué figura actualmente, y cómo debe quedar en la resolución."},
+        {"sigla": "ETIQUETA INSERTO", "documento": "Etiqueta Original e Inserto",
+         "descripcion": "De las observaciones/advertencias a adicionar. No aplica para exclusión."},
+    ]},
+}
+
+
+def _obtener_bloques_desde_codigos(codigos_elegidos):
+    """Dado un conjunto de códigos elegidos por el usuario (ej: ['Y1','H']),
+    devuelve la lista de bloques únicos que se activan (un código puede
+    pertenecer a un bloque compartido con otros, ej. 'B' activa el mismo
+    bloque que 'F','K','Ñ2')."""
+    bloques_activados = []
+    ids_ya_incluidos = set()
+    for bloque_id, info in BLOQUES_MOD.items():
+        if any(c in codigos_elegidos for c in info["codigos"]) and bloque_id not in ids_ya_incluidos:
+            bloques_activados.append({"bloque_id": bloque_id, **info})
+            ids_ya_incluidos.add(bloque_id)
+    return bloques_activados
+
+
+def _analizar_documento_modificacion(texto_pdf, candidatos, pdf_bytes=None):
+    """Análogo a _analizar_documento_dossier_dm pero para Modificaciones
+    Automáticas, donde los candidatos vienen identificados por un id
+    compuesto (bloque + documento) en vez de un número de ítem único.
+
+    Si 'pdf_bytes' viene informado (PDF escaneado, sin texto extraíble),
+    se adjunta el archivo directamente para que Gemini lo lea como imagen."""
+    lista_candidatos = "\n".join(
+        f"{c['id']}. [{c['bloque_titulo']}] {c['documento']}: {c['descripcion']}" for c in candidatos
+    )
+    system_prompt = (
+        "Eres un experto en trámites regulatorios del INVIMA (Colombia) para "
+        "modificaciones automáticas de registros sanitarios de dispositivos "
+        "médicos, con base en el Decreto 4725 de 2005 y el Formato Único "
+        "ASS-RSA-FM007.\n\n"
+        "Te doy una lista de documentos requeridos (con un identificador único, "
+        "el bloque/tipo de modificación al que pertenecen, y los requisitos "
+        "exactos que deben cumplir), y un documento que el usuario subió — puede "
+        "venir como texto extraído de un PDF (el orden de las líneas puede salir "
+        "desordenado por la extracción automática), o como el archivo PDF "
+        "adjunto directamente (cuando está escaneado, en cuyo caso debes leerlo "
+        "visualmente como si fuera una imagen).\n\n"
+        "1. Determina a cuál identificador de la lista corresponde este documento, "
+        "según su CONTENIDO (no el nombre del archivo). Si no corresponde "
+        "claramente a ninguno, indica null.\n"
+        "2. Evalúa si el documento CUMPLE lo exigido para ese ítem (vigencias, "
+        "firmas, datos exigidos, etc., en la medida en que el contenido lo "
+        "permita determinar). Si encuentras algo claramente mal o faltante, "
+        "indícalo.\n"
+        "3. Si el contenido es muy corto, está en blanco, o no se puede "
+        "interpretar bien (incluso como imagen), dilo y usa "
+        "conforme='no_determinable'.\n\n"
+        f"LISTA DE DOCUMENTOS REQUERIDOS:\n{lista_candidatos}\n\n"
+        "Responde ÚNICAMENTE con un JSON con este formato exacto, sin texto "
+        "adicional, sin comentarios y sin marcado markdown (sin ```):\n"
+        '{"id": "id_o_null", "confianza": "alta|media|baja", '
+        '"conforme": true_o_false_o_"no_determinable", "comentario": "explicación breve en español, máximo 3 líneas"}'
+    )
+    mensaje_usuario = texto_pdf[:15000] if texto_pdf else (
+        "(Este documento no tiene texto extraíble por métodos normales — "
+        "probablemente está escaneado como imagen. Léelo directamente del "
+        "archivo PDF adjunto.)"
+    )
+    respuesta_texto = _llamar_gemini_api(
+        system_prompt=system_prompt,
+        mensajes=[{"role": "user", "content": mensaje_usuario}],
+        modelo=MODELO_IA_CALIDAD,
+        max_tokens=500,
+        pdf_bytes=pdf_bytes,
+    )
+    texto_json = respuesta_texto.strip()
+    if texto_json.startswith("```"):
+        texto_json = texto_json.strip("`")
+        if texto_json.lower().startswith("json"):
+            texto_json = texto_json[4:]
+    inicio = texto_json.find("{")
+    fin = texto_json.rfind("}")
+    if inicio != -1 and fin != -1:
+        texto_json = texto_json[inicio:fin + 1]
+    return json.loads(texto_json)
+
+
+def _procesar_documentos_modificacion(archivos_subidos, bloques_activados, callback_progreso=None):
+    """Analiza cada PDF subido y lo asigna al documento que mejor le
+    corresponde, entre TODOS los documentos de los bloques activados más
+    los 2 documentos universales (Pago, Poder). Organiza el resultado en
+    carpetas por código dentro del .zip final."""
+    candidatos = []
+    for bloque in bloques_activados:
+        nombre_carpeta_bloque = f"{'-'.join(bloque['codigos'])} {bloque['titulo']}"
+        for idx_doc, doc in enumerate(bloque["documentos"]):
+            candidatos.append({
+                "id": f"{bloque['bloque_id']}::{idx_doc}",
+                "bloque_id": bloque["bloque_id"], "bloque_titulo": bloque["titulo"],
+                "carpeta": nombre_carpeta_bloque,
+                "documento": doc["documento"], "sigla": doc["sigla"], "descripcion": doc["descripcion"],
+            })
+    for idx_doc, doc in enumerate(DOCS_UNIVERSALES_MOD):
+        candidatos.append({
+            "id": f"UNIVERSAL::{idx_doc}",
+            "bloque_id": "UNIVERSAL", "bloque_titulo": "Documentos para todas las modificaciones",
+            "carpeta": "DOCUMENTOS GENERALES",
+            "documento": doc["documento"], "sigla": doc["sigla"], "descripcion": doc["descripcion"],
+        })
+
+    resultados_archivos = []
+    asignaciones_por_id = {}
+    archivos_para_zip = []
+
+    total = len(archivos_subidos)
+    for idx, archivo in enumerate(archivos_subidos):
+        if callback_progreso:
+            callback_progreso(idx, total, archivo.name)
+
+        try:
+            bytes_pdf = archivo.read()
+            texto_pdf = _extraer_texto_pdf(bytes_pdf)
+            if len(texto_pdf) < 30:
+                # Probablemente escaneado: se manda el PDF directo a Gemini
+                # para que lo lea como imagen, en vez de descartarlo.
+                analisis = _analizar_documento_modificacion("", candidatos, pdf_bytes=bytes_pdf)
+            else:
+                analisis = _analizar_documento_modificacion(texto_pdf, candidatos)
+        except Exception as e:
+            resultados_archivos.append({
+                "Archivo_Original": archivo.name, "Bloque": "-", "Documento": "-",
+                "Conforme": "-", "Comentario": f"❌ Error analizando con IA: {e}"
+            })
+            continue
+
+        id_match = analisis.get("id")
+        conforme = analisis.get("conforme")
+        comentario = (analisis.get("comentario") or "").strip()
+        candidato_info = next((c for c in candidatos if c["id"] == id_match), None)
+
+        if candidato_info is None:
+            resultados_archivos.append({
+                "Archivo_Original": archivo.name, "Bloque": "-", "Documento": "Sin clasificar",
+                "Conforme": "-", "Comentario": comentario or "No se identificó a qué documento corresponde."
+            })
+            archivos_para_zip.append((f"SIN CLASIFICAR - {archivo.name}", bytes_pdf))
+            continue
+
+        base_nombre = f"{candidato_info['carpeta']}/{candidato_info['sigla']}"
+        usados = asignaciones_por_id.setdefault(id_match, [])
+        nombre_final = base_nombre if not usados else f"{base_nombre} ({len(usados) + 1})"
+        usados.append(nombre_final)
+
+        if conforme is True:
+            estado_conforme = "✅ Conforme"
+        elif conforme is False:
+            estado_conforme = "⚠ Con observación"
+        else:
+            estado_conforme = "❓ No determinable"
+
+        resultados_archivos.append({
+            "Archivo_Original": archivo.name, "Bloque": candidato_info["bloque_titulo"],
+            "Documento": candidato_info["documento"], "Conforme": estado_conforme, "Comentario": comentario or "-"
+        })
+        archivos_para_zip.append((f"{nombre_final}.pdf", bytes_pdf))
+
+    ids_cubiertos = set(asignaciones_por_id.keys())
+    resumen_cobertura = []
+    for c in candidatos:
+        resumen_cobertura.append({
+            "Carpeta": c["carpeta"], "Documento": c["documento"], "Sigla": c["sigla"],
+            "Estado": "✅ Subido" if c["id"] in ids_cubiertos else "❌ FALTA"
+        })
+
+    return resultados_archivos, resumen_cobertura, archivos_para_zip
+
+
 def _analizar_zip_remisiones(bytes_zip, token, carpeta_raiz_id, callback_progreso=None):
     """FASE 1: analiza el .zip de remisiones con IA y arma la lista de
     'grupos' (remisión + equipo encontrado, con sus archivos disponibles
@@ -916,12 +1335,11 @@ def _analizar_zip_remisiones(bytes_zip, token, carpeta_raiz_id, callback_progres
                 bytes_pdf = zf.read(nombre_entrada)
                 texto_pdf = _extraer_texto_pdf(bytes_pdf)
                 if len(texto_pdf) < 30:
-                    informativas.append({
-                        "Remision": nombre_archivo_pdf, "Cliente": "-", "Equipo": "-", "Referencia": "-",
-                        "Estado": "⚠ No se pudo leer texto del PDF (¿está escaneado como imagen?)"
-                    })
-                    continue
-                analisis = _analizar_remision_con_ia(texto_pdf, arbol_referencias)
+                    # Probablemente escaneada: se manda el PDF directo a
+                    # Gemini para que lo lea como imagen, en vez de descartarla.
+                    analisis = _analizar_remision_con_ia("", arbol_referencias, pdf_bytes=bytes_pdf)
+                else:
+                    analisis = _analizar_remision_con_ia(texto_pdf, arbol_referencias)
             except Exception as e:
                 informativas.append({
                     "Remision": nombre_archivo_pdf, "Cliente": "-", "Equipo": "-", "Referencia": "-",
@@ -1624,14 +2042,19 @@ def _obtener_api_key_gemini():
             return None
 
 
-def _llamar_gemini_api(system_prompt, mensajes, modelo=MODELO_IA_CALIDAD, max_tokens=900):
+def _llamar_gemini_api(system_prompt, mensajes, modelo=MODELO_IA_CALIDAD, max_tokens=900, pdf_bytes=None):
     """Llama a la API de Gemini. Reintenta automáticamente ante:
     - Errores de red/timeout (problemas de conexión transitorios)
     - 503 (modelo saturado) y 429 (límite de tasa)
     Y revisa explícitamente el motivo de finalización de la respuesta,
     para poder avisar con un mensaje claro si Gemini bloqueó la
     respuesta por su filtro de seguridad en vez de devolver texto vacío
-    sin explicación (una de las causas de 'preguntas que fallan')."""
+    sin explicación (una de las causas de 'preguntas que fallan').
+
+    Si se pasa 'pdf_bytes', se adjunta el PDF directamente como archivo al
+    último mensaje (Gemini puede 'leer' PDFs escaneados como imagen, sin
+    necesidad de instalar un motor de OCR aparte) — útil cuando la
+    extracción de texto normal no encuentra nada (PDF escaneado)."""
     api_key = _obtener_api_key_gemini()
     if not api_key:
         raise RuntimeError(
@@ -1648,6 +2071,11 @@ def _llamar_gemini_api(system_prompt, mensajes, modelo=MODELO_IA_CALIDAD, max_to
         }
         for m in mensajes
     ]
+    if pdf_bytes is not None and contenidos:
+        b64_pdf = base64.b64encode(pdf_bytes).decode("utf-8")
+        contenidos[-1]["parts"].insert(0, {
+            "inline_data": {"mime_type": "application/pdf", "data": b64_pdf}
+        })
 
     cuerpo = {
         "system_instruction": {"parts": [{"text": system_prompt}]},
@@ -3132,13 +3560,13 @@ else:
             "1.3 — Tipo de trámite que desea realizar", OPCIONES_TRAMITE, key="select_tramite_dossier"
         )
 
-        if tramite_elegido != OPCIONES_TRAMITE[0]:
+        if tramite_elegido not in (OPCIONES_TRAMITE[0], OPCIONES_TRAMITE[4]):
             st.info(
-                "🚧 Este trámite todavía no está construido — por ahora empezamos con "
-                "**(DM) Expedición de Registro Sanitario para Dispositivos Médicos**. "
+                "🚧 Este trámite todavía no está construido — por ahora tenemos "
+                "**(DM) Expedición de Registro Sanitario** y **Modificaciones Automáticas**. "
                 "Cuéntame cuándo quieres que sigamos con los demás."
             )
-        else:
+        elif tramite_elegido == OPCIONES_TRAMITE[0]:
             st.markdown("##### Datos del trámite")
             col_equipo_doss, col_riesgo_doss = st.columns([2.5, 1.4])
             with col_equipo_doss:
@@ -3250,6 +3678,115 @@ else:
                 )
             elif not archivos_dossier_dm:
                 st.info("👈 Sube los documentos PDF para comenzar el análisis.")
+
+        elif tramite_elegido == OPCIONES_TRAMITE[4]:
+            st.markdown("##### Datos del trámite")
+            equipo_mod = st.text_input("Nombre del equipo / producto", key="txt_equipo_mod")
+
+            st.markdown("##### 2. Tipo(s) de modificación a realizar")
+            st.caption("Marca todos los códigos que apliquen — puedes combinar legales y técnicos en el mismo trámite.")
+
+            codigos_elegidos_mod = []
+
+            col_legal_mod, col_tecnico_mod = st.columns(2)
+            with col_legal_mod:
+                st.markdown("**MODIFICACIÓN DE TIPO LEGAL**")
+                for rol, opciones in CODIGOS_MOD_LEGAL:
+                    st.markdown(f"*{rol}*")
+                    for codigo, descripcion in opciones:
+                        if st.checkbox(f"{codigo} — {descripcion}", key=f"chk_mod_{codigo}"):
+                            codigos_elegidos_mod.append(codigo)
+            with col_tecnico_mod:
+                st.markdown("**MODIFICACIÓN DE TIPO TÉCNICO**")
+                for codigo, descripcion in CODIGOS_MOD_TECNICO:
+                    if st.checkbox(f"{codigo} — {descripcion}", key=f"chk_mod_{codigo}"):
+                        codigos_elegidos_mod.append(codigo)
+
+            if not codigos_elegidos_mod:
+                st.info("👈 Marca al menos un código de modificación para continuar.")
+            else:
+                bloques_activados_mod = _obtener_bloques_desde_codigos(codigos_elegidos_mod)
+                total_docs_mod = sum(len(b["documentos"]) for b in bloques_activados_mod) + len(DOCS_UNIVERSALES_MOD)
+
+                with st.expander(f"📋 Ver los {total_docs_mod} documentos requeridos para tu selección", expanded=False):
+                    st.markdown("**Documentos para todas las modificaciones**")
+                    st.dataframe(
+                        pd.DataFrame([{"Documento": d["documento"], "Sigla": d["sigla"]} for d in DOCS_UNIVERSALES_MOD]),
+                        use_container_width=True, hide_index=True
+                    )
+                    for bloque in bloques_activados_mod:
+                        st.markdown(f"**{'/'.join(bloque['codigos'])} — {bloque['titulo']}**")
+                        st.dataframe(
+                            pd.DataFrame([{"Documento": d["documento"], "Sigla": d["sigla"]} for d in bloque["documentos"]]),
+                            use_container_width=True, hide_index=True
+                        )
+
+                st.markdown("##### Sube los documentos (PDF)")
+                archivos_mod = st.file_uploader(
+                    "Puedes subir varios PDF a la vez", type=["pdf"], accept_multiple_files=True,
+                    key="uploader_mod"
+                )
+
+                if archivos_mod and st.button(
+                    "🔍 Analizar y Organizar Documentos", use_container_width=True, key="btn_analizar_mod"
+                ):
+                    texto_estado_mod = st.empty()
+
+                    def _avisar_progreso_mod(idx, total, nombre_archivo):
+                        texto_estado_mod.info(f"⏳ Analizando {idx+1}/{total}: {nombre_archivo}...")
+
+                    with st.spinner("Analizando documentos con IA..."):
+                        resultados_mod, cobertura_mod, archivos_zip_mod = _procesar_documentos_modificacion(
+                            archivos_mod, bloques_activados_mod, callback_progreso=_avisar_progreso_mod
+                        )
+
+                    texto_estado_mod.empty()
+
+                    df_cobertura_mod = pd.DataFrame(cobertura_mod)
+                    total_faltan_mod = (df_cobertura_mod["Estado"] == "❌ FALTA").sum() if not df_cobertura_mod.empty else 0
+                    df_resultados_mod = pd.DataFrame(resultados_mod)
+                    total_obs_mod = (df_resultados_mod["Conforme"] == "⚠ Con observación").sum() if not df_resultados_mod.empty else 0
+
+                    if total_faltan_mod == 0:
+                        st.success("✨ ¡Checklist completo! Todos los documentos requeridos están cubiertos.")
+                    else:
+                        st.warning(f"⚠ Faltan {total_faltan_mod} documento(s) del checklist para tu selección.")
+                    if total_obs_mod > 0:
+                        st.warning(f"🔎 {total_obs_mod} documento(s) tienen alguna observación — revísalos antes de radicar.")
+
+                    st.markdown("###### Cobertura del checklist")
+                    st.dataframe(df_cobertura_mod, use_container_width=True, hide_index=True)
+
+                    st.markdown("###### Resultado por cada archivo subido")
+                    st.dataframe(df_resultados_mod, use_container_width=True, hide_index=True)
+
+                    if archivos_zip_mod:
+                        output_zip_mod = io.BytesIO()
+                        with zipfile.ZipFile(output_zip_mod, "w") as zf_out:
+                            for nombre_final, bytes_archivo in archivos_zip_mod:
+                                zf_out.writestr(nombre_final, bytes_archivo)
+                            output_resumen_mod = io.BytesIO()
+                            with pd.ExcelWriter(output_resumen_mod, engine='openpyxl') as writer:
+                                df_cobertura_mod.to_excel(writer, sheet_name="Cobertura", index=False)
+                                df_resultados_mod.to_excel(writer, sheet_name="Detalle por archivo", index=False)
+                            zf_out.writestr("Resumen_Modificacion.xlsx", output_resumen_mod.getvalue())
+
+                        st.download_button(
+                            label="📥 Descargar Dossier Organizado (.zip)",
+                            data=output_zip_mod.getvalue(),
+                            file_name=f"Modificacion_{equipo_mod or 'equipo'}.zip",
+                            mime="application/zip",
+                            use_container_width=True
+                        )
+
+                    registrar_log(
+                        st.session_state["usuario_activo_real"],
+                        f"Creación de Dossier (Modificaciones) - {equipo_mod} "
+                        f"({'/'.join(codigos_elegidos_mod)}) ({len(resultados_mod)} documentos, {total_faltan_mod} faltantes)",
+                        len(resultados_mod)
+                    )
+                elif not archivos_mod:
+                    st.info("👈 Sube los documentos PDF para comenzar el análisis.")
 
     # ==========================================================
     # VISTA 3: HISTORIALES
