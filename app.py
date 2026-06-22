@@ -810,23 +810,34 @@ def _analizar_documento_dossier_dm(texto_pdf, items_aplicables, pdf_bytes=None):
     return json.loads(texto_json)
 
 
-def _procesar_documentos_dossier_dm(archivos_subidos, items_aplicables, callback_progreso=None):
-    """Analiza cada PDF subido, lo asigna al ítem del checklist que mejor le
+def _procesar_documentos_dossier_dm(archivos_con_bytes, items_aplicables, callback_progreso=None,
+                                     segundos_pausa=1.5):
+    """Analiza cada PDF, lo asigna al ítem del checklist que mejor le
     corresponde, y arma: (1) una tabla de resultados por archivo, (2) un
     resumen de cobertura del checklist completo (qué falta), y (3) los
     nombres finales sugeridos ('{item}. {SIGLA}.pdf'), manejando duplicados
-    cuando dos archivos caen en el mismo ítem."""
+    cuando dos archivos caen en el mismo ítem.
+
+    'archivos_con_bytes' es una lista de tuplas (nombre, bytes) — así se
+    puede llamar tanto con archivos recién subidos como con archivos ya
+    leídos en memoria (por ejemplo, al reintentar solo los que fallaron
+    por límite de cuota de Gemini, sin tener que volver a subirlos).
+
+    'segundos_pausa' espacía las llamadas a Gemini entre un documento y
+    el siguiente, para reducir el riesgo de chocar con el límite de
+    peticiones por minuto de la cuota gratuita."""
     resultados_archivos = []  # uno por PDF subido
     asignaciones_por_item = {}  # item -> lista de nombres finales ya usados (para numerar duplicados)
     archivos_para_zip = []  # (nombre_final, bytes)
 
-    total = len(archivos_subidos)
-    for idx, archivo in enumerate(archivos_subidos):
+    total = len(archivos_con_bytes)
+    for idx, (nombre_archivo, bytes_pdf) in enumerate(archivos_con_bytes):
         if callback_progreso:
-            callback_progreso(idx, total, archivo.name)
+            callback_progreso(idx, total, nombre_archivo)
+        if idx > 0 and segundos_pausa:
+            time.sleep(segundos_pausa)
 
         try:
-            bytes_pdf = archivo.read()
             texto_pdf = _extraer_texto_pdf(bytes_pdf)
             if len(texto_pdf) < 30:
                 # Probablemente escaneado: en vez de descartarlo, se le manda
@@ -836,7 +847,7 @@ def _procesar_documentos_dossier_dm(archivos_subidos, items_aplicables, callback
                 analisis = _analizar_documento_dossier_dm(texto_pdf, items_aplicables)
         except Exception as e:
             resultados_archivos.append({
-                "Archivo_Original": archivo.name, "Item": "-", "Documento": "-",
+                "Archivo_Original": nombre_archivo, "Item": "-", "Documento": "-",
                 "Conforme": "-", "Comentario": f"❌ Error analizando con IA: {e}",
                 "Nombre_Final": None
             })
@@ -850,11 +861,11 @@ def _procesar_documentos_dossier_dm(archivos_subidos, items_aplicables, callback
 
         if item_info is None:
             resultados_archivos.append({
-                "Archivo_Original": archivo.name, "Item": "-", "Documento": "Sin clasificar",
+                "Archivo_Original": nombre_archivo, "Item": "-", "Documento": "Sin clasificar",
                 "Conforme": "-", "Comentario": comentario or "No se identificó a qué ítem del checklist corresponde.",
                 "Nombre_Final": None
             })
-            archivos_para_zip.append((f"SIN CLASIFICAR - {archivo.name}", bytes_pdf))
+            archivos_para_zip.append((f"SIN CLASIFICAR - {nombre_archivo}", bytes_pdf))
             continue
 
         # Nombre final, manejando duplicados (dos archivos para el mismo ítem)
@@ -874,7 +885,7 @@ def _procesar_documentos_dossier_dm(archivos_subidos, items_aplicables, callback
             estado_conforme = "❓ No determinable"
 
         resultados_archivos.append({
-            "Archivo_Original": archivo.name, "Item": item_info["item"], "Documento": item_info["titulo"],
+            "Archivo_Original": nombre_archivo, "Item": item_info["item"], "Documento": item_info["titulo"],
             "Conforme": estado_conforme, "Comentario": comentario or "-",
             "Nombre_Final": f"{nombre_final}.pdf"
         })
@@ -1214,11 +1225,18 @@ def _analizar_documento_modificacion(texto_pdf, candidatos, pdf_bytes=None):
     return json.loads(texto_json)
 
 
-def _procesar_documentos_modificacion(archivos_subidos, bloques_activados, callback_progreso=None):
-    """Analiza cada PDF subido y lo asigna al documento que mejor le
-    corresponde, entre TODOS los documentos de los bloques activados más
-    los 2 documentos universales (Pago, Poder). Organiza el resultado en
-    carpetas por código dentro del .zip final."""
+def _procesar_documentos_modificacion(archivos_con_bytes, bloques_activados, callback_progreso=None,
+                                       segundos_pausa=1.5):
+    """Analiza cada PDF y lo asigna al documento que mejor le corresponde,
+    entre TODOS los documentos de los bloques activados más los 2
+    documentos universales (Pago, Poder). Organiza el resultado en
+    carpetas por código dentro del .zip final.
+
+    'archivos_con_bytes' es una lista de tuplas (nombre, bytes) — permite
+    reintentar solo los archivos que fallaron por límite de cuota de
+    Gemini sin tener que volver a subirlos. 'segundos_pausa' espacía las
+    llamadas a Gemini para reducir el riesgo de chocar con el límite de
+    peticiones por minuto."""
     candidatos = []
     for bloque in bloques_activados:
         nombre_carpeta_bloque = f"{'-'.join(bloque['codigos'])} {bloque['titulo']}"
@@ -1241,13 +1259,14 @@ def _procesar_documentos_modificacion(archivos_subidos, bloques_activados, callb
     asignaciones_por_id = {}
     archivos_para_zip = []
 
-    total = len(archivos_subidos)
-    for idx, archivo in enumerate(archivos_subidos):
+    total = len(archivos_con_bytes)
+    for idx, (nombre_archivo, bytes_pdf) in enumerate(archivos_con_bytes):
         if callback_progreso:
-            callback_progreso(idx, total, archivo.name)
+            callback_progreso(idx, total, nombre_archivo)
+        if idx > 0 and segundos_pausa:
+            time.sleep(segundos_pausa)
 
         try:
-            bytes_pdf = archivo.read()
             texto_pdf = _extraer_texto_pdf(bytes_pdf)
             if len(texto_pdf) < 30:
                 # Probablemente escaneado: se manda el PDF directo a Gemini
@@ -1257,8 +1276,9 @@ def _procesar_documentos_modificacion(archivos_subidos, bloques_activados, callb
                 analisis = _analizar_documento_modificacion(texto_pdf, candidatos)
         except Exception as e:
             resultados_archivos.append({
-                "Archivo_Original": archivo.name, "Bloque": "-", "Documento": "-",
-                "Conforme": "-", "Comentario": f"❌ Error analizando con IA: {e}"
+                "Archivo_Original": nombre_archivo, "Bloque": "-", "Documento": "-",
+                "Conforme": "-", "Comentario": f"❌ Error analizando con IA: {e}",
+                "Nombre_Final": None
             })
             continue
 
@@ -1269,10 +1289,11 @@ def _procesar_documentos_modificacion(archivos_subidos, bloques_activados, callb
 
         if candidato_info is None:
             resultados_archivos.append({
-                "Archivo_Original": archivo.name, "Bloque": "-", "Documento": "Sin clasificar",
-                "Conforme": "-", "Comentario": comentario or "No se identificó a qué documento corresponde."
+                "Archivo_Original": nombre_archivo, "Bloque": "-", "Documento": "Sin clasificar",
+                "Conforme": "-", "Comentario": comentario or "No se identificó a qué documento corresponde.",
+                "Nombre_Final": f"SIN CLASIFICAR - {nombre_archivo}"
             })
-            archivos_para_zip.append((f"SIN CLASIFICAR - {archivo.name}", bytes_pdf))
+            archivos_para_zip.append((f"SIN CLASIFICAR - {nombre_archivo}", bytes_pdf))
             continue
 
         base_nombre = f"{candidato_info['carpeta']}/{candidato_info['sigla']}"
@@ -1288,8 +1309,9 @@ def _procesar_documentos_modificacion(archivos_subidos, bloques_activados, callb
             estado_conforme = "❓ No determinable"
 
         resultados_archivos.append({
-            "Archivo_Original": archivo.name, "Bloque": candidato_info["bloque_titulo"],
-            "Documento": candidato_info["documento"], "Conforme": estado_conforme, "Comentario": comentario or "-"
+            "Archivo_Original": nombre_archivo, "Bloque": candidato_info["bloque_titulo"],
+            "Documento": candidato_info["documento"], "Conforme": estado_conforme, "Comentario": comentario or "-",
+            "Nombre_Final": f"{nombre_final}.pdf"
         })
         archivos_para_zip.append((f"{nombre_final}.pdf", bytes_pdf))
 
@@ -1302,6 +1324,64 @@ def _procesar_documentos_modificacion(archivos_subidos, bloques_activados, callb
         })
 
     return resultados_archivos, resumen_cobertura, archivos_para_zip
+
+
+def _recalcular_cobertura_modificacion(resultados, bloques_activados):
+    """Recalcula la tabla de cobertura del checklist a partir de una lista
+    de resultados (por ejemplo, después de fusionar un reintento de los
+    archivos que fallaron), sin necesidad de volver a llamar a la IA."""
+    cubiertos = set(
+        (r.get("Bloque"), r.get("Documento")) for r in resultados
+        if r.get("Documento") and r.get("Documento") not in ("-", "Sin clasificar")
+    )
+    resumen = []
+    for bloque in bloques_activados:
+        carpeta = f"{'-'.join(bloque['codigos'])} {bloque['titulo']}"
+        for doc in bloque["documentos"]:
+            clave = (bloque["titulo"], doc["documento"])
+            resumen.append({
+                "Carpeta": carpeta, "Documento": doc["documento"], "Sigla": doc["sigla"],
+                "Estado": "✅ Subido" if clave in cubiertos else "❌ FALTA"
+            })
+    for doc in DOCS_UNIVERSALES_MOD:
+        clave = ("Documentos para todas las modificaciones", doc["documento"])
+        resumen.append({
+            "Carpeta": "DOCUMENTOS GENERALES", "Documento": doc["documento"], "Sigla": doc["sigla"],
+            "Estado": "✅ Subido" if clave in cubiertos else "❌ FALTA"
+        })
+    return resumen
+
+
+def _recalcular_cobertura_dm(resultados, items_aplicables):
+    """Análogo a _recalcular_cobertura_modificacion pero para (DM), donde
+    la cobertura se identifica por número de ítem en vez de (bloque,
+    documento)."""
+    items_cubiertos = set(
+        r.get("Item") for r in resultados
+        if r.get("Item") not in (None, "-") and r.get("Documento") not in (None, "-", "Sin clasificar")
+    )
+    resumen = []
+    for it in items_aplicables:
+        resumen.append({
+            "Item": it["item"], "Documento": it["titulo"], "Sigla": it["sigla"],
+            "Estado": "✅ Subido" if it["item"] in items_cubiertos else "❌ FALTA"
+        })
+    return resumen
+
+
+def _construir_zip_desde_resultados(resultados, bytes_por_archivo):
+    """Reconstruye la lista de (nombre_final, bytes) a partir de una lista
+    de resultados ya fusionada (original + reintentos), usando el campo
+    'Nombre_Final' de cada fila y los bytes originales cacheados por
+    nombre de archivo. Evita tener que hacer cirugía manual sobre listas
+    de tuplas al fusionar un reintento con los resultados anteriores."""
+    archivos_zip = []
+    for r in resultados:
+        nombre_final = r.get("Nombre_Final")
+        nombre_original = r.get("Archivo_Original")
+        if nombre_final and nombre_original in bytes_por_archivo:
+            archivos_zip.append((nombre_final, bytes_por_archivo[nombre_original]))
+    return archivos_zip
 
 
 def _analizar_zip_remisiones(bytes_zip, token, carpeta_raiz_id, callback_progreso=None):
@@ -2104,7 +2184,7 @@ def _llamar_gemini_api(system_prompt, mensajes, modelo=MODELO_IA_CALIDAD, max_to
         if respuesta.status_code == 200:
             break
         if respuesta.status_code in (503, 429) and intento < intentos - 1:
-            time.sleep(3 * (intento + 1))
+            time.sleep((6 if respuesta.status_code == 429 else 3) * (intento + 1))
             continue
         break
 
@@ -2112,9 +2192,19 @@ def _llamar_gemini_api(system_prompt, mensajes, modelo=MODELO_IA_CALIDAD, max_to
         raise RuntimeError(f"No se pudo contactar a Gemini: {ultimo_error}")
 
     if respuesta.status_code != 200:
+        mensaje_limpio = respuesta.text[:300]
+        try:
+            mensaje_limpio = respuesta.json().get("error", {}).get("message", mensaje_limpio)
+        except Exception:
+            pass
+        if respuesta.status_code == 429:
+            raise RuntimeError(
+                "Se alcanzó el límite de uso gratuito de Gemini por ahora (pasa al analizar "
+                "muchos documentos seguidos, sobre todo si son pesados). Espera unos minutos "
+                f"y reintenta solo los pendientes. Detalle: {mensaje_limpio}"
+            )
         raise RuntimeError(
-            f"Error de la API de Gemini (código {respuesta.status_code}): "
-            f"{respuesta.text[:300]}"
+            f"Error de la API de Gemini (código {respuesta.status_code}): {mensaje_limpio}"
         )
 
     datos = respuesta.json()
@@ -3628,20 +3718,79 @@ else:
             if archivos_dossier_dm and st.button(
                 "🔍 Analizar y Organizar Documentos", use_container_width=True, key="btn_analizar_dossier_dm"
             ):
+                archivos_con_bytes_dm = [(f.name, f.read()) for f in archivos_dossier_dm]
+
                 texto_estado_dossier = st.empty()
 
                 def _avisar_progreso_dossier(idx, total, nombre_archivo):
                     texto_estado_dossier.info(f"⏳ Analizando {idx+1}/{total}: {nombre_archivo}...")
 
                 with st.spinner("Analizando documentos con IA..."):
-                    resultados_dm, cobertura_dm, archivos_zip_dm = _procesar_documentos_dossier_dm(
-                        archivos_dossier_dm, items_aplicables_dm,
+                    resultados_dm, _cobertura_inicial_dm, _zip_inicial_dm = _procesar_documentos_dossier_dm(
+                        archivos_con_bytes_dm, items_aplicables_dm,
                         callback_progreso=_avisar_progreso_dossier
                     )
-
                 texto_estado_dossier.empty()
 
-                df_cobertura_dm = pd.DataFrame(cobertura_dm)
+                # Se guarda en sesión (incluyendo los bytes) para poder
+                # reintentar solo los archivos que fallen por límite de
+                # cuota de Gemini, sin tener que volver a subirlos.
+                st.session_state["dm_cache"] = {
+                    "resultados": resultados_dm,
+                    "bytes_por_archivo": {n: b for n, b in archivos_con_bytes_dm},
+                    "equipo": equipo_dossier,
+                    "referencias": lista_referencias_dossier,
+                    "items_aplicables": items_aplicables_dm,
+                    "riesgo": riesgo_dossier,
+                }
+
+            cache_dm = st.session_state.get("dm_cache")
+            if cache_dm and cache_dm.get("riesgo") == riesgo_dossier:
+                resultados_dm = cache_dm["resultados"]
+                bytes_por_archivo_dm = cache_dm["bytes_por_archivo"]
+
+                df_resultados_dm = pd.DataFrame(resultados_dm)
+                filas_fallidas_dm = df_resultados_dm[
+                    df_resultados_dm["Comentario"].astype(str).str.contains("❌", na=False)
+                ] if not df_resultados_dm.empty else df_resultados_dm
+
+                if len(filas_fallidas_dm) > 0:
+                    st.warning(
+                        f"⚠ {len(filas_fallidas_dm)} archivo(s) no se pudieron analizar (por ejemplo, "
+                        "por límite de cuota de Gemini). Espera un par de minutos y reintenta solo esos, "
+                        "sin gastar cuota de nuevo en los que ya salieron bien."
+                    )
+                    if st.button(
+                        "🔄 Reintentar solo los que fallaron", use_container_width=True, key="btn_reintentar_dm"
+                    ):
+                        nombres_fallidos_dm = filas_fallidas_dm["Archivo_Original"].tolist()
+                        archivos_reintento_dm = [
+                            (n, bytes_por_archivo_dm[n]) for n in nombres_fallidos_dm if n in bytes_por_archivo_dm
+                        ]
+
+                        texto_estado_retry_dm = st.empty()
+
+                        def _avisar_progreso_retry_dm(idx, total, nombre_archivo):
+                            texto_estado_retry_dm.info(f"⏳ Reintentando {idx+1}/{total}: {nombre_archivo}...")
+
+                        with st.spinner("Reintentando los documentos pendientes..."):
+                            resultados_retry_dm, _, _ = _procesar_documentos_dossier_dm(
+                                archivos_reintento_dm, cache_dm["items_aplicables"],
+                                callback_progreso=_avisar_progreso_retry_dm
+                            )
+                        texto_estado_retry_dm.empty()
+
+                        resultados_por_nombre_dm = {r["Archivo_Original"]: r for r in resultados_dm}
+                        for r in resultados_retry_dm:
+                            resultados_por_nombre_dm[r["Archivo_Original"]] = r
+                        resultados_dm = list(resultados_por_nombre_dm.values())
+
+                        cache_dm["resultados"] = resultados_dm
+                        st.session_state["dm_cache"] = cache_dm
+                        st.rerun()
+
+                archivos_zip_dm = _construir_zip_desde_resultados(resultados_dm, bytes_por_archivo_dm)
+                df_cobertura_dm = pd.DataFrame(_recalcular_cobertura_dm(resultados_dm, cache_dm["items_aplicables"]))
                 total_faltan = (df_cobertura_dm["Estado"] == "❌ FALTA").sum() if not df_cobertura_dm.empty else 0
                 df_resultados_dm = pd.DataFrame(resultados_dm)
                 total_observacion = (df_resultados_dm["Conforme"] == "⚠ Con observación").sum() if not df_resultados_dm.empty else 0
@@ -3657,7 +3806,10 @@ else:
                 st.dataframe(df_cobertura_dm, use_container_width=True, hide_index=True)
 
                 st.markdown("###### Resultado por cada archivo subido")
-                st.dataframe(df_resultados_dm, use_container_width=True, hide_index=True)
+                st.dataframe(
+                    df_resultados_dm.drop(columns=["Nombre_Final"], errors="ignore"),
+                    use_container_width=True, hide_index=True
+                )
 
                 if archivos_zip_dm:
                     output_zip_dossier = io.BytesIO()
@@ -3667,9 +3819,11 @@ else:
                         output_resumen_dm = io.BytesIO()
                         with pd.ExcelWriter(output_resumen_dm, engine='openpyxl') as writer:
                             df_cobertura_dm.to_excel(writer, sheet_name="Cobertura", index=False)
-                            df_resultados_dm.to_excel(writer, sheet_name="Detalle por archivo", index=False)
-                            if lista_referencias_dossier:
-                                pd.DataFrame({"Referencia": lista_referencias_dossier}).to_excel(
+                            df_resultados_dm.drop(columns=["Nombre_Final"], errors="ignore").to_excel(
+                                writer, sheet_name="Detalle por archivo", index=False
+                            )
+                            if cache_dm["referencias"]:
+                                pd.DataFrame({"Referencia": cache_dm["referencias"]}).to_excel(
                                     writer, sheet_name="Referencias", index=False
                                 )
                         zf_out.writestr("Resumen_Dossier.xlsx", output_resumen_dm.getvalue())
@@ -3677,14 +3831,14 @@ else:
                     st.download_button(
                         label="📥 Descargar Dossier Organizado (.zip)",
                         data=output_zip_dossier.getvalue(),
-                        file_name=f"Dossier_DM_{equipo_dossier or 'equipo'}.zip",
+                        file_name=f"Dossier_DM_{cache_dm['equipo'] or 'equipo'}.zip",
                         mime="application/zip",
                         use_container_width=True
                     )
 
                 registrar_log(
                     st.session_state["usuario_activo_real"],
-                    f"Creación de Dossier (DM) - {equipo_dossier} ({len(lista_referencias_dossier)} referencias) "
+                    f"Creación de Dossier (DM) - {cache_dm['equipo']} ({len(cache_dm['referencias'])} referencias) "
                     f"riesgo {riesgo_dossier} ({len(resultados_dm)} documentos, {total_faltan} faltantes)",
                     len(resultados_dm)
                 )
@@ -3773,19 +3927,83 @@ else:
                 if archivos_mod and st.button(
                     "🔍 Analizar y Organizar Documentos", use_container_width=True, key="btn_analizar_mod"
                 ):
+                    archivos_con_bytes_mod = [(f.name, f.read()) for f in archivos_mod]
+
                     texto_estado_mod = st.empty()
 
                     def _avisar_progreso_mod(idx, total, nombre_archivo):
                         texto_estado_mod.info(f"⏳ Analizando {idx+1}/{total}: {nombre_archivo}...")
 
                     with st.spinner("Analizando documentos con IA..."):
-                        resultados_mod, cobertura_mod, archivos_zip_mod = _procesar_documentos_modificacion(
-                            archivos_mod, bloques_activados_mod, callback_progreso=_avisar_progreso_mod
+                        resultados_mod, _cobertura_inicial, _archivos_zip_inicial = _procesar_documentos_modificacion(
+                            archivos_con_bytes_mod, bloques_activados_mod, callback_progreso=_avisar_progreso_mod
                         )
-
                     texto_estado_mod.empty()
 
-                    df_cobertura_mod = pd.DataFrame(cobertura_mod)
+                    # Se guarda todo en sesión (incluyendo los bytes de cada
+                    # archivo) para poder reintentar solo los que fallen por
+                    # límite de cuota de Gemini, sin tener que volver a subirlos.
+                    st.session_state["mod_cache"] = {
+                        "resultados": resultados_mod,
+                        "bytes_por_archivo": {n: b for n, b in archivos_con_bytes_mod},
+                        "equipo": equipo_mod,
+                        "referencias": lista_referencias_mod,
+                        "bloques_activados": bloques_activados_mod,
+                        "codigos_elegidos": codigos_elegidos_mod,
+                    }
+
+                cache_mod = st.session_state.get("mod_cache")
+                if cache_mod and cache_mod.get("codigos_elegidos") == codigos_elegidos_mod:
+                    resultados_mod = cache_mod["resultados"]
+                    bytes_por_archivo_mod = cache_mod["bytes_por_archivo"]
+
+                    df_resultados_mod = pd.DataFrame(resultados_mod)
+                    filas_fallidas_mod = df_resultados_mod[
+                        df_resultados_mod["Comentario"].astype(str).str.contains("❌", na=False)
+                    ] if not df_resultados_mod.empty else df_resultados_mod
+
+                    if len(filas_fallidas_mod) > 0:
+                        st.warning(
+                            f"⚠ {len(filas_fallidas_mod)} archivo(s) no se pudieron analizar (por ejemplo, "
+                            "por límite de cuota de Gemini). Espera un par de minutos y reintenta solo esos, "
+                            "sin gastar cuota de nuevo en los que ya salieron bien."
+                        )
+                        if st.button(
+                            "🔄 Reintentar solo los que fallaron", use_container_width=True, key="btn_reintentar_mod"
+                        ):
+                            nombres_fallidos = filas_fallidas_mod["Archivo_Original"].tolist()
+                            archivos_reintento = [
+                                (n, bytes_por_archivo_mod[n]) for n in nombres_fallidos if n in bytes_por_archivo_mod
+                            ]
+
+                            texto_estado_retry = st.empty()
+
+                            def _avisar_progreso_retry(idx, total, nombre_archivo):
+                                texto_estado_retry.info(f"⏳ Reintentando {idx+1}/{total}: {nombre_archivo}...")
+
+                            with st.spinner("Reintentando los documentos pendientes..."):
+                                resultados_retry, _, _ = _procesar_documentos_modificacion(
+                                    archivos_reintento, cache_mod["bloques_activados"],
+                                    callback_progreso=_avisar_progreso_retry
+                                )
+                            texto_estado_retry.empty()
+
+                            # Fusionar: reemplazar las filas viejas (fallidas) por
+                            # los resultados nuevos del reintento, conservando las
+                            # que ya estaban bien.
+                            resultados_por_nombre = {r["Archivo_Original"]: r for r in resultados_mod}
+                            for r in resultados_retry:
+                                resultados_por_nombre[r["Archivo_Original"]] = r
+                            resultados_mod = list(resultados_por_nombre.values())
+
+                            cache_mod["resultados"] = resultados_mod
+                            st.session_state["mod_cache"] = cache_mod
+                            st.rerun()
+
+                    archivos_zip_mod = _construir_zip_desde_resultados(resultados_mod, bytes_por_archivo_mod)
+                    df_cobertura_mod = pd.DataFrame(_recalcular_cobertura_modificacion(
+                        resultados_mod, cache_mod["bloques_activados"]
+                    ))
                     total_faltan_mod = (df_cobertura_mod["Estado"] == "❌ FALTA").sum() if not df_cobertura_mod.empty else 0
                     df_resultados_mod = pd.DataFrame(resultados_mod)
                     total_obs_mod = (df_resultados_mod["Conforme"] == "⚠ Con observación").sum() if not df_resultados_mod.empty else 0
@@ -3801,7 +4019,10 @@ else:
                     st.dataframe(df_cobertura_mod, use_container_width=True, hide_index=True)
 
                     st.markdown("###### Resultado por cada archivo subido")
-                    st.dataframe(df_resultados_mod, use_container_width=True, hide_index=True)
+                    st.dataframe(
+                        df_resultados_mod.drop(columns=["Nombre_Final"], errors="ignore"),
+                        use_container_width=True, hide_index=True
+                    )
 
                     if archivos_zip_mod:
                         output_zip_mod = io.BytesIO()
@@ -3811,9 +4032,11 @@ else:
                             output_resumen_mod = io.BytesIO()
                             with pd.ExcelWriter(output_resumen_mod, engine='openpyxl') as writer:
                                 df_cobertura_mod.to_excel(writer, sheet_name="Cobertura", index=False)
-                                df_resultados_mod.to_excel(writer, sheet_name="Detalle por archivo", index=False)
-                                if lista_referencias_mod:
-                                    pd.DataFrame({"Referencia": lista_referencias_mod}).to_excel(
+                                df_resultados_mod.drop(columns=["Nombre_Final"], errors="ignore").to_excel(
+                                    writer, sheet_name="Detalle por archivo", index=False
+                                )
+                                if cache_mod["referencias"]:
+                                    pd.DataFrame({"Referencia": cache_mod["referencias"]}).to_excel(
                                         writer, sheet_name="Referencias", index=False
                                     )
                             zf_out.writestr("Resumen_Modificacion.xlsx", output_resumen_mod.getvalue())
@@ -3821,14 +4044,15 @@ else:
                         st.download_button(
                             label="📥 Descargar Dossier Organizado (.zip)",
                             data=output_zip_mod.getvalue(),
-                            file_name=f"Modificacion_{equipo_mod or 'equipo'}.zip",
+                            file_name=f"Modificacion_{cache_mod['equipo'] or 'equipo'}.zip",
                             mime="application/zip",
                             use_container_width=True
                         )
 
                     registrar_log(
                         st.session_state["usuario_activo_real"],
-                        f"Creación de Dossier (Modificaciones) - {equipo_mod} ({len(lista_referencias_mod)} referencias) "
+                        f"Creación de Dossier (Modificaciones) - {cache_mod['equipo']} "
+                        f"({len(cache_mod['referencias'])} referencias) "
                         f"({'/'.join(codigos_elegidos_mod)}) ({len(resultados_mod)} documentos, {total_faltan_mod} faltantes)",
                         len(resultados_mod)
                     )
