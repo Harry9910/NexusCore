@@ -2550,7 +2550,7 @@ def guardar_resultados_eudamed(usuario, filas, nombre_hoja="ResultadosEudamed"):
 # CONFIGURACIÓN DE LA PÁGINA
 # ==========================================================
 st.set_page_config(
-    page_title="Extractor AccessGUDID FDA", page_icon="🔬", layout="wide",
+    page_title="NexusCore", page_icon="🔬", layout="wide",
     initial_sidebar_state="expanded"
 )
 
@@ -2965,7 +2965,7 @@ if not st.session_state["autenticado"]:
             html_cab += '</div>'
             st.markdown(html_cab, unsafe_allow_html=True)
 
-            st.markdown("<div class='login-title'>Plataforma de Extracción</div>", unsafe_allow_html=True)
+            st.markdown("<div class='login-title'>NexusCore</div>", unsafe_allow_html=True)
             st.markdown("<div class='login-desc'>Gestión Automatizada de Dispositivos Médicos</div>", unsafe_allow_html=True)
 
             usuario    = st.text_input("Nombre de usuario", value=st.session_state["usuario_guardado"], placeholder="Introduzca su usuario").strip()
@@ -3010,7 +3010,7 @@ else:
             <style>
             @keyframes fadeOutOverlayLogin {
                 0%   { opacity: 1; }
-                60%  { opacity: 1; }
+                85%  { opacity: 1; }
                 100% { opacity: 0; visibility: hidden; }
             }
             @keyframes spinOverlayLogin { to { transform: rotate(360deg); } }
@@ -3019,7 +3019,7 @@ else:
                 background-color: #0b1d3a;
                 display: flex; align-items: center; justify-content: center;
                 flex-direction: column;
-                animation: fadeOutOverlayLogin 1.4s ease forwards;
+                animation: fadeOutOverlayLogin 3.2s ease forwards;
             }
             #overlay-transicion-login .spinner-login {
                 width: 42px; height: 42px;
@@ -3040,6 +3040,11 @@ else:
 
     es_admin = st.session_state["usuario_activo_real"].strip().lower() == ADMIN_USER.lower()
     usuario_sesion = st.session_state["usuario_activo_real"]
+
+    _perfil_sesion = obtener_perfil(usuario_sesion)
+    nombre_visible_sesion = (
+        (_perfil_sesion.get("nombre", "") if _perfil_sesion else "") or usuario_sesion
+    ).strip() or usuario_sesion
 
     # Al iniciar sesión (una sola vez por sesión, no en cada rerun): se
     # limpian los logs de más de 72h, y se avisa si algo del propio
@@ -3115,8 +3120,8 @@ else:
             f'<div style="background:#ffffff;padding:12px 24px;border-radius:10px;'
             f'box-shadow:0 2px 8px rgba(0,0,0,0.07);margin-bottom:22px;'
             f'display:flex;align-items:center;justify-content:space-between;">'
-            f'<span class="header-titulo">Oficina Virtual de Dispositivos Médicos</span>'
-            f'<span class="user-pill">👤 <b>{usuario_sesion}</b>{badge}</span>'
+            f'<span class="header-titulo">NexusCore</span>'
+            f'<span class="user-pill">👤 <b>{nombre_visible_sesion}</b>{badge}</span>'
             f'</div>',
             unsafe_allow_html=True
         )
@@ -3424,6 +3429,7 @@ else:
                     completados = 0
                     indice_guardado_gudid = 0  # hasta dónde de lista_resultados ya quedó guardado en Sheets
                     INTERVALO_GUARDADO_GUDID = 500  # cada cuántas completadas se guarda un checkpoint
+                    INTERVALO_TABLA_GUDID = 10  # cada cuántas se refresca la tabla en pantalla (no en cada una)
 
                     with ThreadPoolExecutor(max_workers=MAX_HILOS_GUDID) as executor:
                         futuros = {
@@ -3436,42 +3442,65 @@ else:
                         for futuro in as_completed(futuros):
                             ref_actual = futuros[futuro]
                             try:
-                                filas_ref = futuro.result()
-                            except Exception:
-                                filas_ref = [{
+                                try:
+                                    filas_ref = futuro.result()
+                                except Exception:
+                                    filas_ref = [{
+                                        "Referencia_Original": ref_actual, "Primary_DI_Number": "Error de red (reintentar)",
+                                        "Nombre_Empresa_FDA": "Error de red", "Codigo_GMDN": "Error de red",
+                                        "Definicion_GMDN": "Error de red", "Estado_GMDN": "Error de red",
+                                        "Issuing_Agency": "Error de red"
+                                    }]
+                                lista_resultados.extend(filas_ref)
+                                completados += 1
+
+                                transcurrido = time.time() - inicio_tiempo
+                                promedio = transcurrido / completados
+                                restante = promedio * (total_refs - completados)
+                                texto_estado.info(
+                                    f"⏳ {completados}/{total_refs} completadas | ⏱ ~{int(restante)}s restantes"
+                                )
+                                actualizar_barra_gudid(int(completados / total_refs * 100))
+
+                                # La tabla en pantalla NO se refresca en cada
+                                # referencia (reenviar todas las filas acumuladas
+                                # una por una se vuelve cada vez más pesado con
+                                # listas grandes) — solo cada 10, y al final.
+                                if completados % INTERVALO_TABLA_GUDID == 0 or completados == total_refs:
+                                    tabla_viva.dataframe(pd.DataFrame(lista_resultados), use_container_width=True, height=260)
+
+                                # GUARDADO PROGRESIVO: en corridas largas (miles de
+                                # referencias, varias horas) esto evita perder todo
+                                # el avance si la app llega a reiniciarse a mitad
+                                # de camino — solo se perdería, como máximo, lo
+                                # avanzado desde el último checkpoint.
+                                if completados % INTERVALO_GUARDADO_GUDID == 0:
+                                    filas_nuevas_gudid = lista_resultados[indice_guardado_gudid:]
+                                    if filas_nuevas_gudid:
+                                        texto_estado.info(
+                                            f"💾 Guardando avance ({completados}/{total_refs})... un momento."
+                                        )
+                                        try:
+                                            guardar_resultados_accessgudid(
+                                                st.session_state["usuario_activo_real"], filas_nuevas_gudid,
+                                                nombre_hoja=nombre_hoja_gudid
+                                            )
+                                            indice_guardado_gudid = len(lista_resultados)
+                                        except Exception:
+                                            pass  # si falla un checkpoint puntual, se reintenta en el siguiente
+                            except Exception as e:
+                                # Blindaje extra: si algo inesperado falla procesando
+                                # esta referencia puntual (no la búsqueda en sí, que
+                                # ya tiene su propio manejo, sino algo en este bloque),
+                                # se registra y se sigue con las demás en vez de que
+                                # toda la corrida se caiga en silencio.
+                                lista_resultados.append({
                                     "Referencia_Original": ref_actual, "Primary_DI_Number": "Error de red (reintentar)",
-                                    "Nombre_Empresa_FDA": "Error de red", "Codigo_GMDN": "Error de red",
+                                    "Nombre_Empresa_FDA": f"Error inesperado: {e}", "Codigo_GMDN": "Error de red",
                                     "Definicion_GMDN": "Error de red", "Estado_GMDN": "Error de red",
                                     "Issuing_Agency": "Error de red"
-                                }]
-                            lista_resultados.extend(filas_ref)
-                            completados += 1
-
-                            transcurrido = time.time() - inicio_tiempo
-                            promedio = transcurrido / completados
-                            restante = promedio * (total_refs - completados)
-                            texto_estado.info(
-                                f"⏳ {completados}/{total_refs} completadas | ⏱ ~{int(restante)}s restantes"
-                            )
-                            actualizar_barra_gudid(int(completados / total_refs * 100))
-                            tabla_viva.dataframe(pd.DataFrame(lista_resultados), use_container_width=True, height=260)
-
-                            # GUARDADO PROGRESIVO: en corridas largas (miles de
-                            # referencias, varias horas) esto evita perder todo
-                            # el avance si la app llega a reiniciarse a mitad
-                            # de camino — solo se perdería, como máximo, lo
-                            # avanzado desde el último checkpoint.
-                            if completados % INTERVALO_GUARDADO_GUDID == 0:
-                                filas_nuevas_gudid = lista_resultados[indice_guardado_gudid:]
-                                if filas_nuevas_gudid:
-                                    try:
-                                        guardar_resultados_accessgudid(
-                                            st.session_state["usuario_activo_real"], filas_nuevas_gudid,
-                                            nombre_hoja=nombre_hoja_gudid
-                                        )
-                                        indice_guardado_gudid = len(lista_resultados)
-                                    except Exception:
-                                        pass  # si falla un checkpoint puntual, se reintenta en el siguiente
+                                })
+                                completados += 1
 
                     texto_estado.empty(); barra_custom.empty()
                     st.success(f"✨ ¡Completado! ({int(time.time()-inicio_tiempo)}s)")
