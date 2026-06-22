@@ -658,11 +658,11 @@ def _analizar_remision_con_ia(texto_pdf, arbol_referencias):
 #   Riesgo I:        ítems 1-14, 17, 18
 #   Riesgo IIa:      ítems 1-18
 #   Riesgo IIb y III: todos los ítems (1-20)
+# NOTA: el ítem 1 (Formulario debidamente diligenciado en medio digital) se
+# omite a propósito — se refiere al mismo formulario ASS-RSA-FM007 que ya
+# es la base de esta herramienta, así que no hace falta pedirlo como PDF
+# aparte. Los demás ítems conservan su número original del Excel.
 CHECKLIST_DM = [
-    {"item": 1,  "articulo": "Art.18 lit. a", "titulo": "Formulario debidamente diligenciado en medio digital",
-     "sigla": "FORMULARIO",
-     "descripcion": "Debe estar avalado por el director técnico y firmado por el representante legal o apoderado. Si el formulario contiene anexos, deben incluirse de la misma forma.",
-     "riesgos": ["I", "IIA", "IIB", "III"]},
     {"item": 2,  "articulo": "Art.19 lit. b", "titulo": "Poder (si aplica)",
      "sigla": "PODER",
      "descripcion": "Poder para tramitar el registro sanitario, cuando la solicitud sea presentada por un apoderado. Puede ser especial (nombre del poderdante, nombre del abogado titulado, trámites para los que está facultado) o general (escritura pública o certificado de existencia y representación legal). Si fue otorgado en el extranjero debe estar consularizado/legalizado o apostillado.",
@@ -3140,15 +3140,32 @@ else:
             )
         else:
             st.markdown("##### Datos del trámite")
-            col_equipo_doss, col_ref_doss, col_riesgo_doss = st.columns([2, 2, 1.4])
+            col_equipo_doss, col_riesgo_doss = st.columns([2.5, 1.4])
             with col_equipo_doss:
                 equipo_dossier = st.text_input("Nombre del equipo", key="txt_equipo_dossier")
-            with col_ref_doss:
-                referencia_dossier = st.text_input("Referencia(s)", key="txt_referencia_dossier")
             with col_riesgo_doss:
                 riesgo_dossier = st.selectbox(
                     "Clasificación de riesgo", ["I", "IIA", "IIB", "III"], key="select_riesgo_dossier"
                 )
+
+            st.markdown(
+                "**Referencias** (puede haber miles — sube un Excel con una sola columna, "
+                "sin encabezado, igual que en Extracción Masiva)"
+            )
+            archivo_referencias_dossier = st.file_uploader(
+                "Sube el Excel de referencias", type=["xlsx"], key="uploader_referencias_dossier"
+            )
+            lista_referencias_dossier = []
+            if archivo_referencias_dossier is not None:
+                try:
+                    df_refs_dossier = pd.read_excel(archivo_referencias_dossier, header=None, dtype=str)
+                    lista_referencias_dossier = [
+                        r for r in df_refs_dossier[0].astype(str).str.strip().tolist()
+                        if r and r.lower() != "nan"
+                    ]
+                    st.success(f"✅ {len(lista_referencias_dossier)} referencia(s) cargada(s).")
+                except Exception as e:
+                    st.error(f"No se pudo leer el archivo de referencias: {e}")
 
             items_aplicables_dm = _obtener_items_aplicables_dm(riesgo_dossier)
 
@@ -3211,6 +3228,10 @@ else:
                         with pd.ExcelWriter(output_resumen_dm, engine='openpyxl') as writer:
                             df_cobertura_dm.to_excel(writer, sheet_name="Cobertura", index=False)
                             df_resultados_dm.to_excel(writer, sheet_name="Detalle por archivo", index=False)
+                            if lista_referencias_dossier:
+                                pd.DataFrame({"Referencia": lista_referencias_dossier}).to_excel(
+                                    writer, sheet_name="Referencias", index=False
+                                )
                         zf_out.writestr("Resumen_Dossier.xlsx", output_resumen_dm.getvalue())
 
                     st.download_button(
@@ -3223,8 +3244,8 @@ else:
 
                 registrar_log(
                     st.session_state["usuario_activo_real"],
-                    f"Creación de Dossier (DM) - {equipo_dossier} {referencia_dossier} riesgo {riesgo_dossier} "
-                    f"({len(resultados_dm)} documentos, {total_faltan} faltantes)",
+                    f"Creación de Dossier (DM) - {equipo_dossier} ({len(lista_referencias_dossier)} referencias) "
+                    f"riesgo {riesgo_dossier} ({len(resultados_dm)} documentos, {total_faltan} faltantes)",
                     len(resultados_dm)
                 )
             elif not archivos_dossier_dm:
