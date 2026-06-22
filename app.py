@@ -1570,7 +1570,7 @@ def _ejecutar_copia_seleccionada(token, carpeta_raiz_id, grupos, obtener_selecci
 # la extracción masiva sin perder ninguna lógica existente)
 # ==========================================================
 
-def _procesar_detalle_accessgudid(href, ref, session, headers, company_names_filtro, reintentos=1):
+def _procesar_detalle_accessgudid(href, ref, session, headers, company_names_filtro, reintentos=2):
     """Descarga y procesa la ficha de detalle de UN dispositivo. Devuelve:
     - un dict con los datos, si tuvo éxito
     - el string 'FILTRADO_FABRICANTE' si no coincide con el filtro de fabricante
@@ -1579,10 +1579,10 @@ def _procesar_detalle_accessgudid(href, ref, session, headers, company_names_fil
     intentos_totales = reintentos + 1
     for intento in range(intentos_totales):
         try:
-            res = session.get(f"https://accessgudid.nlm.nih.gov{href}", headers=headers, timeout=20)
+            res = session.get(f"https://accessgudid.nlm.nih.gov{href}", headers=headers, timeout=25)
             if res.status_code != 200:
                 if intento < intentos_totales - 1:
-                    time.sleep(2 * (intento + 1))
+                    time.sleep(3 * (intento + 1))
                     continue
                 return None
             soup2 = BeautifulSoup(res.text, 'html.parser')
@@ -1647,7 +1647,7 @@ def _procesar_detalle_accessgudid(href, ref, session, headers, company_names_fil
             }
         except Exception:
             if intento < intentos_totales - 1:
-                time.sleep(2 * (intento + 1))
+                time.sleep(3 * (intento + 1))
                 continue
             return None
     return None
@@ -1663,15 +1663,18 @@ def _buscar_referencia_accessgudid(ref, session, headers, company_names_filtro):
     SIEMPRE conserva el valor real, nunca se sobrescribe con un estado."""
     url_busqueda = f"https://accessgudid.nlm.nih.gov/devices/search?query={urllib.parse.quote(ref)}"
     try:
-        response = session.get(url_busqueda, headers=headers, timeout=15)
+        response = session.get(url_busqueda, headers=headers, timeout=20)
         if response.status_code == 429:
             time.sleep(8)
-            response = session.get(url_busqueda, headers=headers, timeout=15)
+            response = session.get(url_busqueda, headers=headers, timeout=20)
         if response.status_code != 200:
-            # Un solo reintento más ante un fallo puntual del servidor de
+            # Dos reintentos más ante un fallo puntual del servidor de
             # búsqueda, antes de darlo por error de red definitivo.
             time.sleep(3)
-            response = session.get(url_busqueda, headers=headers, timeout=15)
+            response = session.get(url_busqueda, headers=headers, timeout=20)
+        if response.status_code != 200:
+            time.sleep(5)
+            response = session.get(url_busqueda, headers=headers, timeout=20)
 
         if response.status_code != 200:
             return [{
@@ -1698,7 +1701,7 @@ def _buscar_referencia_accessgudid(ref, session, headers, company_names_filtro):
         coincidencias = []
         hubo_filtrado = False
         hubo_error_tecnico = False
-        with ThreadPoolExecutor(max_workers=min(4, len(enlaces))) as executor_detalle:
+        with ThreadPoolExecutor(max_workers=min(2, len(enlaces))) as executor_detalle:
             futuros_detalle = [
                 executor_detalle.submit(_procesar_detalle_accessgudid, href, ref, session, headers, company_names_filtro)
                 for href in enlaces
@@ -3077,7 +3080,11 @@ else:
                     # OPTIMIZACIÓN: hasta 5 referencias en paralelo (cada una hace
                     # sus propias peticiones HTTP independientes a AccessGUDID,
                     # así que paralelizar es seguro y acelera bastante el total).
-                    MAX_HILOS_GUDID = 5
+                    # Se bajó de 5 a 3 hilos simultáneos (y de 4 a 2 por cada
+                    # referencia con varios dispositivos) para no saturar el
+                    # sitio de AccessGUDID con demasiadas conexiones a la vez
+                    # — es algo más lento, pero más preciso y confiable.
+                    MAX_HILOS_GUDID = 3
 
                     def actualizar_barra_gudid(pct):
                         barra_custom.markdown(
