@@ -2987,6 +2987,7 @@ if not st.session_state["autenticado"]:
                     st.session_state["autenticado"]         = True
                     st.session_state["usuario_activo_real"] = usuario
                     st.session_state["usuario_guardado"]    = usuario if recordar else ""
+                    st.session_state["_transicion_login"]   = True
                     st.success("✔ Credenciales válidas. Accediendo...")
                     time.sleep(0.5)
                     st.rerun()
@@ -2999,6 +3000,43 @@ if not st.session_state["autenticado"]:
 # ==========================================================
 else:
     st.markdown(CSS_GLOBAL, unsafe_allow_html=True)
+
+    # Pantalla de carga breve que tapa el parpadeo de la transición justo
+    # después de iniciar sesión (mientras el sidebar y el contenido
+    # principal terminan de armarse). Solo se muestra UNA vez, justo
+    # después del login — se quita la bandera de inmediato con 'pop'.
+    if st.session_state.pop("_transicion_login", False):
+        st.markdown("""
+            <style>
+            @keyframes fadeOutOverlayLogin {
+                0%   { opacity: 1; }
+                60%  { opacity: 1; }
+                100% { opacity: 0; visibility: hidden; }
+            }
+            @keyframes spinOverlayLogin { to { transform: rotate(360deg); } }
+            #overlay-transicion-login {
+                position: fixed; inset: 0; z-index: 999999;
+                background-color: #0b1d3a;
+                display: flex; align-items: center; justify-content: center;
+                flex-direction: column;
+                animation: fadeOutOverlayLogin 1.4s ease forwards;
+            }
+            #overlay-transicion-login .spinner-login {
+                width: 42px; height: 42px;
+                border: 4px solid rgba(255,255,255,0.25);
+                border-top-color: #ffffff;
+                border-radius: 50%;
+                animation: spinOverlayLogin 0.8s linear infinite;
+                margin-bottom: 16px;
+            }
+            </style>
+            <div id="overlay-transicion-login">
+                <div class="spinner-login"></div>
+                <div style="color:#ffffff;font-size:15px;font-weight:600;letter-spacing:0.3px;">
+                    Cargando tu sesión...
+                </div>
+            </div>
+        """, unsafe_allow_html=True)
 
     es_admin = st.session_state["usuario_activo_real"].strip().lower() == ADMIN_USER.lower()
     usuario_sesion = st.session_state["usuario_activo_real"]
