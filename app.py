@@ -18,6 +18,7 @@ import mimetypes
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 from concurrent.futures import ThreadPoolExecutor, as_completed
+import threading
 
 from selenium import webdriver
 from selenium.webdriver.chrome.service import Service
@@ -2526,6 +2527,40 @@ def guardar_resultados_accessgudid(usuario, filas, nombre_hoja="ResultadosAccess
         st.warning(f"No se pudieron guardar los resultados en el histórico de Google Sheets: {e}")
 
 
+def _guardar_checkpoint_gudid_en_segundo_plano(usuario, filas, nombre_hoja):
+    """Guarda un checkpoint de AccessGudid en un HILO APARTE, para que el
+    bucle principal de la extracción nunca se quede esperando a que
+    Google Sheets termine de escribir las filas. Esa espera bloqueante
+    (sobre todo si Sheets responde lento) es la sospechosa principal de
+    que la corrida se 'corte' justo en los checkpoints (cada 500).
+
+    OJO: dentro de este hilo NUNCA se debe llamar a st.* (st.warning,
+    st.write, etc.) — Streamlit no es seguro de usar fuera del hilo
+    principal del script, así que cualquier error aquí se ignora en
+    silencio en vez de mostrarse en pantalla."""
+    def _tarea():
+        try:
+            encabezados = ["Fecha", "Usuario", "Referencia_Original", "Primary_DI_Number",
+                           "Nombre_Empresa_FDA", "Codigo_GMDN", "Definicion_GMDN",
+                           "Estado_GMDN", "Issuing_Agency"]
+            hoja = _obtener_o_crear_hoja(nombre_hoja, encabezados)
+            timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            filas_excel = [
+                [timestamp, usuario,
+                 f.get("Referencia_Original", ""), f.get("Primary_DI_Number", ""),
+                 f.get("Nombre_Empresa_FDA", ""), f.get("Codigo_GMDN", ""),
+                 f.get("Definicion_GMDN", ""), f.get("Estado_GMDN", ""),
+                 f.get("Issuing_Agency", "")]
+                for f in filas
+            ]
+            hoja.append_rows(filas_excel, value_input_option='RAW')
+        except Exception:
+            pass  # se ignora en silencio — no es seguro llamar st.warning desde este hilo
+
+    hilo = threading.Thread(target=_tarea, daemon=True)
+    hilo.start()
+
+
 def guardar_resultados_eudamed(usuario, filas, nombre_hoja="ResultadosEudamed"):
     if not filas:
         return
@@ -3004,39 +3039,51 @@ else:
     # Pantalla de carga breve que tapa el parpadeo de la transición justo
     # después de iniciar sesión (mientras el sidebar y el contenido
     # principal terminan de armarse). Solo se muestra UNA vez, justo
-    # después del login — se quita la bandera de inmediato con 'pop'.
-    if st.session_state.pop("_transicion_login", False):
-        st.markdown("""
+    # después del login. Se guarda en una variable local (no se consume
+    # con 'pop' todavía) porque se va a usar dos veces: una para tapar el
+    # contenido principal, y otra más abajo para tapar también el sidebar
+    # por separado (son contenedores distintos en el HTML de Streamlit;
+    # un solo overlay puede quedar "atrapado" dentro de uno de los dos).
+    mostrar_transicion_login = st.session_state.get("_transicion_login", False)
+    st.session_state["_transicion_login"] = False
+
+    def _html_overlay_transicion(id_html):
+        return f"""
             <style>
-            @keyframes fadeOutOverlayLogin {
-                0%   { opacity: 1; }
-                85%  { opacity: 1; }
-                100% { opacity: 0; visibility: hidden; }
-            }
-            @keyframes spinOverlayLogin { to { transform: rotate(360deg); } }
-            #overlay-transicion-login {
-                position: fixed; inset: 0; z-index: 999999;
+            @keyframes fadeOutOverlayLogin {{
+                0%   {{ opacity: 1; }}
+                85%  {{ opacity: 1; }}
+                100% {{ opacity: 0; visibility: hidden; }}
+            }}
+            @keyframes spinOverlayLogin {{ to {{ transform: rotate(360deg); }} }}
+            #{id_html} {{
+                position: fixed !important; top: 0 !important; left: 0 !important;
+                width: 100vw !important; height: 100vh !important;
+                z-index: 2147483647 !important;
                 background-color: #0b1d3a;
                 display: flex; align-items: center; justify-content: center;
                 flex-direction: column;
                 animation: fadeOutOverlayLogin 3.2s ease forwards;
-            }
-            #overlay-transicion-login .spinner-login {
+            }}
+            #{id_html} .spinner-login {{
                 width: 42px; height: 42px;
                 border: 4px solid rgba(255,255,255,0.25);
                 border-top-color: #ffffff;
                 border-radius: 50%;
                 animation: spinOverlayLogin 0.8s linear infinite;
                 margin-bottom: 16px;
-            }
+            }}
             </style>
-            <div id="overlay-transicion-login">
+            <div id="{id_html}">
                 <div class="spinner-login"></div>
                 <div style="color:#ffffff;font-size:15px;font-weight:600;letter-spacing:0.3px;">
                     Cargando tu sesión...
                 </div>
             </div>
-        """, unsafe_allow_html=True)
+        """
+
+    if mostrar_transicion_login:
+        st.markdown(_html_overlay_transicion("overlay-transicion-login-main"), unsafe_allow_html=True)
 
     es_admin = st.session_state["usuario_activo_real"].strip().lower() == ADMIN_USER.lower()
     usuario_sesion = st.session_state["usuario_activo_real"]
@@ -3062,6 +3109,8 @@ else:
 
     # ── SIDEBAR ──────────────────────────────────────────
     with st.sidebar:
+        if mostrar_transicion_login:
+            st.markdown(_html_overlay_transicion("overlay-transicion-login-sidebar"), unsafe_allow_html=True)
         st.markdown('<div class="sidebar-header">⚙️ Opciones del Sistema</div>', unsafe_allow_html=True)
         st.markdown(
             "<p style='color:#94a3b8;font-size:10px;text-transform:uppercase;"
@@ -3362,20 +3411,27 @@ else:
                                  "Nombre_Empresa_FDA", "Codigo_GMDN", "Definicion_GMDN",
                                  "Estado_GMDN", "Issuing_Agency"]
                             )
-                            filas_existentes_gudid = hoja_existente_gudid.get_all_records()
+                            # OJO: sin 'numericise_ignore', gspread convierte
+                            # referencias que parecen números (ej. '1202.5075')
+                            # a float/int — eso rompía la comparación contra el
+                            # Excel (que sí las trae como texto) y por eso
+                            # 'reanudar' no detectaba nada como ya hecho.
+                            filas_existentes_gudid = hoja_existente_gudid.get_all_records(
+                                numericise_ignore=['all']
+                            )
                         except Exception as e:
                             st.error(f"No se pudo leer la pestaña a reanudar: {e}"); st.stop()
 
                         refs_para_reintentar = {
-                            f["Referencia_Original"] for f in filas_existentes_gudid
+                            str(f.get("Referencia_Original", "")).strip() for f in filas_existentes_gudid
                             if str(f.get("Primary_DI_Number", "")).startswith("Error de red")
                         }
                         refs_ya_completas = {
-                            f["Referencia_Original"] for f in filas_existentes_gudid
+                            str(f.get("Referencia_Original", "")).strip() for f in filas_existentes_gudid
                         } - refs_para_reintentar
 
                         referencias_totales = [
-                            r for r in referencias_totales if r not in refs_ya_completas
+                            r for r in referencias_totales if str(r).strip() not in refs_ya_completas
                         ]
                         total_refs = len(referencias_totales)
                         st.success(
@@ -3428,7 +3484,7 @@ else:
 
                     completados = 0
                     indice_guardado_gudid = 0  # hasta dónde de lista_resultados ya quedó guardado en Sheets
-                    INTERVALO_GUARDADO_GUDID = 500  # cada cuántas completadas se guarda un checkpoint
+                    INTERVALO_GUARDADO_GUDID = 200  # cada cuántas completadas se guarda un checkpoint
                     INTERVALO_TABLA_GUDID = 10  # cada cuántas se refresca la tabla en pantalla (no en cada una)
 
                     with ThreadPoolExecutor(max_workers=MAX_HILOS_GUDID) as executor:
@@ -3473,21 +3529,18 @@ else:
                                 # referencias, varias horas) esto evita perder todo
                                 # el avance si la app llega a reiniciarse a mitad
                                 # de camino — solo se perdería, como máximo, lo
-                                # avanzado desde el último checkpoint.
+                                # avanzado desde el último checkpoint. Se hace en
+                                # SEGUNDO PLANO (sin esperar a que termine) para
+                                # que el bucle principal nunca se quede colgado
+                                # esperando la respuesta de Google Sheets.
                                 if completados % INTERVALO_GUARDADO_GUDID == 0:
                                     filas_nuevas_gudid = lista_resultados[indice_guardado_gudid:]
                                     if filas_nuevas_gudid:
-                                        texto_estado.info(
-                                            f"💾 Guardando avance ({completados}/{total_refs})... un momento."
+                                        _guardar_checkpoint_gudid_en_segundo_plano(
+                                            st.session_state["usuario_activo_real"], filas_nuevas_gudid,
+                                            nombre_hoja_gudid
                                         )
-                                        try:
-                                            guardar_resultados_accessgudid(
-                                                st.session_state["usuario_activo_real"], filas_nuevas_gudid,
-                                                nombre_hoja=nombre_hoja_gudid
-                                            )
-                                            indice_guardado_gudid = len(lista_resultados)
-                                        except Exception:
-                                            pass  # si falla un checkpoint puntual, se reintenta en el siguiente
+                                        indice_guardado_gudid = len(lista_resultados)
                             except Exception as e:
                                 # Blindaje extra: si algo inesperado falla procesando
                                 # esta referencia puntual (no la búsqueda en sí, que
