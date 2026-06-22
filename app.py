@@ -1653,14 +1653,19 @@ def _procesar_detalle_accessgudid(href, ref, session, headers, company_names_fil
     return None
 
 
-def _buscar_referencia_accessgudid(ref, session, headers, company_names_filtro):
+def _buscar_referencia_accessgudid(ref, session, headers, company_names_filtro, limite_resultados=15):
     """Busca una referencia en AccessGUDID y devuelve la lista de filas
     encontradas (puede ser más de un dispositivo, o una sola fila que
     indica POR QUÉ no hubo resultados: 'No encontrado' (de verdad no hay
     coincidencias), 'Filtrado por fabricante' (sí hay dispositivo pero no
     pasa tu filtro) o 'Error de red' (falló la conexión — no significa
     que no exista, conviene reintentar esa referencia). 'Referencia_Original'
-    SIEMPRE conserva el valor real, nunca se sobrescribe con un estado."""
+    SIEMPRE conserva el valor real, nunca se sobrescribe con un estado.
+
+    Si una referencia tiene más dispositivos que 'limite_resultados' (ej:
+    una referencia muy genérica con cientos de coincidencias, igual que
+    puede pasar en Eudamed), solo se procesan los primeros y se avisa
+    cuántos quedaron sin procesar."""
     url_busqueda = f"https://accessgudid.nlm.nih.gov/devices/search?query={urllib.parse.quote(ref)}"
     try:
         response = session.get(url_busqueda, headers=headers, timeout=20)
@@ -1685,18 +1690,21 @@ def _buscar_referencia_accessgudid(ref, session, headers, company_names_filtro):
             }]
 
         soup = BeautifulSoup(response.text, 'html.parser')
-        enlaces = list(dict.fromkeys([
+        enlaces_todos = list(dict.fromkeys([
             a['href'] for a in soup.find_all('a', href=True)
             if '/devices/' in a['href'] and 'search' not in a['href']
         ]))
 
-        if not enlaces:
+        if not enlaces_todos:
             return [{
                 "Referencia_Original": ref, "Primary_DI_Number": "No encontrado",
                 "Nombre_Empresa_FDA": "No encontrado", "Codigo_GMDN": "No encontrado",
                 "Definicion_GMDN": "No encontrado", "Estado_GMDN": "No encontrado",
                 "Issuing_Agency": "No encontrado"
             }]
+
+        enlaces = enlaces_todos[:limite_resultados]
+        cantidad_sin_procesar = len(enlaces_todos) - len(enlaces)
 
         coincidencias = []
         hubo_filtrado = False
@@ -1714,6 +1722,15 @@ def _buscar_referencia_accessgudid(ref, session, headers, company_names_filtro):
                     hubo_filtrado = True
                 else:
                     coincidencias.append(resultado)
+
+        if cantidad_sin_procesar > 0 and (coincidencias or not (hubo_error_tecnico or hubo_filtrado)):
+            coincidencias.append({
+                "Referencia_Original": ref,
+                "Primary_DI_Number": f"⚠ {cantidad_sin_procesar} resultado(s) más sin procesar",
+                "Nombre_Empresa_FDA": f"(de {len(enlaces_todos)} encontrados, solo se procesaron {len(enlaces)})",
+                "Codigo_GMDN": "-", "Definicion_GMDN": "Sube el límite en 'Configuración general' si necesitas todos",
+                "Estado_GMDN": "-", "Issuing_Agency": "-"
+            })
 
         if coincidencias:
             return coincidencias
@@ -2854,9 +2871,18 @@ CSS_LOGIN = """
                       url('https://images.unsplash.com/photo-1576091160399-112ba8d25d1d?q=80&w=2070');
     background-size: cover; background-position: center; background-attachment: fixed;
 }
-header, footer, [data-testid="stSidebar"], #MainMenu {
+header, footer, #MainMenu {
     visibility: hidden !important; display: none !important;
 }
+/* El sidebar NO se oculta con display:none aquí — eso causaba que a
+   veces quedara escondido también después de iniciar sesión (Streamlit
+   no siempre limpia ese estilo viejo al cambiar de pantalla). En vez de
+   eso, se deja vacío con el mismo color oscuro, para que se vea
+   intencional sin arriesgar que se quede "pegado". */
+[data-testid="stSidebar"] {
+    background-color: #0b1d3a !important;
+}
+[data-testid="stSidebar"] * { visibility: hidden !important; }
 div[data-testid="stForm"] {
     background-color: #ffffff !important; border-radius: 16px !important;
     padding: 40px 36px !important; box-shadow: 0px 12px 40px rgba(0,0,0,0.35) !important;
@@ -3176,6 +3202,20 @@ else:
             unsafe_allow_html=True
         )
 
+        with st.expander("⚙ Configuración general (aplica a AccessGudid y Eudamed)"):
+            limite_resultados_compartido = st.number_input(
+                "Máximo de resultados a procesar por referencia",
+                min_value=1, max_value=200, value=15, step=5,
+                key="limite_resultados_compartido",
+                help="Si una referencia tiene muchas coincidencias (ej: 'mg1' con 94 resultados en Eudamed, "
+                     "o una referencia genérica con muchos dispositivos en AccessGudid), procesarlas todas "
+                     "puede tardar mucho. Si necesitas todas, sube este número, pero será más lento."
+            )
+            st.caption(
+                "Si una referencia tiene más resultados que este límite, se te avisará en la tabla "
+                "cuántos quedaron sin procesar — en ambas fuentes."
+            )
+
         col_gudid, col_eudamed = st.columns(2)
 
         # ──────────────────────────────────────────────
@@ -3279,7 +3319,8 @@ else:
                     with ThreadPoolExecutor(max_workers=MAX_HILOS_GUDID) as executor:
                         futuros = {
                             executor.submit(
-                                _buscar_referencia_accessgudid, ref, session, headers, company_names_filtro
+                                _buscar_referencia_accessgudid, ref, session, headers, company_names_filtro,
+                                limite_resultados=limite_resultados_compartido
                             ): ref
                             for ref in referencias_totales
                         }
@@ -3358,20 +3399,7 @@ else:
             archivo_eudamed = st.file_uploader(
                 "Sube tu archivo de Excel (.xlsx)", type=["xlsx"], key="uploader_eudamed"
             )
-
-            with st.expander("⚙ Configuración"):
-                limite_eudamed = st.number_input(
-                    "Máximo de resultados a procesar por referencia",
-                    min_value=1, max_value=200, value=15, step=5,
-                    key="limite_eudamed",
-                    help="Si una referencia tiene muchas coincidencias (ej: 'mg1' con 94 resultados), "
-                         "procesar todas puede tardar mucho (cada una toma ~10-20s). Si necesitas todas, "
-                         "sube este número, pero la extracción será más lenta."
-                )
-                st.caption(
-                    "Si una referencia tiene más resultados que este límite, se te avisará "
-                    "en la tabla cuántos quedaron sin procesar."
-                )
+            limite_eudamed = limite_resultados_compartido
 
             if archivo_eudamed is not None:
                 if archivo_eudamed.name != st.session_state.get("eudamed_archivo_nombre", ""):
