@@ -3228,6 +3228,37 @@ else:
                 "Sube tu archivo de Excel (.xlsx)", type=["xlsx"], key="uploader_gudid"
             )
 
+            reanudar_gudid = st.checkbox(
+                "🔄 Reanudar una corrida interrumpida (en vez de empezar de cero)",
+                key="chk_reanudar_gudid",
+                help="Si una corrida se cortó (por ejemplo, al minimizar la pestaña), usa esto para "
+                     "continuar solo con lo que falte, sin repetir lo que ya se guardó."
+            )
+            nombre_hoja_a_reanudar = None
+            if reanudar_gudid:
+                try:
+                    hoja_registro_gudid = _obtener_o_crear_hoja(NOMBRE_HOJA_REGISTRO_PESTANAS, ENCABEZADOS_REGISTRO_PESTANAS)
+                    registros_gudid_disponibles = [
+                        r for r in hoja_registro_gudid.get_all_records() if r.get("Tipo") == "AccessGudid"
+                    ]
+                except Exception:
+                    registros_gudid_disponibles = []
+
+                if registros_gudid_disponibles:
+                    nombre_hoja_a_reanudar = st.selectbox(
+                        "¿Cuál corrida quieres reanudar?",
+                        [r["NombrePestaña"] for r in registros_gudid_disponibles],
+                        key="select_reanudar_gudid"
+                    )
+                    st.caption(
+                        "Sube el MISMO archivo de Excel original completo (con todas las referencias) — "
+                        "se va a comparar contra lo que ya está guardado en esa pestaña, y solo se "
+                        "procesará lo que falte o lo que haya quedado marcado como 'Error de red'."
+                    )
+                else:
+                    st.info("No hay ninguna corrida de AccessGudid registrada todavía para reanudar.")
+                    reanudar_gudid = False
+
             with st.expander("⚙ Filtrar por fabricante (opcional)"):
                 for i in range(len(st.session_state["lista_filtros_company"])):
                     col_campo, col_quitar = st.columns([5, 1])
@@ -3254,7 +3285,8 @@ else:
             ]
 
             conectar_boton = st.button(
-                "🚀 Iniciar Extracción AccessGudid", disabled=(archivo_cargado is None),
+                "🔄 Reanudar Extracción AccessGudid" if reanudar_gudid else "🚀 Iniciar Extracción AccessGudid",
+                disabled=(archivo_cargado is None),
                 use_container_width=True, key="btn_iniciar_gudid"
             )
 
@@ -3272,19 +3304,55 @@ else:
                     except Exception as e:
                         st.error(f"Error al abrir el archivo de Excel: {e}"); st.stop()
 
-                    st.success(f"📋 Referencias encontradas: {total_refs}")
+                    if reanudar_gudid and nombre_hoja_a_reanudar:
+                        # Modo reanudar: se compara contra lo que ya está guardado
+                        # en esa pestaña, y solo se procesa lo que falte o lo que
+                        # haya quedado marcado como 'Error de red (reintentar)'.
+                        nombre_hoja_gudid = nombre_hoja_a_reanudar
+                        try:
+                            hoja_existente_gudid = _obtener_o_crear_hoja(
+                                nombre_hoja_gudid,
+                                ["Fecha", "Usuario", "Referencia_Original", "Primary_DI_Number",
+                                 "Nombre_Empresa_FDA", "Codigo_GMDN", "Definicion_GMDN",
+                                 "Estado_GMDN", "Issuing_Agency"]
+                            )
+                            filas_existentes_gudid = hoja_existente_gudid.get_all_records()
+                        except Exception as e:
+                            st.error(f"No se pudo leer la pestaña a reanudar: {e}"); st.stop()
+
+                        refs_para_reintentar = {
+                            f["Referencia_Original"] for f in filas_existentes_gudid
+                            if str(f.get("Primary_DI_Number", "")).startswith("Error de red")
+                        }
+                        refs_ya_completas = {
+                            f["Referencia_Original"] for f in filas_existentes_gudid
+                        } - refs_para_reintentar
+
+                        referencias_totales = [
+                            r for r in referencias_totales if r not in refs_ya_completas
+                        ]
+                        total_refs = len(referencias_totales)
+                        st.success(
+                            f"📋 Reanudando '{nombre_hoja_gudid}': {len(refs_ya_completas)} referencia(s) ya "
+                            f"listas, {total_refs} pendiente(s) por procesar."
+                        )
+                        if total_refs == 0:
+                            st.info("🎉 No queda nada pendiente — esta corrida ya estaba completa.")
+                            st.stop()
+                    else:
+                        st.success(f"📋 Referencias encontradas: {total_refs}")
+                        # Cada corrida guarda en SU PROPIA pestaña (no en una
+                        # compartida que crece para siempre) — se borra sola a
+                        # las 72h. De paso, se limpia cualquier otra pestaña
+                        # vieja que ya haya superado ese límite.
+                        _ejecutar_limpieza_pestanas_resultado()
+                        nombre_hoja_gudid = _generar_nombre_pestana_resultado("AccessGudid", total_refs)
+                        _registrar_pestana_resultado(
+                            nombre_hoja_gudid, st.session_state["usuario_activo_real"], "AccessGudid", total_refs
+                        )
+
                     if company_names_filtro:
                         st.info(f"🔎 Filtrando por: {', '.join(company_names_filtro)}")
-
-                    # Cada corrida guarda en SU PROPIA pestaña (no en una
-                    # compartida que crece para siempre) — se borra sola a
-                    # las 72h. De paso, se limpia cualquier otra pestaña
-                    # vieja que ya haya superado ese límite.
-                    _ejecutar_limpieza_pestanas_resultado()
-                    nombre_hoja_gudid = _generar_nombre_pestana_resultado("AccessGudid", total_refs)
-                    _registrar_pestana_resultado(
-                        nombre_hoja_gudid, st.session_state["usuario_activo_real"], "AccessGudid", total_refs
-                    )
                     st.caption(
                         f"💾 Esta corrida se está guardando en la pestaña '{nombre_hoja_gudid}' de tu Google "
                         "Sheet (se elimina sola a las 72h — descarga el Excel si quieres conservarla más tiempo)."
