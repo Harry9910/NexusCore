@@ -2344,14 +2344,157 @@ def _marcar_estado_eudamed(en_uso, usuario=""):
         pass
 
 
-def guardar_resultados_accessgudid(usuario, filas):
+# ==========================================================
+# PESTAÑAS POR CORRIDA + LIMPIEZA AUTOMÁTICA A 72 HORAS
+# ==========================================================
+# Cada corrida de extracción masiva (AccessGudid, Eudamed) guarda sus
+# resultados en una pestaña PROPIA (no en una compartida que crece para
+# siempre), nombrada con la fecha y la cantidad de referencias. Una hoja
+# de registro aparte ("RegistroPestañasResultados") guarda quién la creó
+# y cuándo, para poder: (1) borrar automáticamente lo que ya pasó las 72
+# horas, y (2) avisarle al usuario dueño, al iniciar sesión, si algo suyo
+# está por eliminarse.
+LIMITE_HORAS_RETENCION = 72
+NOMBRE_HOJA_REGISTRO_PESTANAS = "RegistroPestañasResultados"
+ENCABEZADOS_REGISTRO_PESTANAS = ["NombrePestaña", "Usuario", "FechaCreacion", "Tipo", "TotalReferencias"]
+
+
+def _generar_nombre_pestana_resultado(prefijo, total_referencias):
+    """Genera un nombre de pestaña único por corrida, con fecha/hora y
+    cantidad de referencias — ej: 'AccessGudid_2026-06-22_1430_62590refs'.
+    Se sanea para respetar los límites de nombre de Google Sheets (100
+    caracteres, sin / \\ ? * [ ] :)."""
+    timestamp = datetime.datetime.now().strftime("%Y-%m-%d_%H%M")
+    nombre = f"{prefijo}_{timestamp}_{total_referencias}refs"
+    for caracter in ['/', '\\', '?', '*', '[', ']', ':']:
+        nombre = nombre.replace(caracter, '-')
+    return nombre[:100]
+
+
+def _registrar_pestana_resultado(nombre_pestana, usuario, tipo, total_referencias):
+    """Anota en el registro central que se creó una pestaña de resultados
+    nueva, para poder limpiarla más adelante y avisar a su dueño antes de
+    que se elimine."""
+    try:
+        hoja_registro = _obtener_o_crear_hoja(NOMBRE_HOJA_REGISTRO_PESTANAS, ENCABEZADOS_REGISTRO_PESTANAS)
+        timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        hoja_registro.append_row(
+            [nombre_pestana, usuario, timestamp, tipo, total_referencias], value_input_option='RAW'
+        )
+    except Exception:
+        pass
+
+
+def _ejecutar_limpieza_pestanas_resultado():
+    """Revisa el registro de pestañas de resultados y elimina (la pestaña
+    real + su fila de registro) las que ya superaron las 72 horas. Se
+    llama al iniciar una corrida nueva y al iniciar sesión — nunca debe
+    interrumpir el flujo principal de la app si algo falla."""
+    try:
+        hoja_registro = _obtener_o_crear_hoja(NOMBRE_HOJA_REGISTRO_PESTANAS, ENCABEZADOS_REGISTRO_PESTANAS)
+        registros = hoja_registro.get_all_records()
+        if not registros:
+            return
+        ahora = datetime.datetime.now()
+        client = get_gspread_client()
+        doc = client.open_by_key(SHEET_ID)
+
+        registros_que_sobreviven = []
+        for fila in registros:
+            try:
+                fecha_creacion = datetime.datetime.strptime(str(fila.get("FechaCreacion", "")), "%Y-%m-%d %H:%M:%S")
+                horas_transcurridas = (ahora - fecha_creacion).total_seconds() / 3600
+            except Exception:
+                registros_que_sobreviven.append(fila)  # fecha rara: se conserva por seguridad
+                continue
+
+            if horas_transcurridas >= LIMITE_HORAS_RETENCION:
+                try:
+                    hoja_a_borrar = doc.worksheet(fila.get("NombrePestaña", ""))
+                    doc.del_worksheet(hoja_a_borrar)
+                except Exception:
+                    pass  # ya no existía esa pestaña; igual se quita del registro
+            else:
+                registros_que_sobreviven.append(fila)
+
+        if len(registros_que_sobreviven) != len(registros):
+            hoja_registro.clear()
+            hoja_registro.append_row(ENCABEZADOS_REGISTRO_PESTANAS, value_input_option='RAW')
+            if registros_que_sobreviven:
+                hoja_registro.append_rows(
+                    [[f.get(c, "") for c in ENCABEZADOS_REGISTRO_PESTANAS] for f in registros_que_sobreviven],
+                    value_input_option='RAW'
+                )
+    except Exception:
+        pass
+
+
+def _obtener_avisos_eliminacion_pendiente(usuario):
+    """Devuelve los resultados DEL USUARIO ACTUAL que están a 12 horas o
+    menos de cumplir las 72h de retención, para avisarle al iniciar
+    sesión (si quedan ≤12h aparece el aviso; si vuelve a entrar cuando ya
+    queden ≤5h, lo ve de nuevo con el tiempo actualizado)."""
+    avisos = []
+    try:
+        hoja_registro = _obtener_o_crear_hoja(NOMBRE_HOJA_REGISTRO_PESTANAS, ENCABEZADOS_REGISTRO_PESTANAS)
+        registros = hoja_registro.get_all_records()
+        ahora = datetime.datetime.now()
+        for fila in registros:
+            if str(fila.get("Usuario", "")) != usuario:
+                continue
+            try:
+                fecha_creacion = datetime.datetime.strptime(str(fila.get("FechaCreacion", "")), "%Y-%m-%d %H:%M:%S")
+            except Exception:
+                continue
+            horas_transcurridas = (ahora - fecha_creacion).total_seconds() / 3600
+            horas_restantes = LIMITE_HORAS_RETENCION - horas_transcurridas
+            if 0 < horas_restantes <= 12:
+                avisos.append({
+                    "nombre": fila.get("NombrePestaña", ""), "tipo": fila.get("Tipo", ""),
+                    "horas_restantes": round(horas_restantes, 1)
+                })
+    except Exception:
+        pass
+    return avisos
+
+
+def _limpiar_logs_antiguos():
+    """Borra del historial (Logs) las filas de más de 72 horas. A
+    diferencia de AccessGudid/Eudamed, aquí no se crea una pestaña nueva
+    por cada acción (serían cientos) — se limpia por fila dentro de la
+    misma pestaña de Logs."""
+    try:
+        hoja_logs = _obtener_o_crear_hoja("Logs", ["Fecha", "Usuario", "Búsqueda", "Resultados"])
+        valores = hoja_logs.get_all_values()
+        if len(valores) < 2:
+            return
+        encabezado, filas = valores[0], valores[1:]
+        ahora = datetime.datetime.now()
+        filas_recientes = []
+        for fila in filas:
+            try:
+                fecha_fila = datetime.datetime.strptime(fila[0], "%Y-%m-%d %H:%M:%S")
+                if (ahora - fecha_fila).total_seconds() / 3600 < LIMITE_HORAS_RETENCION:
+                    filas_recientes.append(fila)
+            except Exception:
+                filas_recientes.append(fila)  # fecha no reconocida: se conserva por seguridad
+        if len(filas_recientes) != len(filas):
+            hoja_logs.clear()
+            hoja_logs.append_row(encabezado, value_input_option='RAW')
+            if filas_recientes:
+                hoja_logs.append_rows(filas_recientes, value_input_option='RAW')
+    except Exception:
+        pass
+
+
+def guardar_resultados_accessgudid(usuario, filas, nombre_hoja="ResultadosAccessGudid"):
     if not filas:
         return
     try:
         encabezados = ["Fecha", "Usuario", "Referencia_Original", "Primary_DI_Number",
                        "Nombre_Empresa_FDA", "Codigo_GMDN", "Definicion_GMDN",
                        "Estado_GMDN", "Issuing_Agency"]
-        hoja = _obtener_o_crear_hoja("ResultadosAccessGudid", encabezados)
+        hoja = _obtener_o_crear_hoja(nombre_hoja, encabezados)
         timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         filas_excel = [
             [timestamp, usuario,
@@ -2366,13 +2509,13 @@ def guardar_resultados_accessgudid(usuario, filas):
         st.warning(f"No se pudieron guardar los resultados en el histórico de Google Sheets: {e}")
 
 
-def guardar_resultados_eudamed(usuario, filas):
+def guardar_resultados_eudamed(usuario, filas, nombre_hoja="ResultadosEudamed"):
     if not filas:
         return
     try:
         encabezados = ["Fecha", "Usuario", "Referencia_Original", "Codigo_UDI_DI",
                        "Agencia_Emisora", "Nombre_Dispositivo", "Fabricante"]
-        hoja = _obtener_o_crear_hoja("ResultadosEudamed", encabezados)
+        hoja = _obtener_o_crear_hoja(nombre_hoja, encabezados)
         timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         filas_excel = [
             [timestamp, usuario,
@@ -2831,6 +2974,20 @@ else:
     es_admin = st.session_state["usuario_activo_real"].strip().lower() == ADMIN_USER.lower()
     usuario_sesion = st.session_state["usuario_activo_real"]
 
+    # Al iniciar sesión (una sola vez por sesión, no en cada rerun): se
+    # limpian los logs de más de 72h, y se avisa si algo del propio
+    # usuario está a 12h o menos de eliminarse.
+    if not st.session_state.get("_avisos_72h_revisados"):
+        st.session_state["_avisos_72h_revisados"] = True
+        _limpiar_logs_antiguos()
+        avisos_72h = _obtener_avisos_eliminacion_pendiente(usuario_sesion)
+        for aviso in avisos_72h:
+            st.warning(
+                f"⏳ Tu resultado **'{aviso['nombre']}'** ({aviso['tipo']}) se eliminará en "
+                f"~{aviso['horas_restantes']}h (las pestañas de resultados se borran solas a las 72h "
+                "de antigüedad). Descárgalo en Excel antes si todavía lo necesitas."
+            )
+
     # ── SIDEBAR ──────────────────────────────────────────
     with st.sidebar:
         st.markdown('<div class="sidebar-header">⚙️ Opciones del Sistema</div>', unsafe_allow_html=True)
@@ -3070,6 +3227,20 @@ else:
                     if company_names_filtro:
                         st.info(f"🔎 Filtrando por: {', '.join(company_names_filtro)}")
 
+                    # Cada corrida guarda en SU PROPIA pestaña (no en una
+                    # compartida que crece para siempre) — se borra sola a
+                    # las 72h. De paso, se limpia cualquier otra pestaña
+                    # vieja que ya haya superado ese límite.
+                    _ejecutar_limpieza_pestanas_resultado()
+                    nombre_hoja_gudid = _generar_nombre_pestana_resultado("AccessGudid", total_refs)
+                    _registrar_pestana_resultado(
+                        nombre_hoja_gudid, st.session_state["usuario_activo_real"], "AccessGudid", total_refs
+                    )
+                    st.caption(
+                        f"💾 Esta corrida se está guardando en la pestaña '{nombre_hoja_gudid}' de tu Google "
+                        "Sheet (se elimina sola a las 72h — descarga el Excel si quieres conservarla más tiempo)."
+                    )
+
                     texto_estado = st.empty()
                     barra_custom = st.empty()
                     tabla_viva   = st.empty()
@@ -3136,7 +3307,8 @@ else:
                                 if filas_nuevas_gudid:
                                     try:
                                         guardar_resultados_accessgudid(
-                                            st.session_state["usuario_activo_real"], filas_nuevas_gudid
+                                            st.session_state["usuario_activo_real"], filas_nuevas_gudid,
+                                            nombre_hoja=nombre_hoja_gudid
                                         )
                                         indice_guardado_gudid = len(lista_resultados)
                                     except Exception:
@@ -3148,7 +3320,10 @@ else:
                     # Guarda lo que quedó pendiente desde el último checkpoint
                     filas_pendientes_gudid = lista_resultados[indice_guardado_gudid:]
                     if filas_pendientes_gudid:
-                        guardar_resultados_accessgudid(st.session_state["usuario_activo_real"], filas_pendientes_gudid)
+                        guardar_resultados_accessgudid(
+                            st.session_state["usuario_activo_real"], filas_pendientes_gudid,
+                            nombre_hoja=nombre_hoja_gudid
+                        )
 
                     df_final = pd.DataFrame(lista_resultados)
                     output = io.BytesIO()
@@ -3246,6 +3421,16 @@ else:
 
                     st.success(f"📋 Referencias encontradas: {total_refs_eu}")
 
+                    _ejecutar_limpieza_pestanas_resultado()
+                    nombre_hoja_eudamed = _generar_nombre_pestana_resultado("Eudamed", total_refs_eu)
+                    _registrar_pestana_resultado(
+                        nombre_hoja_eudamed, st.session_state["usuario_activo_real"], "Eudamed", total_refs_eu
+                    )
+                    st.caption(
+                        f"💾 Esta corrida se está guardando en la pestaña '{nombre_hoja_eudamed}' de tu Google "
+                        "Sheet (se elimina sola a las 72h — descarga el Excel si quieres conservarla más tiempo)."
+                    )
+
                     texto_estado_eu  = st.empty()
                     barra_eu         = st.empty()
                     tabla_viva_eu    = st.empty()
@@ -3323,7 +3508,10 @@ else:
                         f"Extracción masiva Eudamed ({total_refs_eu} refs)",
                         len(lista_resultados_eu)
                     )
-                    guardar_resultados_eudamed(st.session_state["usuario_activo_real"], lista_resultados_eu)
+                    guardar_resultados_eudamed(
+                        st.session_state["usuario_activo_real"], lista_resultados_eu,
+                        nombre_hoja=nombre_hoja_eudamed
+                    )
 
                     df_final_eu = pd.DataFrame(lista_resultados_eu)
                     output_eu   = io.BytesIO()
@@ -4318,6 +4506,100 @@ else:
             else:
                 st.info("No hay usuarios disponibles.")
             st.markdown('</div>', unsafe_allow_html=True)
+
+        st.markdown("<hr style='margin:32px 0;'>", unsafe_allow_html=True)
+        st.markdown("<h4 style='color:#991b1b;'>🗑 Control de Resultados Guardados (solo Admin)</h4>", unsafe_allow_html=True)
+        st.markdown(
+            "<p style='color:#475569;'>Las pestañas de resultados (AccessGudid, Eudamed) y el historial de "
+            "Logs se borran solos a las 72 horas. Desde aquí, como administrador, puedes borrar lo que "
+            "quieras antes de eso.</p>", unsafe_allow_html=True
+        )
+
+        with st.spinner("Cargando registro de pestañas de resultados..."):
+            try:
+                hoja_registro_admin = _obtener_o_crear_hoja(NOMBRE_HOJA_REGISTRO_PESTANAS, ENCABEZADOS_REGISTRO_PESTANAS)
+                registros_admin = hoja_registro_admin.get_all_records()
+            except Exception as e:
+                registros_admin = []
+                st.error(f"No se pudo cargar el registro: {e}")
+
+        if registros_admin:
+            df_registro_admin = pd.DataFrame(registros_admin)
+            st.dataframe(df_registro_admin, use_container_width=True, hide_index=True)
+
+            col_borrar_una, col_borrar_todas = st.columns([2, 1])
+            with col_borrar_una:
+                pestana_a_borrar = st.selectbox(
+                    "Borrar una pestaña específica ahora",
+                    [r["NombrePestaña"] for r in registros_admin],
+                    key="select_pestana_borrar_admin"
+                )
+                if st.button("🗑 Borrar esta pestaña", key="btn_borrar_pestana_admin"):
+                    try:
+                        client_admin = get_gspread_client()
+                        doc_admin = client_admin.open_by_key(SHEET_ID)
+                        try:
+                            doc_admin.del_worksheet(doc_admin.worksheet(pestana_a_borrar))
+                        except Exception:
+                            pass  # puede que ya no exista la pestaña en sí
+                        registros_restantes = [r for r in registros_admin if r["NombrePestaña"] != pestana_a_borrar]
+                        hoja_registro_admin.clear()
+                        hoja_registro_admin.append_row(ENCABEZADOS_REGISTRO_PESTANAS, value_input_option='RAW')
+                        if registros_restantes:
+                            hoja_registro_admin.append_rows(
+                                [[r.get(c, "") for c in ENCABEZADOS_REGISTRO_PESTANAS] for r in registros_restantes],
+                                value_input_option='RAW'
+                            )
+                        registrar_log(usuario_sesion, f"[ADMIN] Borró pestaña de resultados: {pestana_a_borrar}", "-")
+                        st.success(f"✔ Pestaña '{pestana_a_borrar}' eliminada.")
+                        time.sleep(0.5); st.rerun()
+                    except Exception as e:
+                        st.error(f"❌ No se pudo borrar: {e}")
+
+            with col_borrar_todas:
+                st.markdown("<br>", unsafe_allow_html=True)
+                confirmar_borrar_todo = st.checkbox("Confirmo borrar TODO", key="chk_confirmar_borrar_todo_admin")
+                if st.button(
+                    "🗑 Borrar TODAS las pestañas de resultados", key="btn_borrar_todas_admin",
+                    disabled=not confirmar_borrar_todo, use_container_width=True
+                ):
+                    try:
+                        client_admin = get_gspread_client()
+                        doc_admin = client_admin.open_by_key(SHEET_ID)
+                        for r in registros_admin:
+                            try:
+                                doc_admin.del_worksheet(doc_admin.worksheet(r["NombrePestaña"]))
+                            except Exception:
+                                pass
+                        hoja_registro_admin.clear()
+                        hoja_registro_admin.append_row(ENCABEZADOS_REGISTRO_PESTANAS, value_input_option='RAW')
+                        registrar_log(usuario_sesion, "[ADMIN] Borró TODAS las pestañas de resultados", len(registros_admin))
+                        st.success("✔ Todas las pestañas de resultados fueron eliminadas.")
+                        time.sleep(0.5); st.rerun()
+                    except Exception as e:
+                        st.error(f"❌ No se pudo borrar todo: {e}")
+        else:
+            st.info("No hay pestañas de resultados registradas por ahora.")
+
+        st.markdown("<br>", unsafe_allow_html=True)
+        confirmar_borrar_logs = st.checkbox("Confirmo vaciar el historial de Logs", key="chk_confirmar_borrar_logs_admin")
+        if st.button(
+            "🗑 Vaciar historial de Logs (todo, sin esperar las 72h)", key="btn_borrar_logs_admin",
+            disabled=not confirmar_borrar_logs
+        ):
+            try:
+                hoja_logs_admin = _obtener_o_crear_hoja("Logs", ["Fecha", "Usuario", "Búsqueda", "Resultados"])
+                hoja_logs_admin.clear()
+                hoja_logs_admin.append_row(["Fecha", "Usuario", "Búsqueda", "Resultados"], value_input_option='RAW')
+                hoja_logs_admin.append_row(
+                    [datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"), usuario_sesion,
+                     "[ADMIN] Vació el historial de Logs", "-"],
+                    value_input_option='RAW'
+                )
+                st.success("✔ Historial de Logs vaciado.")
+                time.sleep(0.5); st.rerun()
+            except Exception as e:
+                st.error(f"❌ No se pudo vaciar: {e}")
 
     # ==========================================================
     # FOOTER
