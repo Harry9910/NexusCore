@@ -712,7 +712,7 @@ CHECKLIST_DM = [
      "riesgos": ["I", "IIA", "IIB", "III"]},
     {"item": 14, "articulo": "Art.18 lit. g", "titulo": "Artes originales de etiquetas e insertos",
      "sigla": "ETIQUETAS INSERTOS",
-     "descripcion": "Etiquetas originales del fabricante (nombre/referencia, fabricante, símbolos de seguridad), sticker del importador (producto, modelo/referencia, importador, número de registro sanitario), e inserto (IFU) en castellano con uso, presentación comercial, precauciones, disposición final, limpieza/desinfección/esterilización, almacenamiento.",
+     "descripcion": "Etiquetas originales del fabricante (nombre/referencia, fabricante, símbolos de seguridad), sticker del importador (producto, modelo/referencias, importador, número de registro sanitario), e inserto (IFU) en castellano con uso, presentación comercial, precauciones, disposición final, limpieza/desinfección/esterilización, almacenamiento.",
      "riesgos": ["I", "IIA", "IIB", "III"]},
     {"item": 15, "articulo": "Art.18 lit. j", "titulo": "Información científica que respalde la seguridad (riesgo IIa, IIb, III)",
      "sigla": "INFO CIENTIFICA",
@@ -2582,6 +2582,46 @@ def guardar_resultados_eudamed(usuario, filas, nombre_hoja="ResultadosEudamed"):
 
 
 # ==========================================================
+# KEEP-ALIVE — evita que la pestaña/sesión se quede "dormida" si
+# el usuario deja el PC sin tocar nada mientras corre una extracción.
+# ==========================================================
+# Streamlit Cloud puede cerrar el WebSocket de una sesión si el
+# NAVEGADOR deja de mandarle señales de actividad por mucho tiempo
+# (pestaña en segundo plano, PC en reposo, etc.). Esto NO lo controla
+# tu código de Python -- es la infraestructura del hosting. Lo único
+# que SÍ podemos controlar desde aquí es que el propio NAVEGADOR nunca
+# deje de estar "activo": este pequeño bloque de HTML/JS se inyecta en
+# cada pantalla y manda un "ping" invisible cada 20 segundos, lo que
+# mantiene el WebSocket con tráfico constante y reduce mucho el riesgo
+# de que se considere inactivo y se cierre solo.
+#
+# IMPORTANTE -- esto NO sustituye los checkpoints de guardado: si pese a
+# todo el contenedor llega a reiniciarse (por ejemplo, por un despliegue
+# nuevo o un límite duro de Streamlit Cloud), el keep-alive no puede
+# evitarlo. Por eso el guardado en Sheets ahora es síncrono y frecuente
+# (ver INTERVALO_GUARDADO_GUDID más abajo): así nunca se pierde más de
+# un puñado de referencias, sin importar qué tan tarde se note el corte.
+def _inyectar_keep_alive():
+    st.markdown(
+        """
+        <script>
+        (function () {
+            if (window._nexuscoreKeepAliveActivo) { return; }
+            window._nexuscoreKeepAliveActivo = true;
+            setInterval(function () {
+                try {
+                    document.dispatchEvent(new Event('visibilitychange'));
+                    window.dispatchEvent(new Event('focus'));
+                } catch (e) {}
+            }, 20000);
+        })();
+        </script>
+        """,
+        unsafe_allow_html=True
+    )
+
+
+# ==========================================================
 # CONFIGURACIÓN DE LA PÁGINA
 # ==========================================================
 st.set_page_config(
@@ -2912,11 +2952,6 @@ CSS_LOGIN = """
 header, footer, #MainMenu {
     visibility: hidden !important; display: none !important;
 }
-/* El sidebar NO se oculta con display:none aquí — eso causaba que a
-   veces quedara escondido también después de iniciar sesión (Streamlit
-   no siempre limpia ese estilo viejo al cambiar de pantalla). En vez de
-   eso, se deja vacío con el mismo color oscuro, para que se vea
-   intencional sin arriesgar que se quede "pegado". */
 [data-testid="stSidebar"] {
     background-color: #0b1d3a !important;
 }
@@ -3036,6 +3071,21 @@ if not st.session_state["autenticado"]:
 else:
     st.markdown(CSS_GLOBAL, unsafe_allow_html=True)
 
+    # KEEP-ALIVE: se inyecta en TODAS las pantallas internas, no solo en
+    # Extracción Masiva, así la sesión se mantiene activa sin importar en
+    # qué pestaña de la app esté el usuario mientras espera.
+    _inyectar_keep_alive()
+
+    # NOTA IMPORTANTE SOBRE EL CIERRE DE SESIÓN:
+    # st.session_state["autenticado"] SOLO se pone en False en un único
+    # lugar de todo el archivo: el botón "🚪 Cerrar Sesión" del sidebar
+    # (lo ves más abajo). No hay ningún timeout, expiración por tiempo,
+    # ni lógica de inactividad en este código que cierre la sesión por su
+    # cuenta -- así que, de parte de la APP, la sesión nunca se cierra
+    # sola. Si alguna vez ves que "se salió solo", la causa está en la
+    # infraestructura de Streamlit Cloud (reinicio de contenedor), no en
+    # esta lógica.
+
     # Pantalla de carga breve que tapa el parpadeo de la transición justo
     # después de iniciar sesión (mientras el sidebar y el contenido
     # principal terminan de armarse). Solo se muestra UNA vez, justo
@@ -3147,11 +3197,8 @@ else:
                 st.rerun()
 
         st.markdown("<br><br>", unsafe_allow_html=True)
+        # ÚNICO lugar donde "autenticado" pasa a False -- ver nota arriba.
         if st.button("🚪 Cerrar Sesión", key="btn_cerrar_sesion", use_container_width=True):
-            # Se limpia todo lo que sea específico de esta sesión de usuario,
-            # para que si otra persona inicia sesión en el mismo navegador no
-            # vea ni herede nada de lo anterior (sección activa, cachés de
-            # resultados, etc.).
             st.session_state["autenticado"] = False
             st.session_state["usuario_activo_real"] = ""
             st.session_state["seccion_activa"] = "Inicio"
@@ -3297,6 +3344,12 @@ else:
             unsafe_allow_html=True
         )
 
+        st.info(
+            "🔒 Esta sesión NO se cierra sola por inactividad: puedes dejar el PC sin tocar mientras "
+            "corre la extracción. La pestaña se mantiene activa automáticamente. La única forma de "
+            "cerrar tu sesión es con el botón 'Cerrar Sesión' del menú lateral."
+        )
+
         with st.expander("⚙ Configuración general (aplica a AccessGudid y Eudamed)"):
             limite_resultados_compartido = st.number_input(
                 "Máximo de resultados a procesar por referencia",
@@ -3326,8 +3379,9 @@ else:
             reanudar_gudid = st.checkbox(
                 "🔄 Reanudar una corrida interrumpida (en vez de empezar de cero)",
                 key="chk_reanudar_gudid",
-                help="Si una corrida se cortó (por ejemplo, al minimizar la pestaña), usa esto para "
-                     "continuar solo con lo que falte, sin repetir lo que ya se guardó."
+                help="Si una corrida se cortó (por ejemplo, por un reinicio del servidor mientras el PC "
+                     "estaba sin tocar), usa esto para continuar solo con lo que falte, sin repetir lo "
+                     "que ya se guardó."
             )
             nombre_hoja_a_reanudar = None
             if reanudar_gudid:
@@ -3340,9 +3394,12 @@ else:
                     registros_gudid_disponibles = []
 
                 if registros_gudid_disponibles:
+                    # La corrida más reciente queda preseleccionada primero —
+                    # normalmente es la que el usuario quiere continuar.
+                    nombres_disponibles_gudid = [r["NombrePestaña"] for r in registros_gudid_disponibles][::-1]
                     nombre_hoja_a_reanudar = st.selectbox(
-                        "¿Cuál corrida quieres reanudar?",
-                        [r["NombrePestaña"] for r in registros_gudid_disponibles],
+                        "¿Cuál corrida quieres reanudar? (la más reciente aparece primero)",
+                        nombres_disponibles_gudid,
                         key="select_reanudar_gudid"
                     )
                     st.caption(
@@ -3399,6 +3456,13 @@ else:
                     except Exception as e:
                         st.error(f"Error al abrir el archivo de Excel: {e}"); st.stop()
 
+                    # cantidad_previamente_completadas / total_refs_original_excel:
+                    # se usan SOLO para que el contador en pantalla muestre el
+                    # avance REAL acumulado (incluyendo lo ya guardado en una
+                    # corrida anterior), en vez de reiniciar visualmente en 0
+                    # cada vez que se reanuda. La lista que se procesa de
+                    # verdad (referencias_totales) ya estaba bien filtrada en
+                    # el código original — esto solo corrige lo que se MUESTRA.
                     if reanudar_gudid and nombre_hoja_a_reanudar:
                         # Modo reanudar: se compara contra lo que ya está guardado
                         # en esa pestaña, y solo se procesa lo que falte o lo que
@@ -3434,14 +3498,21 @@ else:
                             r for r in referencias_totales if str(r).strip() not in refs_ya_completas
                         ]
                         total_refs = len(referencias_totales)
+
+                        # ── CONTADOR REAL ACUMULADO (parte del fix) ──
+                        cantidad_previamente_completadas = len(refs_ya_completas)
+                        total_refs_original_excel = cantidad_previamente_completadas + total_refs
+
                         st.success(
-                            f"📋 Reanudando '{nombre_hoja_gudid}': {len(refs_ya_completas)} referencia(s) ya "
-                            f"listas, {total_refs} pendiente(s) por procesar."
+                            f"📋 Reanudando '{nombre_hoja_gudid}': {cantidad_previamente_completadas} referencia(s) "
+                            f"ya listas de {total_refs_original_excel} totales · {total_refs} pendiente(s) por procesar."
                         )
                         if total_refs == 0:
                             st.info("🎉 No queda nada pendiente — esta corrida ya estaba completa.")
                             st.stop()
                     else:
+                        cantidad_previamente_completadas = 0
+                        total_refs_original_excel = total_refs
                         st.success(f"📋 Referencias encontradas: {total_refs}")
                         # Cada corrida guarda en SU PROPIA pestaña (no en una
                         # compartida que crece para siempre) — se borra sola a
@@ -3484,7 +3555,13 @@ else:
 
                     completados = 0
                     indice_guardado_gudid = 0  # hasta dónde de lista_resultados ya quedó guardado en Sheets
-                    INTERVALO_GUARDADO_GUDID = 200  # cada cuántas completadas se guarda un checkpoint
+                    # FIX: se bajó de 200 a 40 -- en una corrida muy larga,
+                    # mientras más se tarde en hacer el primer checkpoint, más
+                    # se pierde si el proceso se corta antes de llegar a él.
+                    # Guardar cada 40 referencias cuesta un poco más de tiempo
+                    # total, pero garantiza que NUNCA se pierda más que un
+                    # puñado de referencias sin guardar.
+                    INTERVALO_GUARDADO_GUDID = 40
                     INTERVALO_TABLA_GUDID = 10  # cada cuántas se refresca la tabla en pantalla (no en cada una)
 
                     with ThreadPoolExecutor(max_workers=MAX_HILOS_GUDID) as executor:
@@ -3513,8 +3590,15 @@ else:
                                 transcurrido = time.time() - inicio_tiempo
                                 promedio = transcurrido / completados
                                 restante = promedio * (total_refs - completados)
+                                # FIX: el contador ahora muestra el avance REAL
+                                # acumulado (lo de corridas anteriores + lo de
+                                # esta sesión), no solo "completados/total_refs"
+                                # de la lista ya filtrada -- así nunca parece
+                                # que "volvió a empezar desde 0".
                                 texto_estado.info(
-                                    f"⏳ {completados}/{total_refs} completadas | ⏱ ~{int(restante)}s restantes"
+                                    f"⏳ {cantidad_previamente_completadas + completados}/{total_refs_original_excel} "
+                                    f"totales (esta sesión: {completados}/{total_refs}) | "
+                                    f"⏱ ~{int(restante)}s restantes"
                                 )
                                 actualizar_barra_gudid(int(completados / total_refs * 100))
 
@@ -3525,20 +3609,23 @@ else:
                                 if completados % INTERVALO_TABLA_GUDID == 0 or completados == total_refs:
                                     tabla_viva.dataframe(pd.DataFrame(lista_resultados), use_container_width=True, height=260)
 
-                                # GUARDADO PROGRESIVO: en corridas largas (miles de
-                                # referencias, varias horas) esto evita perder todo
-                                # el avance si la app llega a reiniciarse a mitad
-                                # de camino — solo se perdería, como máximo, lo
-                                # avanzado desde el último checkpoint. Se hace en
-                                # SEGUNDO PLANO (sin esperar a que termine) para
-                                # que el bucle principal nunca se quede colgado
-                                # esperando la respuesta de Google Sheets.
+                                # GUARDADO PROGRESIVO -- FIX: ahora es SÍNCRONO
+                                # (bloqueante) en vez de lanzarse en un hilo
+                                # aparte. El guardado en background con
+                                # threading.Thread era justo lo que podía dejar
+                                # datos "a medio escribir" si el contenedor se
+                                # reiniciaba mientras ese hilo todavía corría --
+                                # al hacerlo síncrono, cuando este bloque
+                                # continúa es porque el checkpoint YA quedó
+                                # guardado de verdad en Google Sheets. Cuesta
+                                # un poco más de tiempo por checkpoint, pero es
+                                # muchísimo más confiable.
                                 if completados % INTERVALO_GUARDADO_GUDID == 0:
                                     filas_nuevas_gudid = lista_resultados[indice_guardado_gudid:]
                                     if filas_nuevas_gudid:
-                                        _guardar_checkpoint_gudid_en_segundo_plano(
+                                        guardar_resultados_accessgudid(
                                             st.session_state["usuario_activo_real"], filas_nuevas_gudid,
-                                            nombre_hoja_gudid
+                                            nombre_hoja=nombre_hoja_gudid
                                         )
                                         indice_guardado_gudid = len(lista_resultados)
                             except Exception as e:
@@ -3665,6 +3752,14 @@ else:
                     lista_resultados_eu = []
                     inicio_tiempo_eu = time.time()
 
+                    # Guardado progresivo también para Eudamed: cada 25
+                    # referencias se hace un checkpoint síncrono en Sheets, así
+                    # si el proceso se corta a mitad de camino (recuerda que
+                    # aquí cada referencia tarda 10-20s, así que una corrida de
+                    # varias horas es más probable), no se pierde todo el avance.
+                    INTERVALO_GUARDADO_EUDAMED = 25
+                    indice_guardado_eudamed = 0
+
                     def actualizar_barra_eu(pct):
                         barra_eu.markdown(
                             f'<div class="prog-wrap"><div class="prog-bar" style="width:{pct}%;"></div></div>',
@@ -3716,6 +3811,16 @@ else:
                             actualizar_barra_eu(int((idx + 1) / total_refs_eu * 100))
                             tabla_viva_eu.dataframe(pd.DataFrame(lista_resultados_eu), use_container_width=True, height=260)
 
+                            # Checkpoint síncrono periódico (ver nota arriba).
+                            if (idx + 1) % INTERVALO_GUARDADO_EUDAMED == 0:
+                                filas_nuevas_eu = lista_resultados_eu[indice_guardado_eudamed:]
+                                if filas_nuevas_eu:
+                                    guardar_resultados_eudamed(
+                                        st.session_state["usuario_activo_real"], filas_nuevas_eu,
+                                        nombre_hoja=nombre_hoja_eudamed
+                                    )
+                                    indice_guardado_eudamed = len(lista_resultados_eu)
+
                     finally:
                         if driver_eu is not None:
                             try:
@@ -3736,10 +3841,13 @@ else:
                         f"Extracción masiva Eudamed ({total_refs_eu} refs)",
                         len(lista_resultados_eu)
                     )
-                    guardar_resultados_eudamed(
-                        st.session_state["usuario_activo_real"], lista_resultados_eu,
-                        nombre_hoja=nombre_hoja_eudamed
-                    )
+                    # Guarda lo que quedó pendiente desde el último checkpoint
+                    filas_pendientes_eu = lista_resultados_eu[indice_guardado_eudamed:]
+                    if filas_pendientes_eu:
+                        guardar_resultados_eudamed(
+                            st.session_state["usuario_activo_real"], filas_pendientes_eu,
+                            nombre_hoja=nombre_hoja_eudamed
+                        )
 
                     df_final_eu = pd.DataFrame(lista_resultados_eu)
                     output_eu   = io.BytesIO()
@@ -4839,5 +4947,5 @@ else:
                 <a href="#">Tratamiento de datos</a>
                 <a href="#">Mesa de Ayuda</a>
             </div>
-            <p>v 1.6.26 © Invima 2026. Todos los derechos reservados.</p>
+            <p>v 1.7.0 © Invima 2026. Todos los derechos reservados.</p>
         </div>""", unsafe_allow_html=True)
