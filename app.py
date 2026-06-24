@@ -4114,23 +4114,23 @@ else:
         st.markdown("<h3 style='color:#0b1d3a;'>🔢 Codificación — Comparar Referencias entre Archivos</h3>", unsafe_allow_html=True)
         st.markdown(
             "<p style='color:#475569;'>Sube dos archivos de Excel (sin encabezado, igual que en "
-            "Extracción Masiva). Te muestro el listado <b>completo</b> de referencias del "
-            "<b>Archivo 1</b> (fila por fila, igual que en el Excel original), indicando si cada una "
-            "está o no en el <b>Archivo 2</b>. El <b>Archivo 1</b> admite opcionalmente una segunda "
-            "columna con el número de registro sanitario de cada referencia — si la incluyes, se "
-            "muestra junto a cada fila.</p>",
+            "Extracción Masiva). Por cada referencia ÚNICA del <b>Archivo 2</b>, se busca en el "
+            "<b>Archivo 1</b>: si la encuentra (una o varias veces), te dice en qué registro "
+            "sanitario está cada una; si no la encuentra, te lo indica igual. El <b>Archivo 1</b> "
+            "admite opcionalmente una segunda columna con el número de registro sanitario de cada "
+            "referencia — de ahí se toma el dato.</p>",
             unsafe_allow_html=True
         )
 
         col_arch1, col_arch2 = st.columns(2)
         with col_arch1:
-            st.markdown("**📄 Archivo 1** (el que quieres revisar)")
+            st.markdown("**📄 Archivo 1** (donde están los registros sanitarios)")
             archivo_cod_1 = st.file_uploader(
                 "Sube el Archivo 1 — 1 columna (referencia) o 2 columnas (referencia + registro sanitario)",
                 type=["xlsx"], key="uploader_cod_1"
             )
         with col_arch2:
-            st.markdown("**📄 Archivo 2** (donde se busca si ya están)")
+            st.markdown("**📄 Archivo 2** (las referencias que quieres buscar)")
             archivo_cod_2 = st.file_uploader(
                 "Sube el Archivo 2 — solo se usa su primera columna, tenga o no una segunda",
                 type=["xlsx"], key="uploader_cod_2"
@@ -4164,18 +4164,18 @@ else:
                 # El Archivo 1 puede traer una 2ª columna con el número de
                 # registro sanitario de cada referencia. Se detecta su
                 # presencia real (no solo que la columna exista: a veces
-                # viene de columna pero completamente vacía, igual que puede
-                # pasar también en el Archivo 2 — en ese caso se trata igual
-                # que si solo tuviera 1 columna).
+                # viene de columna pero completamente vacía).
                 tiene_columna_registro = (
                     df_cod_1.shape[1] >= 2
                     and df_cod_1[1].astype(str).str.strip().replace("nan", "").ne("").any()
                 )
 
                 # refs_1 conserva CADA FILA del Archivo 1 tal cual viene
-                # (referencia, registro_o_None), sin agrupar ni deduplicar —
-                # esto es la base del reporte completo: una fila de salida
-                # por cada fila de entrada, en el mismo orden.
+                # (referencia, registro_o_None) -- es la "base de datos"
+                # donde se va a buscar cada referencia del Archivo 2. No se
+                # agrupa ni deduplica: si una referencia aparece 3 veces en
+                # el Archivo 1 (con el mismo registro o con registros
+                # distintos), las 3 quedan disponibles para encontrarse.
                 refs_1 = []
                 for _, fila in df_cod_1.iterrows():
                     ref_val = str(fila[0]).strip() if pd.notna(fila[0]) else ""
@@ -4190,7 +4190,11 @@ else:
                                 registro_val = registro_txt
                     refs_1.append((ref_val, registro_val))
 
-                refs_2 = [r for r in df_cod_2[0].astype(str).str.strip().tolist() if r and r.lower() != "nan"]
+                # refs_2: referencias ÚNICAS del Archivo 2 (se pidió una fila
+                # de resultado por cada referencia única del Archivo 2,
+                # aunque esa referencia esté repetida varias veces ahí).
+                refs_2_todas = [r for r in df_cod_2[0].astype(str).str.strip().tolist() if r and r.lower() != "nan"]
+                refs_2 = list(dict.fromkeys(refs_2_todas))  # únicas, conservando el orden de aparición
 
                 # Normalización alfanumérica agresiva: quita TODO lo que no
                 # sea letra o número (puntos, comas, guiones, espacios
@@ -4207,80 +4211,113 @@ else:
                 else:
                     _normalizar_cod = lambda r: r.strip()
 
-                set_2_normalizado = set(_normalizar_cod(r) for r in refs_2)
-
-                # Índice del Archivo 2 con la normalización alfanumérica
-                # agresiva — en modo NORMAL se usa para sugerir "posibles
-                # coincidencias" en las filas que no calzan exacto. En modo
-                # TOLERANTE esa misma normalización ya es la clave principal,
-                # así que esas "posibles coincidencias" ya estarían contadas
-                # como encontradas (no aportan nada nuevo).
-                indice_super_normalizado_2 = {}
-                for r in refs_2:
-                    clave_super = _normalizar_alfanumerico_cod(r)
-                    indice_super_normalizado_2.setdefault(clave_super, []).append(r)
-
-                # ── TABLA COMPLETA: una fila por cada fila del Archivo 1 ──
-                # (a diferencia de antes, ya NO se filtra solo a las que
-                # faltan -- el listado completo siempre se construye, y cada
-                # fila indica su propio estado de encontrada/faltante).
-                filas_completas_cod = []
+                # Índice del Archivo 1 con la clave de comparación activa:
+                # clave -> lista de registros (en el orden en que aparecen,
+                # sin deduplicar -- si la misma referencia aparece 3 veces
+                # con el mismo registro, las 3 quedan en la lista).
+                indice_1_exacto = {}
                 for ref_val, registro_val in refs_1:
                     clave = _normalizar_cod(ref_val)
-                    encontrada = clave in set_2_normalizado
-                    fila_resultado = {"Referencia": ref_val}
-                    if tiene_columna_registro:
-                        fila_resultado["Registro_Sanitario"] = registro_val if registro_val else "-"
-                    fila_resultado["Estado"] = "✅ En Archivo 2" if encontrada else "❌ No está en Archivo 2"
-                    if not comparacion_tolerante_cod and not encontrada:
-                        clave_super = _normalizar_alfanumerico_cod(ref_val)
-                        posibles = sorted(set(indice_super_normalizado_2.get(clave_super, [])))
-                        fila_resultado["Posibles_Coincidencias_Archivo2"] = ", ".join(posibles) if posibles else "-"
-                    elif not comparacion_tolerante_cod:
-                        fila_resultado["Posibles_Coincidencias_Archivo2"] = "-"
-                    filas_completas_cod.append(fila_resultado)
+                    indice_1_exacto.setdefault(clave, []).append(registro_val if registro_val else "-")
 
-                filas_faltantes_cod = [f for f in filas_completas_cod if f["Estado"].startswith("❌")]
-                faltantes = [f["Referencia"] for f in filas_faltantes_cod]
-                referencias_unicas_1 = len(set(_normalizar_cod(r) for r, _ in refs_1))
+                # Índice del Archivo 1 con la normalización alfanumérica
+                # agresiva -- en modo NORMAL se usa para sugerir "posibles
+                # coincidencias" cuando no hay match exacto. En modo
+                # TOLERANTE ya es la clave principal (indice_1_exacto usa
+                # esa misma normalización), así que no aporta nada nuevo.
+                indice_1_super = {}
+                for ref_val, registro_val in refs_1:
+                    clave_super = _normalizar_alfanumerico_cod(ref_val)
+                    indice_1_super.setdefault(clave_super, []).append(
+                        {"referencia": ref_val, "registro": registro_val if registro_val else "-"}
+                    )
+
+                # ── RESULTADO: una fila por cada referencia única del
+                # Archivo 2, multiplicada por cada coincidencia que tenga
+                # en el Archivo 1 (1 fila si aparece 1 vez, 3 filas si
+                # aparece 3 veces, 1 fila marcada "no encontrada" si no
+                # aparece ninguna).
+                filas_resultado_cod = []
+                for ref_2 in refs_2:
+                    clave = _normalizar_cod(ref_2)
+                    registros_encontrados = indice_1_exacto.get(clave)
+
+                    if registros_encontrados:
+                        for registro in registros_encontrados:
+                            fila_resultado = {
+                                "Referencia_Archivo2": ref_2,
+                                "Estado": "✅ Encontrada en Archivo 1",
+                            }
+                            if tiene_columna_registro:
+                                fila_resultado["Registro_Sanitario"] = registro
+                            filas_resultado_cod.append(fila_resultado)
+                        continue
+
+                    # No hubo match exacto (según el modo activo). En modo
+                    # NORMAL se busca además una posible coincidencia con
+                    # formato distinto, y se reporta junto con su registro.
+                    fila_resultado = {
+                        "Referencia_Archivo2": ref_2,
+                        "Estado": "❌ No encontrada en Archivo 1",
+                    }
+                    if tiene_columna_registro:
+                        fila_resultado["Registro_Sanitario"] = "-"
+                    if not comparacion_tolerante_cod:
+                        clave_super = _normalizar_alfanumerico_cod(ref_2)
+                        posibles = indice_1_super.get(clave_super, [])
+                        if posibles:
+                            fila_resultado["Posibles_Coincidencias_Archivo1"] = ", ".join(
+                                sorted(set(p["referencia"] for p in posibles))
+                            )
+                            fila_resultado["Registro(s)_de_la(s)_Posible(s)"] = ", ".join(
+                                p["registro"] for p in posibles
+                            )
+                        else:
+                            fila_resultado["Posibles_Coincidencias_Archivo1"] = "-"
+                            fila_resultado["Registro(s)_de_la(s)_Posible(s)"] = "-"
+                    filas_resultado_cod.append(fila_resultado)
+
+                encontradas_cod = [f for f in filas_resultado_cod if f["Estado"].startswith("✅")]
+                no_encontradas_cod = [f for f in filas_resultado_cod if f["Estado"].startswith("❌")]
+                referencias_2_no_encontradas = len(no_encontradas_cod)
                 total_con_posible = (
-                    sum(1 for f in filas_faltantes_cod if f.get("Posibles_Coincidencias_Archivo2", "-") != "-")
+                    sum(1 for f in no_encontradas_cod if f.get("Posibles_Coincidencias_Archivo1", "-") != "-")
                     if not comparacion_tolerante_cod else 0
                 )
 
             st.success(
-                f"✨ Archivo 1: {len(refs_1)} filas ({referencias_unicas_1} referencias únicas) · "
-                f"Archivo 2: {len(refs_2)} referencias · "
-                f"**{len(faltantes)} fila(s) del Archivo 1 no están en el Archivo 2**"
+                f"✨ Archivo 2: {len(refs_2_todas)} filas ({len(refs_2)} referencias únicas) · "
+                f"Archivo 1: {len(refs_1)} filas · "
+                f"**{referencias_2_no_encontradas} referencia(s) única(s) del Archivo 2 no se encontraron en el Archivo 1**"
             )
             if tiene_columna_registro:
-                st.info("🧾 Se detectó número de registro sanitario en el Archivo 1 — se incluye en cada fila del resultado.")
+                st.info("🧾 Se detectó número de registro sanitario en el Archivo 1 — se incluye en cada coincidencia.")
             if comparacion_tolerante_cod:
                 st.info(
                     "🧩 Comparación tolerante activada: referencias con puntos, comas, guiones o espacios "
                     "distintos entre archivos ya se consideran la misma referencia (no se vuelven a "
                     "sugerir aparte, porque ya cuentan como encontradas)."
                 )
-            elif faltantes and total_con_posible:
+            elif no_encontradas_cod and total_con_posible:
                 st.info(
-                    f"🔎 De las {len(faltantes)} fila(s) no encontradas, **{total_con_posible}** tienen una "
-                    "posible coincidencia en el Archivo 2 (probablemente la misma referencia con formato "
-                    "distinto — un punto, espacio, guion, etc.). Revísalas en la columna "
-                    "'Posibles_Coincidencias_Archivo2', o activa la 'Comparación tolerante' arriba para que "
-                    "cuenten como encontradas directamente."
+                    f"🔎 De esas {referencias_2_no_encontradas}, **{total_con_posible}** tienen una posible "
+                    "coincidencia en el Archivo 1 (probablemente la misma referencia con formato distinto — "
+                    "un punto, espacio, guion, etc.), ya con su registro asociado en las columnas "
+                    "'Posibles_Coincidencias_Archivo1' y 'Registro(s)_de_la(s)_Posible(s)'. O activa la "
+                    "'Comparación tolerante' arriba para que cuenten como encontradas directamente."
                 )
 
-            df_completo_cod = pd.DataFrame(filas_completas_cod)
-            st.markdown("###### Listado completo del Archivo 1 (todas las filas)")
-            st.dataframe(df_completo_cod, use_container_width=True, height=420)
+            df_resultado_cod = pd.DataFrame(filas_resultado_cod)
+            st.markdown("###### Resultado: cada referencia única del Archivo 2, buscada en el Archivo 1")
+            st.dataframe(df_resultado_cod, use_container_width=True, height=420)
 
             output_cod_completo = io.BytesIO()
             with pd.ExcelWriter(output_cod_completo, engine='openpyxl') as writer:
-                df_completo_cod.to_excel(writer, sheet_name="Listado completo", index=False)
-                if filas_faltantes_cod:
-                    pd.DataFrame(filas_faltantes_cod).to_excel(writer, sheet_name="Solo faltantes", index=False)
+                df_resultado_cod.to_excel(writer, sheet_name="Resultado completo", index=False)
+                if no_encontradas_cod:
+                    pd.DataFrame(no_encontradas_cod).to_excel(writer, sheet_name="Solo no encontradas", index=False)
             st.download_button(
-                label="📥 Descargar listado completo en Excel (incluye hoja 'Solo faltantes')",
+                label="📥 Descargar resultado en Excel (incluye hoja 'Solo no encontradas')",
                 data=output_cod_completo.getvalue(),
                 file_name="codificacion_referencias.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -4290,12 +4327,12 @@ else:
 
             registrar_log(
                 st.session_state["usuario_activo_real"],
-                f"Codificación: comparación de referencias ({len(faltantes)} faltantes de {len(refs_1)} filas)",
-                len(faltantes)
+                f"Codificación: comparación de referencias ({referencias_2_no_encontradas} no encontradas de {len(refs_2)} únicas)",
+                referencias_2_no_encontradas
             )
 
-            if not faltantes:
-                st.info("🎉 Todas las referencias del Archivo 1 están presentes en el Archivo 2.")
+            if not no_encontradas_cod:
+                st.info("🎉 Todas las referencias únicas del Archivo 2 se encontraron en el Archivo 1.")
 
         elif not archivo_cod_1 or not archivo_cod_2:
             st.info("👈 Sube ambos archivos para activar la comparación.")
