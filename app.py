@@ -4113,23 +4113,40 @@ else:
     elif st.session_state["seccion_activa"] == "Codificacion":
         st.markdown("<h3 style='color:#0b1d3a;'>🔢 Codificación — Comparar Referencias entre Archivos</h3>", unsafe_allow_html=True)
         st.markdown(
-            "<p style='color:#475569;'>Sube dos archivos de Excel (una sola columna de referencias, "
-            "sin encabezado, igual que en Extracción Masiva). Te muestro cuáles referencias del "
-            "<b>Archivo 1</b> NO están en el <b>Archivo 2</b>.</p>",
+            "<p style='color:#475569;'>Sube dos archivos de Excel (sin encabezado, igual que en "
+            "Extracción Masiva). Te muestro cuáles referencias del <b>Archivo 1</b> NO están en el "
+            "<b>Archivo 2</b>. El <b>Archivo 1</b> admite opcionalmente una segunda columna con el "
+            "número de registro sanitario de cada referencia — si la incluyes, el resultado te dirá "
+            "en qué registro(s) está cada referencia faltante.</p>",
             unsafe_allow_html=True
         )
 
         col_arch1, col_arch2 = st.columns(2)
         with col_arch1:
             st.markdown("**📄 Archivo 1** (el que quieres revisar)")
-            archivo_cod_1 = st.file_uploader("Sube el Archivo 1", type=["xlsx"], key="uploader_cod_1")
+            archivo_cod_1 = st.file_uploader(
+                "Sube el Archivo 1 — 1 columna (referencia) o 2 columnas (referencia + registro sanitario)",
+                type=["xlsx"], key="uploader_cod_1"
+            )
         with col_arch2:
             st.markdown("**📄 Archivo 2** (donde se busca si ya están)")
-            archivo_cod_2 = st.file_uploader("Sube el Archivo 2", type=["xlsx"], key="uploader_cod_2")
+            archivo_cod_2 = st.file_uploader(
+                "Sube el Archivo 2 — solo se usa su primera columna, tenga o no una segunda",
+                type=["xlsx"], key="uploader_cod_2"
+            )
 
         ignorar_mayusculas_cod = st.checkbox(
             "Ignorar mayúsculas/minúsculas y espacios extra al comparar (recomendado)",
             value=True, key="chk_cod_ignorar_mayus"
+        )
+        comparacion_tolerante_cod = st.checkbox(
+            "Comparación tolerante: ignorar también puntos, comas, guiones, espacios internos y "
+            "cualquier otro símbolo (ej. '110.810,' y '110-810' cuentan como la misma referencia)",
+            value=False, key="chk_cod_tolerante",
+            help="Útil cuando la misma referencia puede estar escrita con pequeñas variaciones de "
+                 "formato entre un archivo y otro. Al activarla, la comparación principal usa solo "
+                 "letras y números (sin distinguir mayúsculas) para decidir si una referencia ya "
+                 "está o no — no solo para sugerirlo aparte."
         )
 
         if archivo_cod_1 and archivo_cod_2 and st.button(
@@ -4143,26 +4160,80 @@ else:
                     st.error(f"No se pudo leer alguno de los archivos: {e}")
                     st.stop()
 
-                refs_1 = [r for r in df_cod_1[0].astype(str).str.strip().tolist() if r and r.lower() != "nan"]
+                # El Archivo 1 puede traer una 2ª columna con el número de
+                # registro sanitario de cada referencia. Se detecta su
+                # presencia real (no solo que la columna exista: a veces
+                # viene de columna pero completamente vacía, igual que puede
+                # pasar también en el Archivo 2 — en ese caso se trata igual
+                # que si solo tuviera 1 columna).
+                tiene_columna_registro = (
+                    df_cod_1.shape[1] >= 2
+                    and df_cod_1[1].astype(str).str.strip().replace("nan", "").ne("").any()
+                )
+
+                # refs_1 ahora es una lista de tuplas (referencia, registro_o_None)
+                # para conservar la fila a fila tal cual viene el archivo,
+                # incluyendo duplicados exactos cuando una referencia se repite
+                # con el mismo registro -- según se pidió, no se deduplican.
+                refs_1 = []
+                for _, fila in df_cod_1.iterrows():
+                    ref_val = str(fila[0]).strip() if pd.notna(fila[0]) else ""
+                    if not ref_val or ref_val.lower() == "nan":
+                        continue
+                    registro_val = None
+                    if tiene_columna_registro and df_cod_1.shape[1] >= 2:
+                        registro_raw = fila[1]
+                        if pd.notna(registro_raw):
+                            registro_txt = str(registro_raw).strip()
+                            if registro_txt and registro_txt.lower() != "nan":
+                                registro_val = registro_txt
+                    refs_1.append((ref_val, registro_val))
+
                 refs_2 = [r for r in df_cod_2[0].astype(str).str.strip().tolist() if r and r.lower() != "nan"]
 
-                if ignorar_mayusculas_cod:
+                # Normalización alfanumérica agresiva: quita TODO lo que no
+                # sea letra o número (puntos, comas, guiones, espacios
+                # internos, etc.) e ignora mayúsculas/minúsculas. Antes solo
+                # se usaba para sugerir "posibles coincidencias" aparte; con
+                # el modo tolerante activado, pasa a ser la clave PRINCIPAL
+                # de comparación, así una referencia con pequeñas variaciones
+                # de formato entre archivos ya cuenta como encontrada.
+                _normalizar_alfanumerico_cod = lambda r: re.sub(r'[^A-Za-z0-9]', '', r).upper()
+
+                if comparacion_tolerante_cod:
+                    _normalizar_cod = _normalizar_alfanumerico_cod
+                elif ignorar_mayusculas_cod:
                     _normalizar_cod = lambda r: r.strip().upper()
                 else:
                     _normalizar_cod = lambda r: r.strip()
 
+                # mapa_normalizado_a_original: una referencia por clave, para
+                # mostrar el "Archivo 1" con su forma original tal como antes.
+                # mapa_normalizado_a_registros: TODOS los registros asociados
+                # a esa clave, en el orden en que aparecen, sin deduplicar
+                # (si la misma referencia trae 3 veces el mismo registro, los
+                # 3 quedan en la lista, tal como se pidió).
                 mapa_normalizado_a_original = {}
-                for r in refs_1:
-                    clave = _normalizar_cod(r)
-                    mapa_normalizado_a_original.setdefault(clave, r)
+                mapa_normalizado_a_registros = {}
+                for ref_val, registro_val in refs_1:
+                    clave = _normalizar_cod(ref_val)
+                    mapa_normalizado_a_original.setdefault(clave, ref_val)
+                    if tiene_columna_registro:
+                        mapa_normalizado_a_registros.setdefault(clave, [])
+                        if registro_val:
+                            mapa_normalizado_a_registros[clave].append(registro_val)
 
                 set_2_normalizado = set(_normalizar_cod(r) for r in refs_2)
 
-                # Índice del Archivo 2 quitando TODO lo que no sea letra o número
-                # (puntos, espacios, guiones, etc.) — para sugerir posibles
-                # coincidencias cuando la referencia es casi la misma pero con
-                # un formato ligeramente distinto.
-                _normalizar_alfanumerico_cod = lambda r: re.sub(r'[^A-Za-z0-9]', '', r).upper()
+                # Índice del Archivo 2 con la normalización alfanumérica
+                # agresiva — en modo NORMAL se usa solo para sugerir "posibles
+                # coincidencias" aparte (la referencia sigue contando como
+                # faltante, pero se avisa que algo parecido sí existe). En
+                # modo TOLERANTE esta misma normalización ya es la clave
+                # principal, así que estas "posibles coincidencias" ya
+                # estarían contempladas como encontradas y no aportan nada
+                # nuevo — por eso esa columna se omite en ese modo (ver más
+                # abajo) en vez de mostrarla vacía o redundante.
                 indice_super_normalizado_2 = {}
                 for r in refs_2:
                     clave_super = _normalizar_alfanumerico_cod(r)
@@ -4173,26 +4244,43 @@ else:
                     if clave in set_2_normalizado:
                         continue
                     referencia_original = mapa_normalizado_a_original[clave]
-                    clave_super = _normalizar_alfanumerico_cod(referencia_original)
-                    posibles = sorted(set(indice_super_normalizado_2.get(clave_super, [])))
-                    filas_faltantes_cod.append({
-                        "Referencia_No_Encontrada": referencia_original,
-                        "Posibles_Coincidencias_Archivo2": ", ".join(posibles) if posibles else "-"
-                    })
+                    fila_resultado = {"Referencia_No_Encontrada": referencia_original}
+                    if not comparacion_tolerante_cod:
+                        clave_super = _normalizar_alfanumerico_cod(referencia_original)
+                        posibles = sorted(set(indice_super_normalizado_2.get(clave_super, [])))
+                        fila_resultado["Posibles_Coincidencias_Archivo2"] = ", ".join(posibles) if posibles else "-"
+                    if tiene_columna_registro:
+                        registros_de_esta_ref = mapa_normalizado_a_registros.get(clave, [])
+                        fila_resultado["Registro(s)_Sanitario(s)"] = (
+                            ", ".join(registros_de_esta_ref) if registros_de_esta_ref else "-"
+                        )
+                    filas_faltantes_cod.append(fila_resultado)
 
                 faltantes = [f["Referencia_No_Encontrada"] for f in filas_faltantes_cod]
-                total_con_posible = sum(1 for f in filas_faltantes_cod if f["Posibles_Coincidencias_Archivo2"] != "-")
+                total_con_posible = (
+                    sum(1 for f in filas_faltantes_cod if f.get("Posibles_Coincidencias_Archivo2", "-") != "-")
+                    if not comparacion_tolerante_cod else 0
+                )
 
             st.success(
                 f"✨ Archivo 1: {len(refs_1)} referencias ({len(mapa_normalizado_a_original)} únicas) · "
                 f"Archivo 2: {len(refs_2)} referencias · "
                 f"**{len(faltantes)} referencias del Archivo 1 no están en el Archivo 2**"
             )
-            if faltantes and total_con_posible:
+            if tiene_columna_registro:
+                st.info("🧾 Se detectó número de registro sanitario en el Archivo 1 — se incluye en el resultado.")
+            if comparacion_tolerante_cod:
+                st.info(
+                    "🧩 Comparación tolerante activada: referencias con puntos, comas, guiones o espacios "
+                    "distintos entre archivos ya se consideran la misma referencia (no se vuelven a "
+                    "sugerir aparte, porque ya cuentan como encontradas)."
+                )
+            elif faltantes and total_con_posible:
                 st.info(
                     f"🔎 De esas {len(faltantes)}, **{total_con_posible}** tienen una posible coincidencia "
                     "en el Archivo 2 (probablemente la misma referencia con formato distinto — un punto, "
-                    "espacio, guion, etc.). Revísalas en la columna 'Posibles_Coincidencias_Archivo2'."
+                    "espacio, guion, etc.). Revísalas en la columna 'Posibles_Coincidencias_Archivo2', o "
+                    "activa la 'Comparación tolerante' arriba para que cuenten como encontradas directamente."
                 )
 
             if faltantes:
