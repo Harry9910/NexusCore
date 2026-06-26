@@ -4327,12 +4327,20 @@ else:
             st.dataframe(df_resultado_cod, use_container_width=True, height=420)
 
             # ── RESUMEN POR REFERENCIA ──
-            # Una fila por cada referencia única del Archivo 2, con cuántas
-            # veces se encontró (filas "✅") y cuántas no ("❌" -- en la
-            # práctica siempre 0 o 1, nunca ambas a la vez, pero se deja
-            # explícito para que sea igual de claro que una tabla dinámica
-            # agrupando por esos dos estados).
+            # Una fila por cada combinación (Referencia_Archivo2, Registro)
+            # distinta -- así, si una referencia aparece en MÁS DE UN
+            # registro distinto, se ve cada uno en su propia fila con su
+            # propio conteo; y si aparece varias veces en el MISMO registro,
+            # esas repeticiones se resumen en una sola fila con el conteo
+            # (ej. 602105 - REG-A - 3 veces), en vez de 3 filas idénticas.
+            # Las referencias no encontradas (sin registro real) quedan en
+            # una sola fila con Registro_Sanitario = "-".
             resumen_por_referencia = (
+                df_resultado_cod
+                .groupby(["Referencia_Archivo2", "Registro_Sanitario"], sort=False)
+                .size()
+                .reset_index(name="Veces_en_este_Registro")
+            ) if tiene_columna_registro else (
                 df_resultado_cod
                 .assign(_es_encontrada=df_resultado_cod["Estado"].str.startswith("✅"))
                 .groupby("Referencia_Archivo2", sort=False)
@@ -4342,9 +4350,22 @@ else:
                 )
                 .reset_index()
             )
-            resumen_por_referencia["Total_Coincidencias"] = (
-                resumen_por_referencia["Veces_Encontrada"] + resumen_por_referencia["Veces_No_Encontrada"]
-            )
+            if tiene_columna_registro:
+                # Para que el orden quede agrupado por referencia (todas sus
+                # filas de registros juntas, una debajo de otra) en vez de
+                # mezcladas, se ordena explícitamente -- pandas no garantiza
+                # mantener el orden de aparición original tras un groupby.
+                orden_referencias = list(dict.fromkeys(df_resultado_cod["Referencia_Archivo2"]))
+                resumen_por_referencia["_orden"] = resumen_por_referencia["Referencia_Archivo2"].map(
+                    {ref: i for i, ref in enumerate(orden_referencias)}
+                )
+                resumen_por_referencia = (
+                    resumen_por_referencia.sort_values("_orden").drop(columns="_orden").reset_index(drop=True)
+                )
+            else:
+                resumen_por_referencia["Total_Coincidencias"] = (
+                    resumen_por_referencia["Veces_Encontrada"] + resumen_por_referencia["Veces_No_Encontrada"]
+                )
 
             # ── RESUMEN POR REGISTRO SANITARIO ──
             # Solo tiene sentido si el Archivo 1 trajo número de registro.
