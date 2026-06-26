@@ -4326,52 +4326,66 @@ else:
             st.markdown("###### Resultado: cada referencia única del Archivo 2, buscada en el Archivo 1")
             st.dataframe(df_resultado_cod, use_container_width=True, height=420)
 
-            # ── RESUMEN POR REFERENCIA ──
-            # Una fila por cada combinación (Referencia_Archivo2, Registro)
-            # distinta -- así, si una referencia aparece en MÁS DE UN
-            # registro distinto, se ve cada uno en su propia fila con su
-            # propio conteo; y si aparece varias veces en el MISMO registro,
-            # esas repeticiones se resumen en una sola fila con el conteo
-            # (ej. 602105 - REG-A - 3 veces), en vez de 3 filas idénticas.
-            # Las referencias no encontradas (sin registro real) quedan en
-            # una sola fila con Registro_Sanitario = "-".
-            resumen_por_referencia = (
-                df_resultado_cod
-                .groupby(["Referencia_Archivo2", "Registro_Sanitario"], sort=False)
-                .size()
-                .reset_index(name="Veces_en_este_Registro")
-            ) if tiene_columna_registro else (
-                df_resultado_cod
-                .assign(_es_encontrada=df_resultado_cod["Estado"].str.startswith("✅"))
-                .groupby("Referencia_Archivo2", sort=False)
-                .agg(
-                    Veces_Encontrada=("_es_encontrada", "sum"),
-                    Veces_No_Encontrada=("_es_encontrada", lambda s: (~s).sum()),
-                )
-                .reset_index()
-            )
+            # ── RESUMEN POR REFERENCIA (HORIZONTAL) ──
+            # Una sola fila por cada referencia única del Archivo 2, con una
+            # columna "Registro_1", "Registro_2", "Registro_3"... por cada
+            # vez que esa referencia se encontró en el Archivo 1 -- así, si
+            # una referencia aparece repetida (esté en el mismo registro o
+            # en registros distintos), TODAS sus coincidencias quedan
+            # visibles una junto a la otra en la misma fila, en vez de
+            # tener que sumarlas mentalmente a partir de un conteo. Si dos
+            # repeticiones caen en el mismo registro, ese mismo registro
+            # simplemente se repite en columnas distintas (ej. Registro_1 =
+            # Registro_2 = Registro_3 si las 3 son del mismo registro) --
+            # así queda igual de visible que si fueran de registros
+            # distintos, sin que el lector tenga que adivinar nada.
             if tiene_columna_registro:
-                # Para que el orden quede agrupado por referencia (todas sus
-                # filas de registros juntas, una debajo de otra) en vez de
-                # mezcladas, se ordena explícitamente -- pandas no garantiza
-                # mantener el orden de aparición original tras un groupby.
-                orden_referencias = list(dict.fromkeys(df_resultado_cod["Referencia_Archivo2"]))
-                resumen_por_referencia["_orden"] = resumen_por_referencia["Referencia_Archivo2"].map(
-                    {ref: i for i, ref in enumerate(orden_referencias)}
+                # Se usa groupby (vectorizado) en vez de recorrer fila por
+                # fila con iterrows -- con archivos grandes (decenas de
+                # miles de filas de resultado) esto es varias veces más
+                # rápido, sin cambiar el resultado.
+                registros_por_referencia = (
+                    df_resultado_cod.groupby("Referencia_Archivo2", sort=False)["Registro_Sanitario"]
+                    .apply(list)
+                    .to_dict()
                 )
-                resumen_por_referencia = (
-                    resumen_por_referencia.sort_values("_orden").drop(columns="_orden").reset_index(drop=True)
-                )
+
+                max_registros = max((len(v) for v in registros_por_referencia.values()), default=1)
+
+                filas_resumen_horizontal = []
+                for ref, lista_registros in registros_por_referencia.items():
+                    fila_resumen = {"Referencia_Archivo2": ref, "Total_Coincidencias": len(lista_registros)}
+                    for i in range(max_registros):
+                        fila_resumen[f"Registro_{i+1}"] = lista_registros[i] if i < len(lista_registros) else ""
+                    filas_resumen_horizontal.append(fila_resumen)
+
+                resumen_por_referencia = pd.DataFrame(filas_resumen_horizontal)
             else:
+                resumen_por_referencia = (
+                    df_resultado_cod
+                    .assign(_es_encontrada=df_resultado_cod["Estado"].str.startswith("✅"))
+                    .groupby("Referencia_Archivo2", sort=False)
+                    .agg(
+                        Veces_Encontrada=("_es_encontrada", "sum"),
+                        Veces_No_Encontrada=("_es_encontrada", lambda s: (~s).sum()),
+                    )
+                    .reset_index()
+                )
                 resumen_por_referencia["Total_Coincidencias"] = (
                     resumen_por_referencia["Veces_Encontrada"] + resumen_por_referencia["Veces_No_Encontrada"]
                 )
 
             # ── RESUMEN POR REGISTRO SANITARIO ──
             # Solo tiene sentido si el Archivo 1 trajo número de registro.
-            # Una fila por cada registro sanitario distinto, con cuántas
-            # referencias ÚNICAS del Archivo 2 cayeron en él (no cuenta
-            # repetidos de la misma referencia dos veces).
+            # Una fila por cada registro sanitario distinto:
+            # - "Cantidad_de_Referencias": a cuántas referencias DISTINTAS
+            #   del Archivo 2 corresponde ese registro (si una misma
+            #   referencia aparece repetida 3 veces en ese registro, cuenta
+            #   como 1 sola referencia aquí, no como 3).
+            # - "Total_de_Coincidencias": cuántas veces en total aparece ese
+            #   registro en el resultado, sumando TODAS las repeticiones de
+            #   todas las referencias (si una referencia aparece 3 veces en
+            #   ese registro, aquí sí cuentan las 3).
             resumen_por_registro = None
             if tiene_columna_registro:
                 filas_con_registro = df_resultado_cod[df_resultado_cod["Estado"].str.startswith("✅")]
@@ -4379,9 +4393,9 @@ else:
                     resumen_por_registro = (
                         filas_con_registro
                         .groupby("Registro_Sanitario", sort=False)["Referencia_Archivo2"]
-                        .agg(Referencias_Distintas="nunique", Total_Coincidencias="count")
+                        .agg(Cantidad_de_Referencias="nunique", Total_de_Coincidencias="count")
                         .reset_index()
-                        .sort_values("Referencias_Distintas", ascending=False)
+                        .sort_values("Cantidad_de_Referencias", ascending=False)
                     )
 
             output_cod_completo = io.BytesIO()
