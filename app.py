@@ -4176,19 +4176,31 @@ else:
                 # agrupa ni deduplica: si una referencia aparece 3 veces en
                 # el Archivo 1 (con el mismo registro o con registros
                 # distintos), las 3 quedan disponibles para encontrarse.
-                refs_1 = []
-                for _, fila in df_cod_1.iterrows():
-                    ref_val = str(fila[0]).strip() if pd.notna(fila[0]) else ""
-                    if not ref_val or ref_val.lower() == "nan":
-                        continue
-                    registro_val = None
-                    if tiene_columna_registro and df_cod_1.shape[1] >= 2:
-                        registro_raw = fila[1]
-                        if pd.notna(registro_raw):
-                            registro_txt = str(registro_raw).strip()
-                            if registro_txt and registro_txt.lower() != "nan":
-                                registro_val = registro_txt
-                    refs_1.append((ref_val, registro_val))
+                #
+                # Construcción VECTORIZADA (con operaciones de pandas sobre
+                # toda la columna de una vez) en vez de iterrows -- con
+                # archivos grandes (decenas/cientos de miles de filas),
+                # iterrows recorre fila por fila desde Python puro y se
+                # vuelve uno de los pasos más lentos de toda la comparación
+                # (varios segundos solo en este paso); la versión
+                # vectorizada hace el mismo filtrado en una fracción del
+                # tiempo, sin cambiar qué filas se conservan o descartan.
+                col_ref_1 = df_cod_1[0].astype(str).str.strip()
+                mascara_ref_valida = col_ref_1.ne("") & col_ref_1.str.lower().ne("nan")
+
+                if tiene_columna_registro and df_cod_1.shape[1] >= 2:
+                    col_registro_1 = df_cod_1[1].astype(str).str.strip()
+                    col_registro_1 = col_registro_1.where(
+                        df_cod_1[1].notna() & col_registro_1.ne("") & col_registro_1.str.lower().ne("nan"),
+                        other=None
+                    )
+                else:
+                    col_registro_1 = pd.Series([None] * len(df_cod_1))
+
+                refs_1 = list(zip(
+                    col_ref_1[mascara_ref_valida],
+                    col_registro_1[mascara_ref_valida]
+                ))
 
                 # Normalización alfanumérica agresiva: quita TODO lo que no
                 # sea letra o número (puntos, comas, guiones, espacios
@@ -4326,86 +4338,121 @@ else:
             st.markdown("###### Resultado: cada referencia única del Archivo 2, buscada en el Archivo 1")
             st.dataframe(df_resultado_cod, use_container_width=True, height=420)
 
-            # ── RESUMEN POR REFERENCIA (HORIZONTAL) ──
-            # Una sola fila por cada referencia única del Archivo 2, con una
-            # columna "Registro_1", "Registro_2", "Registro_3"... por cada
-            # vez que esa referencia se encontró en el Archivo 1 -- así, si
-            # una referencia aparece repetida (esté en el mismo registro o
-            # en registros distintos), TODAS sus coincidencias quedan
-            # visibles una junto a la otra en la misma fila, en vez de
-            # tener que sumarlas mentalmente a partir de un conteo. Si dos
-            # repeticiones caen en el mismo registro, ese mismo registro
-            # simplemente se repite en columnas distintas (ej. Registro_1 =
-            # Registro_2 = Registro_3 si las 3 son del mismo registro) --
-            # así queda igual de visible que si fueran de registros
-            # distintos, sin que el lector tenga que adivinar nada.
-            if tiene_columna_registro:
-                # Se usa groupby (vectorizado) en vez de recorrer fila por
-                # fila con iterrows -- con archivos grandes (decenas de
-                # miles de filas de resultado) esto es varias veces más
-                # rápido, sin cambiar el resultado.
-                registros_por_referencia = (
-                    df_resultado_cod.groupby("Referencia_Archivo2", sort=False)["Registro_Sanitario"]
-                    .apply(list)
-                    .to_dict()
-                )
-
-                max_registros = max((len(v) for v in registros_por_referencia.values()), default=1)
-
-                filas_resumen_horizontal = []
-                for ref, lista_registros in registros_por_referencia.items():
-                    fila_resumen = {"Referencia_Archivo2": ref, "Total_Coincidencias": len(lista_registros)}
-                    for i in range(max_registros):
-                        fila_resumen[f"Registro_{i+1}"] = lista_registros[i] if i < len(lista_registros) else ""
-                    filas_resumen_horizontal.append(fila_resumen)
-
-                resumen_por_referencia = pd.DataFrame(filas_resumen_horizontal)
-            else:
-                resumen_por_referencia = (
-                    df_resultado_cod
-                    .assign(_es_encontrada=df_resultado_cod["Estado"].str.startswith("✅"))
-                    .groupby("Referencia_Archivo2", sort=False)
-                    .agg(
-                        Veces_Encontrada=("_es_encontrada", "sum"),
-                        Veces_No_Encontrada=("_es_encontrada", lambda s: (~s).sum()),
+            with st.spinner("Preparando resúmenes y generando el Excel (puede tardar unos segundos con archivos grandes)..."):
+                # ── RESUMEN POR REFERENCIA (HORIZONTAL) ──
+                # Una sola fila por cada referencia única del Archivo 2, con una
+                # columna "Registro_1", "Registro_2", "Registro_3"... por cada
+                # vez que esa referencia se encontró en el Archivo 1 -- así, si
+                # una referencia aparece repetida (esté en el mismo registro o
+                # en registros distintos), TODAS sus coincidencias quedan
+                # visibles una junto a la otra en la misma fila, en vez de
+                # tener que sumarlas mentalmente a partir de un conteo. Si dos
+                # repeticiones caen en el mismo registro, ese mismo registro
+                # simplemente se repite en columnas distintas (ej. Registro_1 =
+                # Registro_2 = Registro_3 si las 3 son del mismo registro) --
+                # así queda igual de visible que si fueran de registros
+                # distintos, sin que el lector tenga que adivinar nada.
+                #
+                # LÍMITE DE COLUMNAS: si UNA SOLA referencia tiene cientos o
+                # miles de coincidencias (ej. un código muy genérico repetido
+                # muchísimas veces en el Archivo 1), generar una columna por
+                # cada una obligaría a TODAS las demás filas a cargar esas
+                # mismas columnas, casi siempre vacías -- con archivos grandes
+                # esto puede generar miles de columnas y un archivo tan pesado
+                # que el proceso se cuelga o tarda varios minutos. Por eso se
+                # limita a MAX_COLUMNAS_REGISTRO_COD columnas; si a alguna
+                # referencia le faltan coincidencias por mostrar, la última
+                # columna ("Y_X_mas") indica cuántas quedaron fuera -- el
+                # detalle completo de esos casos siempre se puede consultar en
+                # la hoja "Resultado completo", que no tiene este límite.
+                if tiene_columna_registro:
+                    # Se usa groupby (vectorizado) en vez de recorrer fila por
+                    # fila con iterrows -- con archivos grandes (decenas de
+                    # miles de filas de resultado) esto es varias veces más
+                    # rápido, sin cambiar el resultado.
+                    registros_por_referencia = (
+                        df_resultado_cod.groupby("Referencia_Archivo2", sort=False)["Registro_Sanitario"]
+                        .apply(list)
+                        .to_dict()
                     )
-                    .reset_index()
-                )
-                resumen_por_referencia["Total_Coincidencias"] = (
-                    resumen_por_referencia["Veces_Encontrada"] + resumen_por_referencia["Veces_No_Encontrada"]
-                )
 
-            # ── RESUMEN POR REGISTRO SANITARIO ──
-            # Solo tiene sentido si el Archivo 1 trajo número de registro.
-            # Una fila por cada registro sanitario distinto:
-            # - "Cantidad_de_Referencias": a cuántas referencias DISTINTAS
-            #   del Archivo 2 corresponde ese registro (si una misma
-            #   referencia aparece repetida 3 veces en ese registro, cuenta
-            #   como 1 sola referencia aquí, no como 3).
-            # - "Total_de_Coincidencias": cuántas veces en total aparece ese
-            #   registro en el resultado, sumando TODAS las repeticiones de
-            #   todas las referencias (si una referencia aparece 3 veces en
-            #   ese registro, aquí sí cuentan las 3).
-            resumen_por_registro = None
-            if tiene_columna_registro:
-                filas_con_registro = df_resultado_cod[df_resultado_cod["Estado"].str.startswith("✅")]
-                if not filas_con_registro.empty:
-                    resumen_por_registro = (
-                        filas_con_registro
-                        .groupby("Registro_Sanitario", sort=False)["Referencia_Archivo2"]
-                        .agg(Cantidad_de_Referencias="nunique", Total_de_Coincidencias="count")
+                    MAX_COLUMNAS_REGISTRO_COD = 10
+                    max_registros_reales = max((len(v) for v in registros_por_referencia.values()), default=1)
+                    columnas_a_generar = min(max_registros_reales, MAX_COLUMNAS_REGISTRO_COD)
+                    hay_referencias_recortadas = max_registros_reales > MAX_COLUMNAS_REGISTRO_COD
+
+                    filas_resumen_horizontal = []
+                    for ref, lista_registros in registros_por_referencia.items():
+                        fila_resumen = {"Referencia_Archivo2": ref, "Total_Coincidencias": len(lista_registros)}
+                        for i in range(columnas_a_generar):
+                            fila_resumen[f"Registro_{i+1}"] = lista_registros[i] if i < len(lista_registros) else ""
+                        if hay_referencias_recortadas:
+                            sobrantes = max(0, len(lista_registros) - columnas_a_generar)
+                            fila_resumen["Y_X_mas"] = f"+{sobrantes} más" if sobrantes > 0 else ""
+                        filas_resumen_horizontal.append(fila_resumen)
+
+                    resumen_por_referencia = pd.DataFrame(filas_resumen_horizontal)
+                else:
+                    resumen_por_referencia = (
+                        df_resultado_cod
+                        .assign(_es_encontrada=df_resultado_cod["Estado"].str.startswith("✅"))
+                        .groupby("Referencia_Archivo2", sort=False)
+                        .agg(
+                            Veces_Encontrada=("_es_encontrada", "sum"),
+                            Veces_No_Encontrada=("_es_encontrada", lambda s: (~s).sum()),
+                        )
                         .reset_index()
-                        .sort_values("Cantidad_de_Referencias", ascending=False)
+                    )
+                    resumen_por_referencia["Total_Coincidencias"] = (
+                        resumen_por_referencia["Veces_Encontrada"] + resumen_por_referencia["Veces_No_Encontrada"]
                     )
 
-            output_cod_completo = io.BytesIO()
-            with pd.ExcelWriter(output_cod_completo, engine='openpyxl') as writer:
-                df_resultado_cod.to_excel(writer, sheet_name="Resultado completo", index=False)
-                if no_encontradas_cod:
-                    pd.DataFrame(no_encontradas_cod).to_excel(writer, sheet_name="Solo no encontradas", index=False)
-                resumen_por_referencia.to_excel(writer, sheet_name="Resumen por Referencia", index=False)
-                if resumen_por_registro is not None:
-                    resumen_por_registro.to_excel(writer, sheet_name="Resumen por Registro", index=False)
+                # ── RESUMEN POR REGISTRO SANITARIO ──
+                # Solo tiene sentido si el Archivo 1 trajo número de registro.
+                # Una fila por cada registro sanitario distinto:
+                # - "Cantidad_de_Referencias": a cuántas referencias DISTINTAS
+                #   del Archivo 2 corresponde ese registro (si una misma
+                #   referencia aparece repetida 3 veces en ese registro, cuenta
+                #   como 1 sola referencia aquí, no como 3).
+                # - "Total_de_Coincidencias": cuántas veces en total aparece ese
+                #   registro en el resultado, sumando TODAS las repeticiones de
+                #   todas las referencias (si una referencia aparece 3 veces en
+                #   ese registro, aquí sí cuentan las 3).
+                resumen_por_registro = None
+                if tiene_columna_registro:
+                    filas_con_registro = df_resultado_cod[df_resultado_cod["Estado"].str.startswith("✅")]
+                    if not filas_con_registro.empty:
+                        resumen_por_registro = (
+                            filas_con_registro
+                            .groupby("Registro_Sanitario", sort=False)["Referencia_Archivo2"]
+                            .agg(Cantidad_de_Referencias="nunique", Total_de_Coincidencias="count")
+                            .reset_index()
+                            .sort_values("Cantidad_de_Referencias", ascending=False)
+                        )
+
+                # Para archivos grandes (decenas de miles de filas), openpyxl
+                # puede tardar bastante en escribir el Excel final -- xlsxwriter
+                # con 'constant_memory' es notablemente más rápido en este caso
+                # concreto. Se intenta usar xlsxwriter si está instalado en el
+                # entorno; si no lo está (por ejemplo, en una instalación que
+                # solo tiene openpyxl), se cae de vuelta a openpyxl sin que el
+                # usuario vea ningún error -- solo será un poco más lento.
+                try:
+                    import xlsxwriter  # noqa: F401
+                    motor_excel_cod = "xlsxwriter"
+                    kwargs_motor_cod = {"engine_kwargs": {"options": {"constant_memory": True}}}
+                except ImportError:
+                    motor_excel_cod = "openpyxl"
+                    kwargs_motor_cod = {}
+
+                output_cod_completo = io.BytesIO()
+                with pd.ExcelWriter(output_cod_completo, engine=motor_excel_cod, **kwargs_motor_cod) as writer:
+                    df_resultado_cod.to_excel(writer, sheet_name="Resultado completo", index=False)
+                    if no_encontradas_cod:
+                        pd.DataFrame(no_encontradas_cod).to_excel(writer, sheet_name="Solo no encontradas", index=False)
+                    resumen_por_referencia.to_excel(writer, sheet_name="Resumen por Referencia", index=False)
+                    if resumen_por_registro is not None:
+                        resumen_por_registro.to_excel(writer, sheet_name="Resumen por Registro", index=False)
             st.download_button(
                 label="📥 Descargar resultado en Excel (incluye resúmenes ya calculados)",
                 data=output_cod_completo.getvalue(),
