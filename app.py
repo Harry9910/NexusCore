@@ -4190,12 +4190,6 @@ else:
                                 registro_val = registro_txt
                     refs_1.append((ref_val, registro_val))
 
-                # refs_2: referencias ÚNICAS del Archivo 2 (se pidió una fila
-                # de resultado por cada referencia única del Archivo 2,
-                # aunque esa referencia esté repetida varias veces ahí).
-                refs_2_todas = [r for r in df_cod_2[0].astype(str).str.strip().tolist() if r and r.lower() != "nan"]
-                refs_2 = list(dict.fromkeys(refs_2_todas))  # únicas, conservando el orden de aparición
-
                 # Normalización alfanumérica agresiva: quita TODO lo que no
                 # sea letra o número (puntos, comas, guiones, espacios
                 # internos, etc.) e ignora mayúsculas/minúsculas. Con el
@@ -4210,6 +4204,27 @@ else:
                     _normalizar_cod = lambda r: r.strip().upper()
                 else:
                     _normalizar_cod = lambda r: r.strip()
+
+                # refs_2: referencias ÚNICAS del Archivo 2 (se pidió una fila
+                # de resultado por cada referencia única del Archivo 2,
+                # aunque esa referencia esté repetida varias veces ahí).
+                # IMPORTANTE: la "unicidad" se calcula con la MISMA clave de
+                # normalización activa (_normalizar_cod) -- no por el texto
+                # literal. Si no se hiciera así, en modo tolerante (o con
+                # "ignorar mayúsculas") dos variantes de la misma referencia
+                # en el Archivo 2 (ej. '634.611' y '634611') se tratarían
+                # como dos referencias "únicas" distintas, duplicando sin
+                # querer la cantidad de coincidencias reportadas más abajo
+                # (cada una generaría su propio grupo de filas al buscarla
+                # en el Archivo 1, multiplicando el conteo real).
+                refs_2_todas = [r for r in df_cod_2[0].astype(str).str.strip().tolist() if r and r.lower() != "nan"]
+                refs_2 = []
+                claves_2_vistas = set()
+                for r in refs_2_todas:
+                    clave_r = _normalizar_cod(r)
+                    if clave_r not in claves_2_vistas:
+                        claves_2_vistas.add(clave_r)
+                        refs_2.append(r)  # se conserva la PRIMERA forma en que aparece, para mostrarla
 
                 # Índice del Archivo 1 con la clave de comparación activa:
                 # clave -> lista de registros (en el orden en que aparecen,
@@ -4311,18 +4326,63 @@ else:
             st.markdown("###### Resultado: cada referencia única del Archivo 2, buscada en el Archivo 1")
             st.dataframe(df_resultado_cod, use_container_width=True, height=420)
 
+            # ── RESUMEN POR REFERENCIA ──
+            # Una fila por cada referencia única del Archivo 2, con cuántas
+            # veces se encontró (filas "✅") y cuántas no ("❌" -- en la
+            # práctica siempre 0 o 1, nunca ambas a la vez, pero se deja
+            # explícito para que sea igual de claro que una tabla dinámica
+            # agrupando por esos dos estados).
+            resumen_por_referencia = (
+                df_resultado_cod
+                .assign(_es_encontrada=df_resultado_cod["Estado"].str.startswith("✅"))
+                .groupby("Referencia_Archivo2", sort=False)
+                .agg(
+                    Veces_Encontrada=("_es_encontrada", "sum"),
+                    Veces_No_Encontrada=("_es_encontrada", lambda s: (~s).sum()),
+                )
+                .reset_index()
+            )
+            resumen_por_referencia["Total_Coincidencias"] = (
+                resumen_por_referencia["Veces_Encontrada"] + resumen_por_referencia["Veces_No_Encontrada"]
+            )
+
+            # ── RESUMEN POR REGISTRO SANITARIO ──
+            # Solo tiene sentido si el Archivo 1 trajo número de registro.
+            # Una fila por cada registro sanitario distinto, con cuántas
+            # referencias ÚNICAS del Archivo 2 cayeron en él (no cuenta
+            # repetidos de la misma referencia dos veces).
+            resumen_por_registro = None
+            if tiene_columna_registro:
+                filas_con_registro = df_resultado_cod[df_resultado_cod["Estado"].str.startswith("✅")]
+                if not filas_con_registro.empty:
+                    resumen_por_registro = (
+                        filas_con_registro
+                        .groupby("Registro_Sanitario", sort=False)["Referencia_Archivo2"]
+                        .agg(Referencias_Distintas="nunique", Total_Coincidencias="count")
+                        .reset_index()
+                        .sort_values("Referencias_Distintas", ascending=False)
+                    )
+
             output_cod_completo = io.BytesIO()
             with pd.ExcelWriter(output_cod_completo, engine='openpyxl') as writer:
                 df_resultado_cod.to_excel(writer, sheet_name="Resultado completo", index=False)
                 if no_encontradas_cod:
                     pd.DataFrame(no_encontradas_cod).to_excel(writer, sheet_name="Solo no encontradas", index=False)
+                resumen_por_referencia.to_excel(writer, sheet_name="Resumen por Referencia", index=False)
+                if resumen_por_registro is not None:
+                    resumen_por_registro.to_excel(writer, sheet_name="Resumen por Registro", index=False)
             st.download_button(
-                label="📥 Descargar resultado en Excel (incluye hoja 'Solo no encontradas')",
+                label="📥 Descargar resultado en Excel (incluye resúmenes ya calculados)",
                 data=output_cod_completo.getvalue(),
                 file_name="codificacion_referencias.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 use_container_width=True,
                 key="dl_cod_completo"
+            )
+            st.caption(
+                "El Excel descargado incluye las hojas 'Resumen por Referencia' y "
+                + ("'Resumen por Registro' " if resumen_por_registro is not None else "")
+                + "ya calculadas, para que no tengas que armar una tabla dinámica aparte."
             )
 
             registrar_log(
