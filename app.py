@@ -2142,6 +2142,20 @@ def _extraer_todo_del_detalle(driver):
             if ag and agencia == "No encontrado":
                 agencia = ag
 
+    # Referencia/número de catálogo que Eudamed tiene registrado para este
+    # resultado específico. Se usa para detectar variantes: al buscar
+    # "CLS2525" pueden salir varios resultados cuya referencia real es
+    # "CLS2525", "CLS2525B", "CLS2525C", etc. -- distintos empaques/tamaños
+    # del mismo producto base, no duplicados. Vive en la misma pestaña que
+    # el código UDI-DI (UDI-DI details / Device details), así que ya
+    # deberíamos estar ahí si se navegó antes.
+    referencia_catalogo = "No encontrado"
+    for etiqueta in ["Reference / Catalogue number", "Reference/Catalogue number", "Catalogue number", "Reference number"]:
+        val = _obtener_valor_celda_detalle(driver, etiqueta)
+        if val != "No encontrado":
+            referencia_catalogo = val
+            break
+
     # DIAGNÓSTICO: si después de todos los intentos (vista principal +
     # pestaña "Basic UDI-DI") todavía no se encuentran, se captura un
     # fragmento del texto crudo de la página actual. Esto NO se descarta:
@@ -2162,7 +2176,25 @@ def _extraer_todo_del_detalle(driver):
         except Exception:
             texto_diagnostico = None
 
-    return codigo_udi, agencia, nombre, fabricante, texto_diagnostico
+    return codigo_udi, agencia, nombre, fabricante, texto_diagnostico, referencia_catalogo
+
+
+def _nota_variacion_referencia(referencia_buscada, referencia_encontrada):
+    """Compara la referencia que se buscó contra el 'Reference / Catalogue
+    number' real que Eudamed tiene para ese resultado. Si no coinciden
+    exactamente (p.ej. buscaste 'CLS2525' y Eudamed muestra 'CLS2525B'),
+    devuelve una nota para que el usuario revise si es una variante
+    relacionada (mismo producto, distinto empaque/tamaño) o si no aplica.
+    Devuelve '' si coinciden exactamente o si no se pudo leer la referencia
+    de Eudamed (no hay suficiente información para comparar)."""
+    if referencia_encontrada in ("No encontrado", "", None):
+        return ""
+    ref_buscada_norm = str(referencia_buscada).strip().upper()
+    ref_encontrada_norm = str(referencia_encontrada).strip().upper()
+    if ref_buscada_norm == ref_encontrada_norm:
+        return ""
+    return (f"⚠ Posible variación: buscaste '{referencia_buscada}', Eudamed muestra "
+            f"'{referencia_encontrada}' — revisar si aplica")
 
 
 def _procesar_referencia_eudamed(driver, referencia, primera_vez, limite_resultados=LIMITE_RESULTADOS_POR_REFERENCIA_EUDAMED):
@@ -2216,7 +2248,7 @@ def _procesar_referencia_eudamed(driver, referencia, primera_vez, limite_resulta
             _aceptar_cookies_eudamed(driver, espera=2)
             time.sleep(0.35)
 
-            codigo_udi, agencia, nombre_dispositivo, fabricante, texto_diagnostico = _extraer_todo_del_detalle(driver)
+            codigo_udi, agencia, nombre_dispositivo, fabricante, texto_diagnostico, referencia_catalogo = _extraer_todo_del_detalle(driver)
 
             fila_eudamed = {
                 "Referencia_Original": referencia,
@@ -2224,7 +2256,16 @@ def _procesar_referencia_eudamed(driver, referencia, primera_vez, limite_resulta
                 "Agencia_Emisora":     agencia,
                 "Nombre_Dispositivo":  nombre_dispositivo,
                 "Fabricante":          fabricante,
+                "Referencia_Eudamed":  referencia_catalogo,
             }
+            # Marca cuando la referencia que Eudamed tiene registrada no
+            # coincide exactamente con lo que se buscó (p.ej. CLS2525 vs
+            # CLS2525B) -- puede ser una variante relacionada (mismo
+            # producto, otro empaque/tamaño) o puede no aplicar; queda a
+            # criterio de quien revisa el Excel.
+            nota_variacion = _nota_variacion_referencia(referencia, referencia_catalogo)
+            if nota_variacion:
+                fila_eudamed["Nota_Revision"] = nota_variacion
             # Columna opcional: solo aparece cuando codigo_udi/agencia
             # siguieron sin encontrarse después de todos los intentos. Si
             # esto sigue pasando tras el fix, este texto dice exactamente
@@ -2270,6 +2311,27 @@ def _procesar_referencia_eudamed(driver, referencia, primera_vez, limite_resulta
             "Nombre_Dispositivo":  "Sube el límite en 'Configuración' si necesitas todos",
             "Fabricante":          "",
         })
+
+    # Si dentro de esta misma búsqueda salió la MISMA referencia de Eudamed
+    # repetida en más de una fila pero con Codigo_UDI_DI distintos entre
+    # sí, es una señal de que algo no cuadra (¿versión duplicada?, ¿error
+    # de lectura?) y conviene que el usuario lo revise a mano.
+    referencias_vistas = {}
+    for fila in filas_resultado:
+        ref_eu = fila.get("Referencia_Eudamed")
+        cod = fila.get("Codigo_UDI_DI")
+        if ref_eu and ref_eu != "No encontrado" and cod:
+            referencias_vistas.setdefault(ref_eu, set()).add(cod)
+
+    for fila in filas_resultado:
+        ref_eu = fila.get("Referencia_Eudamed")
+        if ref_eu and len(referencias_vistas.get(ref_eu, set())) > 1:
+            nota_extra = (f"⚠ La referencia '{ref_eu}' aparece repetida en esta búsqueda "
+                          f"con distintos Codigo_UDI_DI — revisar")
+            if fila.get("Nota_Revision"):
+                fila["Nota_Revision"] += " | " + nota_extra
+            else:
+                fila["Nota_Revision"] = nota_extra
 
     return filas_resultado
 
