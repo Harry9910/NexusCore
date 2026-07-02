@@ -2027,10 +2027,34 @@ def _ir_a_seccion_eudamed_rapido(driver, nombre_seccion):
 
 
 def _extraer_todo_del_detalle(driver):
-    codigo_udi = _obtener_valor_celda_detalle(driver, "UDI-DI code")
-    agencia    = _obtener_valor_celda_detalle(driver, "Issuing entity")
+    # Campo confirmado (julio 2026, vía captura de Debug_Texto_Detalle):
+    # "UDI-DI code / Issuing entity", con valor combinado "CODIGO / AGENCIA"
+    # (p.ej. "16944425861857 / GS1"). Se intenta primero en la vista
+    # principal por si ya está visible ahí.
+    codigo_udi = "No encontrado"
+    agencia    = "No encontrado"
     nombre     = "No encontrado"
     fabricante = "No encontrado"
+
+    def _intentar_campo_combinado():
+        """Busca 'UDI-DI code / Issuing entity' y, si no aparece (registros
+        migrados de MDD que a veces solo tienen 'EUDAMED DI code / Issuing
+        entity'), esa variante como respaldo. Devuelve (codigo, agencia) o
+        (None, None) si no se encontró ninguna."""
+        for etiqueta_combinada in ["UDI-DI code / Issuing entity", "EUDAMED DI code / Issuing entity"]:
+            combinado = _obtener_valor_celda_detalle(driver, etiqueta_combinada)
+            if combinado != "No encontrado" and "/" in combinado:
+                partes = [p.strip() for p in combinado.split("/")]
+                return partes[0], partes[-1]
+            elif combinado != "No encontrado":
+                return combinado, None
+        return None, None
+
+    cod, ag = _intentar_campo_combinado()
+    if cod:
+        codigo_udi = cod
+    if ag:
+        agencia = ag
 
     for etiqueta in ["Device name", "Trade/proprietary name", "Trade name",
                      "Commercial name", "Device trade name", "Name"]:
@@ -2046,25 +2070,28 @@ def _extraer_todo_del_detalle(driver):
             fabricante = val
             break
 
-    # UDI-DI code e Issuing entity (y a veces también el nombre) viven en la
-    # pestaña "Basic UDI-DI" del detalle, no siempre en la vista principal.
-    # ANTES solo se navegaba a esa pestaña si 'nombre' no se encontraba,
-    # dejando codigo_udi/agencia SIN reintentar ahí -- por eso salían
-    # sistemáticamente "No encontrado" incluso cuando nombre/fabricante sí
-    # se encontraban en la vista principal (justo el patrón que se ve en
-    # los resultados: Nombre_Dispositivo y Fabricante correctos, pero
-    # Codigo_UDI_DI y Agencia_Emisora siempre vacíos).
+    # El campo real vive en la pestaña "UDI-DI details" (dispositivos MDR
+    # estándar) -- confirmado por captura de pantalla del usuario en julio
+    # 2026. Registros migrados de MDD (p.ej. System/Procedure Packs) usan en
+    # cambio "EUDAMED DI details" o "Basic UDI-DI details". Se prueban en
+    # orden hasta que una navegación funcione.
     if codigo_udi == "No encontrado" or agencia == "No encontrado" or nombre == "No encontrado":
-        try:
-            # La pestaña se llamaba "Basic UDI-DI" en versiones anteriores de
-            # Eudamed; la UI actual (confirmado vía Debug_Texto_Detalle en
-            # julio 2026) la renombró a "EUDAMED DI details". Se intentan
-            # ambos nombres por si Eudamed vuelve a cambiarlo o hay variantes
-            # regionales de idioma.
+        navego = False
+        for nombre_pestaña in ["UDI-DI details", "Basic UDI-DI details", "EUDAMED DI details", "Basic UDI-DI"]:
             try:
-                _ir_a_seccion_eudamed_rapido(driver, "EUDAMED DI details")
+                _ir_a_seccion_eudamed_rapido(driver, nombre_pestaña)
+                navego = True
+                break
             except Exception:
-                _ir_a_seccion_eudamed_rapido(driver, "Basic UDI-DI")
+                continue
+
+        if navego:
+            if codigo_udi == "No encontrado" or agencia == "No encontrado":
+                cod, ag = _intentar_campo_combinado()
+                if cod and codigo_udi == "No encontrado":
+                    codigo_udi = cod
+                if ag and agencia == "No encontrado":
+                    agencia = ag
 
             if codigo_udi == "No encontrado":
                 for etiqueta in ["UDI-DI code", "Basic UDI-DI", "UDI-DI", "Primary DI", "Basic UDI-DI code",
@@ -2087,19 +2114,19 @@ def _extraer_todo_del_detalle(driver):
                     if val != "No encontrado":
                         nombre = val
                         break
-        except Exception:
-            pass
 
     if fabricante == "No encontrado":
-        try:
-            _ir_a_seccion_eudamed_rapido(driver, "Manufacturer")
-            for etiqueta in ["Organisation name", "Manufacturer name", "Company name", "Name"]:
-                val = _obtener_valor_celda_detalle(driver, etiqueta)
-                if val != "No encontrado" and val != nombre:
-                    fabricante = val
-                    break
-        except Exception:
-            pass
+        for nombre_pestaña in ["Manufacturer details", "Manufacturer"]:
+            try:
+                _ir_a_seccion_eudamed_rapido(driver, nombre_pestaña)
+                for etiqueta in ["Organisation name", "Manufacturer name", "Company name", "Name"]:
+                    val = _obtener_valor_celda_detalle(driver, etiqueta)
+                    if val != "No encontrado" and val != nombre:
+                        fabricante = val
+                        break
+                break
+            except Exception:
+                continue
 
     if agencia == "No encontrado":
         for etiqueta in ["Issuing entity code", "Issuing Agency", "Issuing Entity"]:
@@ -2109,14 +2136,11 @@ def _extraer_todo_del_detalle(driver):
                 break
 
     if codigo_udi == "No encontrado":
-        combinado = _obtener_valor_celda_detalle(driver, "UDI-DI code / Issuing entity")
-        if combinado != "No encontrado" and "/" in combinado:
-            partes = [p.strip() for p in combinado.split("/")]
-            codigo_udi = partes[0]
-            if agencia == "No encontrado" and len(partes) > 1:
-                agencia = partes[-1]
-        elif combinado != "No encontrado":
-            codigo_udi = combinado
+        cod, ag = _intentar_campo_combinado()
+        if cod:
+            codigo_udi = cod
+            if ag and agencia == "No encontrado":
+                agencia = ag
 
     # DIAGNÓSTICO: si después de todos los intentos (vista principal +
     # pestaña "Basic UDI-DI") todavía no se encuentran, se captura un
@@ -2129,11 +2153,12 @@ def _extraer_todo_del_detalle(driver):
         try:
             texto_crudo = driver.find_element(By.TAG_NAME, "body").text
             texto_limpio = " ".join(texto_crudo.split())
-            # Antes se cortaba en 600 caracteres, pero ese espacio se
-            # consumía casi todo en el banner de cookies y el menú de
-            # navegación de Eudamed, sin llegar al contenido real de la
-            # tabla de detalle. Se amplía para capturar esa parte.
-            texto_diagnostico = texto_limpio[:3000]
+            # Se amplía de nuevo: la sección "Device details" es larga y el
+            # campo real "UDI-DI code / Issuing entity" (con la agencia tipo
+            # GS1/HIBCC/ICCBBA) vive más abajo, después de campos como
+            # "Storage and handling conditions" que ya agotaban los 3000
+            # caracteres anteriores.
+            texto_diagnostico = texto_limpio[:6000]
         except Exception:
             texto_diagnostico = None
 
