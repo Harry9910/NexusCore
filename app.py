@@ -5360,6 +5360,36 @@ else:
             except Exception as e:
                 st.error(f"❌ No se pudo vaciar: {e}")
 
+        st.markdown("<br>", unsafe_allow_html=True)
+        st.markdown('<div class="admin-card"><span class="admin-card-title">🔓 Candado de Eudamed (Extracción Masiva)</span>', unsafe_allow_html=True)
+        st.markdown(
+            "<p style='color:#475569;'>Solo un usuario puede correr una extracción de Eudamed a la vez. "
+            "Si una corrida se corta a la mitad (ej: error de red, sesión cerrada a la fuerza), el candado "
+            f"puede quedar 'pegado' hasta {LIMITE_MINUTOS_LOCK_EUDAMED} minutos, que es cuando se libera solo. "
+            "Si necesitas desbloquear antes de eso, usa el botón de abajo.</p>",
+            unsafe_allow_html=True
+        )
+        try:
+            en_uso_admin, usuario_en_uso_admin, hora_inicio_admin = _obtener_estado_eudamed()
+        except Exception:
+            en_uso_admin, usuario_en_uso_admin, hora_inicio_admin = False, None, None
+
+        if en_uso_admin:
+            minutos_admin = (datetime.datetime.now() - hora_inicio_admin).total_seconds() / 60 if hora_inicio_admin else None
+            texto_minutos = f"~{int(minutos_admin)} min" if minutos_admin is not None else "tiempo desconocido"
+            st.warning(f"🔴 Eudamed está marcado como en uso por **{usuario_en_uso_admin or 'desconocido'}** (empezó hace {texto_minutos}).")
+            if st.button("🔓 Forzar liberación del candado ahora", key="btn_forzar_desbloqueo_eudamed"):
+                try:
+                    _marcar_estado_eudamed(False)
+                    registrar_log(usuario_sesion, f"[ADMIN] Forzó liberación del candado de Eudamed (estaba en uso por: {usuario_en_uso_admin or 'desconocido'})", "-")
+                    st.success("✔ Candado liberado. Ya puedes iniciar una nueva extracción de Eudamed.")
+                    time.sleep(0.5); st.rerun()
+                except Exception as e:
+                    st.error(f"❌ No se pudo liberar el candado: {e}")
+        else:
+            st.success("🟢 Eudamed está libre — nadie tiene una extracción marcada como en curso ahora mismo.")
+        st.markdown('</div>', unsafe_allow_html=True)
+
     # ==========================================================
     # FOOTER
     # ==========================================================
