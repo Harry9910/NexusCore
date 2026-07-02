@@ -2731,14 +2731,16 @@ def guardar_resultados_eudamed(usuario, filas, nombre_hoja="ResultadosEudamed"):
         return
     try:
         encabezados = ["Fecha", "Usuario", "Referencia_Original", "Codigo_UDI_DI",
-                       "Agencia_Emisora", "Nombre_Dispositivo", "Fabricante"]
+                       "Agencia_Emisora", "Nombre_Dispositivo", "Fabricante",
+                       "Referencia_Eudamed", "Nota_Revision", "Debug_Texto_Detalle"]
         hoja = _obtener_o_crear_hoja(nombre_hoja, encabezados)
         timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         filas_excel = [
             [timestamp, usuario,
              f.get("Referencia_Original", ""), f.get("Codigo_UDI_DI", ""),
              f.get("Agencia_Emisora", ""), f.get("Nombre_Dispositivo", ""),
-             f.get("Fabricante", "")]
+             f.get("Fabricante", ""), f.get("Referencia_Eudamed", ""),
+             f.get("Nota_Revision", ""), f.get("Debug_Texto_Detalle", "")]
             for f in filas
         ]
         hoja.append_rows(filas_excel, value_input_option='RAW')
@@ -3852,6 +3854,40 @@ else:
 
             hay_archivo_eu = st.session_state.get("eudamed_archivo_bytes") is not None
 
+            reanudar_eudamed = st.checkbox(
+                "🔄 Reanudar una corrida interrumpida (en vez de empezar de cero)",
+                key="chk_reanudar_eudamed",
+                help="Si una corrida se cortó (por ejemplo, por un corte de red o el navegador "
+                     "automatizado cerrándose), usa esto para continuar solo con lo que falte, sin "
+                     "repetir lo que ya se guardó. Como cada referencia tarda 10-20s, esto ahorra "
+                     "mucho tiempo en corridas largas."
+            )
+            nombre_hoja_a_reanudar_eu = None
+            if reanudar_eudamed:
+                try:
+                    hoja_registro_eu = _obtener_o_crear_hoja(NOMBRE_HOJA_REGISTRO_PESTANAS, ENCABEZADOS_REGISTRO_PESTANAS)
+                    registros_eudamed_disponibles = [
+                        r for r in hoja_registro_eu.get_all_records() if r.get("Tipo") == "Eudamed"
+                    ]
+                except Exception:
+                    registros_eudamed_disponibles = []
+
+                if registros_eudamed_disponibles:
+                    nombres_disponibles_eu = [r["NombrePestaña"] for r in registros_eudamed_disponibles][::-1]
+                    nombre_hoja_a_reanudar_eu = st.selectbox(
+                        "¿Cuál corrida quieres reanudar? (la más reciente aparece primero)",
+                        nombres_disponibles_eu,
+                        key="select_reanudar_eudamed"
+                    )
+                    st.caption(
+                        "Sube el MISMO archivo de Excel original completo (con todas las referencias) — "
+                        "se va a comparar contra lo que ya está guardado en esa pestaña, y solo se "
+                        "procesará lo que falte o lo que haya quedado marcado como 'Error de navegador'."
+                    )
+                else:
+                    st.info("No hay ninguna corrida de Eudamed registrada todavía para reanudar.")
+                    reanudar_eudamed = False
+
             en_uso_eu, usuario_en_uso_eu, hora_inicio_eu = _obtener_estado_eudamed()
             if en_uso_eu:
                 minutos_en_uso = int((datetime.datetime.now() - hora_inicio_eu).total_seconds() / 60) if hora_inicio_eu else 0
@@ -3862,7 +3898,7 @@ else:
                 )
 
             if st.button(
-                "🌍 Iniciar Extracción Eudamed",
+                "🔄 Reanudar Extracción Eudamed" if reanudar_eudamed else "🌍 Iniciar Extracción Eudamed",
                 disabled=(not hay_archivo_eu) or en_uso_eu,
                 use_container_width=True,
                 key="btn_iniciar_eudamed"
@@ -3899,13 +3935,64 @@ else:
 
                     _marcar_estado_eudamed(True, usuario=st.session_state["usuario_activo_real"])
 
-                    st.success(f"📋 Referencias encontradas: {total_refs_eu}")
+                    # cantidad_previamente_completadas_eu / total_refs_original_eu:
+                    # igual que en AccessGudid, sirven solo para que el contador en
+                    # pantalla muestre el avance REAL acumulado (incluyendo lo ya
+                    # guardado en una corrida anterior) en vez de reiniciar
+                    # visualmente en 0 cada vez que se reanuda.
+                    if reanudar_eudamed and nombre_hoja_a_reanudar_eu:
+                        nombre_hoja_eudamed = nombre_hoja_a_reanudar_eu
+                        try:
+                            hoja_existente_eu = _obtener_o_crear_hoja(
+                                nombre_hoja_eudamed,
+                                ["Fecha", "Usuario", "Referencia_Original", "Codigo_UDI_DI",
+                                 "Agencia_Emisora", "Nombre_Dispositivo", "Fabricante",
+                                 "Referencia_Eudamed", "Nota_Revision", "Debug_Texto_Detalle"]
+                            )
+                            # OJO: sin 'numericise_ignore', gspread convierte
+                            # referencias que parecen números a float/int -- eso
+                            # rompía la comparación contra el Excel (visto antes
+                            # con AccessGudid, mismo riesgo acá).
+                            filas_existentes_eu = hoja_existente_eu.get_all_records(numericise_ignore=['all'])
+                        except Exception as e:
+                            _marcar_estado_eudamed(False)
+                            st.error(f"No se pudo leer la pestaña a reanudar: {e}")
+                            st.stop()
 
-                    _ejecutar_limpieza_pestanas_resultado()
-                    nombre_hoja_eudamed = _generar_nombre_pestana_resultado("Eudamed", total_refs_eu)
-                    _registrar_pestana_resultado(
-                        nombre_hoja_eudamed, st.session_state["usuario_activo_real"], "Eudamed", total_refs_eu
-                    )
+                        refs_para_reintentar_eu = {
+                            str(f.get("Referencia_Original", "")).strip() for f in filas_existentes_eu
+                            if str(f.get("Codigo_UDI_DI", "")).startswith("Error de navegador")
+                        }
+                        refs_ya_completas_eu = {
+                            str(f.get("Referencia_Original", "")).strip() for f in filas_existentes_eu
+                        } - refs_para_reintentar_eu
+
+                        referencias_eu = [
+                            r for r in referencias_eu if str(r).strip() not in refs_ya_completas_eu
+                        ]
+                        total_refs_eu = len(referencias_eu)
+
+                        cantidad_previamente_completadas_eu = len(refs_ya_completas_eu)
+                        total_refs_original_eu = cantidad_previamente_completadas_eu + total_refs_eu
+
+                        st.success(
+                            f"📋 Reanudando '{nombre_hoja_eudamed}': {cantidad_previamente_completadas_eu} "
+                            f"referencia(s) ya lista(s) de {total_refs_original_eu} totales · "
+                            f"{total_refs_eu} pendiente(s) por procesar."
+                        )
+                        if total_refs_eu == 0:
+                            st.info("🎉 No queda nada pendiente — esta corrida ya estaba completa.")
+                            _marcar_estado_eudamed(False)
+                            st.stop()
+                    else:
+                        cantidad_previamente_completadas_eu = 0
+                        total_refs_original_eu = total_refs_eu
+                        st.success(f"📋 Referencias encontradas: {total_refs_eu}")
+                        _ejecutar_limpieza_pestanas_resultado()
+                        nombre_hoja_eudamed = _generar_nombre_pestana_resultado("Eudamed", total_refs_eu)
+                        _registrar_pestana_resultado(
+                            nombre_hoja_eudamed, st.session_state["usuario_activo_real"], "Eudamed", total_refs_eu
+                        )
                     st.caption(
                         f"💾 Esta corrida se está guardando en la pestaña '{nombre_hoja_eudamed}' de tu Google "
                         "Sheet (se elimina sola a las 72h — descarga el Excel si quieres conservarla más tiempo)."
@@ -3955,7 +4042,15 @@ else:
                             else:
                                 texto_tiempo = ""
 
-                            texto_estado_eu.info(f"⏳ {idx+1}/{total_refs_eu} | 🔍 {ref}{texto_tiempo}")
+                            # Igual que en AccessGudid: el contador muestra el
+                            # avance REAL acumulado (lo de corridas anteriores +
+                            # esta sesión), no solo lo de la lista ya filtrada --
+                            # así nunca parece que "volvió a empezar desde 0"
+                            # cuando se está reanudando.
+                            texto_estado_eu.info(
+                                f"⏳ {cantidad_previamente_completadas_eu + idx + 1}/{total_refs_original_eu} "
+                                f"totales (esta sesión: {idx+1}/{total_refs_eu}) | 🔍 {ref}{texto_tiempo}"
+                            )
                             actualizar_barra_eu(int(idx / total_refs_eu * 100))
 
                             try:
