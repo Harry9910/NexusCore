@@ -1967,6 +1967,25 @@ def _mensaje_error_limpio(e):
     return texto if texto else type(e).__name__
 
 
+def _valor_celda_es_plausible(texto, etiqueta):
+    """Filtro de seguridad: el último xpath de _obtener_valor_celda_detalle usa
+    contains() y puede terminar agarrando la fila equivocada de la tabla si la
+    etiqueta buscada aparece como título de sección en vez de como celda real.
+    Un valor 'encontrado' que en realidad es texto de OTRO campo (versión,
+    legislación aplicable, fecha de actualización, etc.) es peor que
+    'No encontrado' porque pasa desapercibido. Se rechaza si es demasiado
+    largo o contiene frases que delatan que es el bloque equivocado."""
+    if len(texto) > 120:
+        return False
+    frases_de_otro_campo = [
+        "applicable legislation", "last update date", "directive",
+        "version 1", "version 2", "(current)", "go back to the list",
+        "eudamed id:",
+    ]
+    texto_low = texto.lower()
+    return not any(frase in texto_low for frase in frases_de_otro_campo)
+
+
 def _obtener_valor_celda_detalle(driver, etiqueta):
     xpaths = [
         f"//tr[td[normalize-space(text())='{etiqueta}']]/td[2]",
@@ -1982,7 +2001,7 @@ def _obtener_valor_celda_detalle(driver, etiqueta):
             elementos = driver.find_elements(By.XPATH, xp)
             for el in elementos:
                 texto = el.text.strip()
-                if texto and texto != etiqueta:
+                if texto and texto != etiqueta and _valor_celda_es_plausible(texto, etiqueta):
                     return texto
         except Exception:
             continue
@@ -2109,7 +2128,12 @@ def _extraer_todo_del_detalle(driver):
     if codigo_udi == "No encontrado" or agencia == "No encontrado":
         try:
             texto_crudo = driver.find_element(By.TAG_NAME, "body").text
-            texto_diagnostico = " ".join(texto_crudo.split())[:600]
+            texto_limpio = " ".join(texto_crudo.split())
+            # Antes se cortaba en 600 caracteres, pero ese espacio se
+            # consumía casi todo en el banner de cookies y el menú de
+            # navegación de Eudamed, sin llegar al contenido real de la
+            # tabla de detalle. Se amplía para capturar esa parte.
+            texto_diagnostico = texto_limpio[:3000]
         except Exception:
             texto_diagnostico = None
 
