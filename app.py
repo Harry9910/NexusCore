@@ -2027,14 +2027,38 @@ def _extraer_todo_del_detalle(driver):
             fabricante = val
             break
 
-    if nombre == "No encontrado":
+    # UDI-DI code e Issuing entity (y a veces también el nombre) viven en la
+    # pestaña "Basic UDI-DI" del detalle, no siempre en la vista principal.
+    # ANTES solo se navegaba a esa pestaña si 'nombre' no se encontraba,
+    # dejando codigo_udi/agencia SIN reintentar ahí -- por eso salían
+    # sistemáticamente "No encontrado" incluso cuando nombre/fabricante sí
+    # se encontraban en la vista principal (justo el patrón que se ve en
+    # los resultados: Nombre_Dispositivo y Fabricante correctos, pero
+    # Codigo_UDI_DI y Agencia_Emisora siempre vacíos).
+    if codigo_udi == "No encontrado" or agencia == "No encontrado" or nombre == "No encontrado":
         try:
             _ir_a_seccion_eudamed_rapido(driver, "Basic UDI-DI")
-            for etiqueta in ["Device name", "Trade/proprietary name", "Trade name", "Name"]:
-                val = _obtener_valor_celda_detalle(driver, etiqueta)
-                if val != "No encontrado":
-                    nombre = val
-                    break
+
+            if codigo_udi == "No encontrado":
+                for etiqueta in ["UDI-DI code", "Basic UDI-DI", "UDI-DI", "Primary DI", "Basic UDI-DI code"]:
+                    val = _obtener_valor_celda_detalle(driver, etiqueta)
+                    if val != "No encontrado":
+                        codigo_udi = val
+                        break
+
+            if agencia == "No encontrado":
+                for etiqueta in ["Issuing entity", "Issuing entity code", "Issuing Agency", "Issuing Entity"]:
+                    val = _obtener_valor_celda_detalle(driver, etiqueta)
+                    if val != "No encontrado":
+                        agencia = val
+                        break
+
+            if nombre == "No encontrado":
+                for etiqueta in ["Device name", "Trade/proprietary name", "Trade name", "Name"]:
+                    val = _obtener_valor_celda_detalle(driver, etiqueta)
+                    if val != "No encontrado":
+                        nombre = val
+                        break
         except Exception:
             pass
 
@@ -2066,7 +2090,21 @@ def _extraer_todo_del_detalle(driver):
         elif combinado != "No encontrado":
             codigo_udi = combinado
 
-    return codigo_udi, agencia, nombre, fabricante
+    # DIAGNÓSTICO: si después de todos los intentos (vista principal +
+    # pestaña "Basic UDI-DI") todavía no se encuentran, se captura un
+    # fragmento del texto crudo de la página actual. Esto NO se descarta:
+    # se devuelve para que, si el problema persiste, se pueda ver
+    # exactamente qué etiquetas usa Eudamed en este momento y ajustar la
+    # búsqueda con precisión en vez de adivinar a ciegas.
+    texto_diagnostico = None
+    if codigo_udi == "No encontrado" or agencia == "No encontrado":
+        try:
+            texto_crudo = driver.find_element(By.TAG_NAME, "body").text
+            texto_diagnostico = " ".join(texto_crudo.split())[:600]
+        except Exception:
+            texto_diagnostico = None
+
+    return codigo_udi, agencia, nombre, fabricante, texto_diagnostico
 
 
 def _procesar_referencia_eudamed(driver, referencia, primera_vez, limite_resultados=LIMITE_RESULTADOS_POR_REFERENCIA_EUDAMED):
@@ -2120,15 +2158,22 @@ def _procesar_referencia_eudamed(driver, referencia, primera_vez, limite_resulta
             _aceptar_cookies_eudamed(driver, espera=2)
             time.sleep(0.35)
 
-            codigo_udi, agencia, nombre_dispositivo, fabricante = _extraer_todo_del_detalle(driver)
+            codigo_udi, agencia, nombre_dispositivo, fabricante, texto_diagnostico = _extraer_todo_del_detalle(driver)
 
-            filas_resultado.append({
+            fila_eudamed = {
                 "Referencia_Original": referencia,
                 "Codigo_UDI_DI":       codigo_udi,
                 "Agencia_Emisora":     agencia,
                 "Nombre_Dispositivo":  nombre_dispositivo,
                 "Fabricante":          fabricante,
-            })
+            }
+            # Columna opcional: solo aparece cuando codigo_udi/agencia
+            # siguieron sin encontrarse después de todos los intentos. Si
+            # esto sigue pasando tras el fix, este texto dice exactamente
+            # qué etiquetas está usando Eudamed ahora mismo.
+            if texto_diagnostico:
+                fila_eudamed["Debug_Texto_Detalle"] = texto_diagnostico
+            filas_resultado.append(fila_eudamed)
 
             try:
                 driver.back()
