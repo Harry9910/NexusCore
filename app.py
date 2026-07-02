@@ -2037,10 +2037,19 @@ def _extraer_todo_del_detalle(driver):
     # Codigo_UDI_DI y Agencia_Emisora siempre vacíos).
     if codigo_udi == "No encontrado" or agencia == "No encontrado" or nombre == "No encontrado":
         try:
-            _ir_a_seccion_eudamed_rapido(driver, "Basic UDI-DI")
+            # La pestaña se llamaba "Basic UDI-DI" en versiones anteriores de
+            # Eudamed; la UI actual (confirmado vía Debug_Texto_Detalle en
+            # julio 2026) la renombró a "EUDAMED DI details". Se intentan
+            # ambos nombres por si Eudamed vuelve a cambiarlo o hay variantes
+            # regionales de idioma.
+            try:
+                _ir_a_seccion_eudamed_rapido(driver, "EUDAMED DI details")
+            except Exception:
+                _ir_a_seccion_eudamed_rapido(driver, "Basic UDI-DI")
 
             if codigo_udi == "No encontrado":
-                for etiqueta in ["UDI-DI code", "Basic UDI-DI", "UDI-DI", "Primary DI", "Basic UDI-DI code"]:
+                for etiqueta in ["UDI-DI code", "Basic UDI-DI", "UDI-DI", "Primary DI", "Basic UDI-DI code",
+                                  "EUDAMED DI details", "EUDAMED DI"]:
                     val = _obtener_valor_celda_detalle(driver, etiqueta)
                     if val != "No encontrado":
                         codigo_udi = val
