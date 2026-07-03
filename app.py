@@ -501,13 +501,25 @@ NOMBRE_CARPETA_GENERALES = "DOCUMENTOS GENERALES"
 def _extraer_texto_pdf(bytes_pdf):
     """Extrae el texto de un PDF de remisión. Si el PDF es una imagen
     escaneada sin texto seleccionable, el resultado vendrá vacío o muy
-    corto (eso se detecta más adelante para avisar en vez de fallar)."""
+    corto (eso se detecta más adelante para avisar en vez de fallar).
+
+    IMPORTANTE: cada página se procesa en su propio try/except. Antes, si
+    UNA sola página fallaba (ej. una fuente/encoding rara en un documento
+    grande), la excepción tumbaba la extracción del documento COMPLETO y se
+    perdía el texto de todas las demás páginas que sí se habían leído bien
+    -- eso hacía que documentos con texto real se trataran como 'escaneados'
+    de forma inconsistente entre corridas."""
     try:
         lector = PdfReader(io.BytesIO(bytes_pdf))
-        texto = "\n".join((pagina.extract_text() or "") for pagina in lector.pages)
-        return texto.strip()
     except Exception:
         return ""
+    textos_paginas = []
+    for pagina in lector.pages:
+        try:
+            textos_paginas.append(pagina.extract_text() or "")
+        except Exception:
+            continue  # se pierde solo ESA página, no el documento entero
+    return "\n".join(textos_paginas).strip()
 
 
 def _mensaje_error_drive(e):
@@ -831,7 +843,7 @@ def _buscar_codigos_udi_en_documento(texto_pdf, referencias, pdf_bytes=None):
                         "contexto": contextos[r][:150],
                     })
             if i + TAMAÑO_LOTE < len(refs_encontradas):
-                time.sleep(1.2)
+                time.sleep(3.5)  # 20 peticiones/min gratis en Gemini = 1 cada 3s; se deja margen
 
         for r in refs_no_encontradas:
             resultados.append({
@@ -894,7 +906,7 @@ def _buscar_codigos_udi_en_documento(texto_pdf, referencias, pdf_bytes=None):
                     f"referencia(s) (lote {i // TAMAÑO_LOTE + 1}): {_mensaje_error_limpio(e)}"
                 )
             if i + TAMAÑO_LOTE < len(referencias):
-                time.sleep(1.2)
+                time.sleep(3.5)  # mismo margen que arriba, respaldo con Gemini Vision
 
     return resultados, advertencias
 
@@ -2670,8 +2682,29 @@ def _llamar_gemini_api(system_prompt, mensajes, modelo=MODELO_IA_CALIDAD, max_to
 
         if respuesta.status_code == 200:
             break
-        if respuesta.status_code in (503, 429) and intento < intentos - 1:
-            time.sleep((6 if respuesta.status_code == 429 else 3) * (intento + 1))
+        if respuesta.status_code == 429 and intento < intentos - 1:
+            # El error 429 de Gemini normalmente trae un 'retryDelay' exacto
+            # (ej. 'Please retry in 34.79s' o un campo estructurado
+            # RetryInfo) -- se usa ESE tiempo en vez de una espera fija corta,
+            # porque el límite gratuito es por minuto y una espera fija de
+            # pocos segundos casi nunca alcanza a que se libere cupo.
+            espera = 20  # respaldo si no se puede leer el tiempo sugerido
+            try:
+                cuerpo_error = respuesta.json().get("error", {})
+                for detalle in cuerpo_error.get("details", []):
+                    if detalle.get("@type", "").endswith("RetryInfo") and detalle.get("retryDelay"):
+                        espera = float(str(detalle["retryDelay"]).rstrip("s"))
+                        break
+                else:
+                    m = re.search(r"retry in ([\d.]+)s", cuerpo_error.get("message", ""), re.IGNORECASE)
+                    if m:
+                        espera = float(m.group(1))
+            except Exception:
+                pass
+            time.sleep(min(espera, 65) + 1)  # +1s de margen; tope de 65s por intento
+            continue
+        if respuesta.status_code == 503 and intento < intentos - 1:
+            time.sleep(3 * (intento + 1))
             continue
         break
 
@@ -4398,6 +4431,31 @@ else:
                 "Documento(s) PDF donde buscar", type=["pdf"], accept_multiple_files=True,
                 key="uploader_pdfs_busqueda_docs"
             )
+
+        if st.button(
+            "📋 Cargar y verificar documentos",
+            disabled=(not archivos_pdf_docs),
+            use_container_width=True, key="btn_verificar_docs"
+        ):
+            st.caption(
+                "Esto solo lee el texto de cada PDF para confirmar qué tan bien se puede extraer -- "
+                "todavía no busca las referencias ni llama a Gemini, así que es rápido y no gasta cuota."
+            )
+            for archivo_pdf_v in archivos_pdf_docs:
+                bytes_v = archivo_pdf_v.read()
+                texto_v = _extraer_texto_pdf(bytes_v)
+                archivo_pdf_v.seek(0)  # para que el botón de abajo lo pueda volver a leer
+                if len(texto_v) >= 200:
+                    st.success(
+                        f"✔ **{archivo_pdf_v.name}** — {len(texto_v):,} caracteres de texto extraídos. "
+                        f"Vista previa: _{texto_v[:180]}..._"
+                    )
+                else:
+                    st.warning(
+                        f"⚠ **{archivo_pdf_v.name}** — muy poco texto extraíble ({len(texto_v)} caracteres). "
+                        "Se tratará como escaneado: Gemini lo leerá directamente como imagen (más lento y "
+                        "sujeto al límite de cuota gratuita, ~20 peticiones/min)."
+                    )
 
         if st.button(
             "🔍 Buscar códigos en documentos",
