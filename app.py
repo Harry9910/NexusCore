@@ -498,6 +498,47 @@ NOMBRE_CARPETA_FINAL_POSTVENTA = "CARPETA FINAL POST-VENTA"
 NOMBRE_CARPETA_GENERALES = "DOCUMENTOS GENERALES"
 
 
+def _texto_pdf_es_confiable(texto, umbral_basura=0.12, umbral_tokens_basura=0.30):
+    """Heurística para detectar texto de PDF corrupto/ilegible -- no basta
+    con mirar la CANTIDAD de texto extraído, porque un documento puede sacar
+    cientos de miles de caracteres y aun así ser en su mayoría basura
+    ilegible en vez de texto real. Esto pasa cuando el PDF usa una fuente
+    incrustada sin un mapa de caracteres (ToUnicode CMap) válido: las
+    librerías de extracción sacan 'glifos' crudos en vez de letras reales.
+
+    Se combinan dos señales, porque una sola no alcanza:
+    1. Caracteres claramente inválidos (símbolo de reemplazo �, Área de Uso
+       Privado de Unicode, caracteres de control) -- detecta el caso típico.
+    2. Proporción de 'palabras' (separadas por espacio) que no tienen NI UNA
+       letra o número -- detecta el caso visto en la práctica, donde el
+       glifo mal mapeado cae en un carácter de puntuación VÁLIDO pero sin
+       sentido (comillas, guiones, asteriscos sueltos), que el primer
+       criterio no detecta porque técnicamente son caracteres normales.
+
+    Si CUALQUIERA de los dos criterios indica basura, se considera no
+    confiable (se trata igual que un documento sin texto extraíble: se
+    manda a Gemini Vision en vez de intentar buscar en un texto ilegible)."""
+    if not texto:
+        return False
+    sospechosos = sum(
+        1 for ch in texto
+        if ch == "\ufffd"
+        or (0xE000 <= ord(ch) <= 0xF8FF)   # Área de Uso Privado (glifos sin mapear)
+        or (ord(ch) < 32 and ch not in "\n\r\t")
+    )
+    if (sospechosos / len(texto)) >= umbral_basura:
+        return False
+
+    tokens = texto.split()
+    if not tokens:
+        return False
+    tokens_sin_alfanumerico = sum(1 for t in tokens if not any(c.isalnum() for c in t))
+    if (tokens_sin_alfanumerico / len(tokens)) >= umbral_tokens_basura:
+        return False
+
+    return True
+
+
 def _extraer_texto_pdf(bytes_pdf):
     """Extrae el texto de un PDF de remisión. Si el PDF es una imagen
     escaneada sin texto seleccionable, el resultado vendrá vacío o muy
@@ -797,7 +838,7 @@ def _buscar_codigos_udi_en_documento(texto_pdf, referencias, pdf_bytes=None):
     resultados = []
     advertencias = []
 
-    if texto_pdf and len(texto_pdf) >= 200:
+    if texto_pdf and len(texto_pdf) >= 200 and _texto_pdf_es_confiable(texto_pdf):
         # Camino normal: documento con texto extraíble.
         contextos = _localizar_referencias_en_texto(texto_pdf, referencias)
         refs_encontradas = [r for r in referencias if contextos.get(r)]
@@ -4445,10 +4486,17 @@ else:
                 bytes_v = archivo_pdf_v.read()
                 texto_v = _extraer_texto_pdf(bytes_v)
                 archivo_pdf_v.seek(0)  # para que el botón de abajo lo pueda volver a leer
-                if len(texto_v) >= 200:
+                if len(texto_v) >= 200 and _texto_pdf_es_confiable(texto_v):
                     st.success(
                         f"✔ **{archivo_pdf_v.name}** — {len(texto_v):,} caracteres de texto extraídos. "
                         f"Vista previa: _{texto_v[:180]}..._"
+                    )
+                elif len(texto_v) >= 200:
+                    st.warning(
+                        f"⚠ **{archivo_pdf_v.name}** — se extrajeron {len(texto_v):,} caracteres, pero una "
+                        "buena parte parece corrupta/ilegible (probablemente una fuente incrustada sin mapa "
+                        "de caracteres válido). Se tratará como escaneado: Gemini lo leerá directamente como "
+                        f"imagen. Vista previa de lo extraído: _{texto_v[:180]}..._"
                     )
                 else:
                     st.warning(
@@ -4495,7 +4543,9 @@ else:
                     # Si salió muy poco texto, es probable que sea un escaneo sin
                     # capa de texto (o con un OCR pobre) — se manda el PDF directo
                     # a Gemini para que lo lea como imagen, igual que con remisiones.
-                    pdf_bytes_para_gemini = bytes_pdf_doc if len(texto_pdf_doc) < 200 else None
+                    pdf_bytes_para_gemini = bytes_pdf_doc if (
+                        len(texto_pdf_doc) < 200 or not _texto_pdf_es_confiable(texto_pdf_doc)
+                    ) else None
 
                     resultados_doc, advertencias_doc = _buscar_codigos_udi_en_documento(
                         texto_pdf_doc, referencias_docs, pdf_bytes=pdf_bytes_para_gemini
