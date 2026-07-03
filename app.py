@@ -3135,6 +3135,64 @@ def _inyectar_keep_alive():
     )
 
 
+def _boton_activar_notificaciones():
+    """Botón que pide permiso al navegador para mostrar notificaciones de
+    escritorio (las mismas que usan Gmail/Slack/etc.) -- solo hace falta
+    activarlo una vez; el navegador recuerda el permiso para las próximas
+    visitas. Necesario porque los navegadores exigen un clic real del
+    usuario para mostrar el cuadro de 'permitir notificaciones', no se
+    puede pedir automáticamente al cargar la página."""
+    st.markdown(
+        """
+        <button id="nx-btn-notif" style="
+            background:#0b1d3a; color:white; border:none; border-radius:8px;
+            padding:8px 16px; cursor:pointer; font-size:14px; margin-bottom:8px;
+        " onclick="
+            if (typeof Notification === 'undefined') {
+                document.getElementById('nx-btn-notif').innerText = '⚠ Tu navegador no soporta notificaciones';
+            } else {
+                Notification.requestPermission().then(function(perm) {
+                    var btn = document.getElementById('nx-btn-notif');
+                    if (perm === 'granted') {
+                        btn.innerText = '🔔 Notificaciones activadas ✔';
+                        new Notification('NexusCore', {body: 'Te voy a avisar aquí cuando termine una extracción larga.'});
+                    } else {
+                        btn.innerText = '⚠ Permiso denegado — actívalo desde los ajustes del navegador';
+                    }
+                });
+            }
+        ">🔔 Activar notificaciones del navegador</button>
+        """,
+        unsafe_allow_html=True
+    )
+
+
+def _disparar_notificacion_navegador(titulo, cuerpo):
+    """Muestra una notificación de escritorio si el usuario ya dio el
+    permiso (con el botón de arriba) -- si no lo dio, no hace nada (los
+    navegadores no dejan pedir permiso fuera de un clic real, así que no
+    se puede forzar en este punto). Útil para procesos largos (Eudamed,
+    AccessGudid, búsqueda en documentos): así el usuario puede cambiar de
+    pestaña y se entera cuando termina, en vez de tener que quedarse
+    revisando la pantalla."""
+    titulo_seguro = json.dumps(titulo)
+    cuerpo_seguro = json.dumps(cuerpo)
+    st.markdown(
+        f"""
+        <script>
+        (function () {{
+            try {{
+                if (typeof Notification !== 'undefined' && Notification.permission === 'granted') {{
+                    new Notification({titulo_seguro}, {{body: {cuerpo_seguro}}});
+                }}
+            }} catch (e) {{}}
+        }})();
+        </script>
+        """,
+        unsafe_allow_html=True
+    )
+
+
 # ==========================================================
 # CONFIGURACIÓN DE LA PÁGINA
 # ==========================================================
@@ -3857,6 +3915,12 @@ else:
             "AccessGUDID (FDA) a la izquierda, Eudamed (UE) a la derecha.</p>",
             unsafe_allow_html=True
         )
+        _boton_activar_notificaciones()
+        st.caption(
+            "Actívalas una vez y te avisa con una notificación de escritorio cuando termine una "
+            "extracción larga (Eudamed, AccessGudid o Búsqueda en Documentos), aunque estés en otra "
+            "pestaña o ventana."
+        )
 
         st.info(
             "🔒 Esta sesión NO se cierra sola por inactividad: puedes dejar el PC sin tocar mientras "
@@ -4158,6 +4222,10 @@ else:
 
                     texto_estado.empty(); barra_custom.empty()
                     st.success(f"✨ ¡Completado! ({int(time.time()-inicio_tiempo)}s)")
+                    _disparar_notificacion_navegador(
+                        "NexusCore — AccessGudid completado",
+                        f"Terminó la extracción de {total_refs} referencia(s)."
+                    )
                     registrar_log(st.session_state["usuario_activo_real"], f"Extracción masiva AccessGudid ({total_refs} refs)", len(lista_resultados))
                     # Guarda lo que quedó pendiente desde el último checkpoint
                     filas_pendientes_gudid = lista_resultados[indice_guardado_gudid:]
@@ -4439,6 +4507,10 @@ else:
                     texto_estado_eu.empty()
                     barra_eu.empty()
                     st.success(f"✨ ¡Completado! ({int(time.time()-inicio_tiempo_eu)}s)")
+                    _disparar_notificacion_navegador(
+                        "NexusCore — Eudamed completado",
+                        f"Terminó la extracción de {total_refs_eu} referencia(s)."
+                    )
 
                     st.session_state["eudamed_archivo_bytes"]  = None
                     st.session_state["eudamed_archivo_nombre"] = ""
@@ -4708,6 +4780,10 @@ else:
                 f"encontrado" + (f" (+ {total_solo_contexto_docs} encontrada(s) sin código legible, revisar "
                 f"contexto)" if total_solo_contexto_docs else "") +
                 f" en los {len(archivos_pdf_docs)} documento(s) subido(s)."
+            )
+            _disparar_notificacion_navegador(
+                "NexusCore — Búsqueda en documentos completada",
+                f"{total_con_codigo_docs} de {len(referencias_docs)} referencia(s) con código encontrado."
             )
             df_consolidado_docs = pd.DataFrame(filas_consolidado_docs)
             st.dataframe(df_consolidado_docs, use_container_width=True, height=300)
