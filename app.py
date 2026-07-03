@@ -1,4 +1,5 @@
 import streamlit as st
+import streamlit.components.v1 as components
 import pandas as pd
 import requests
 import urllib.parse
@@ -3143,58 +3144,61 @@ def _boton_activar_notificaciones():
     usuario para mostrar el cuadro de 'permitir notificaciones', no se
     puede pedir automáticamente al cargar la página.
 
-    Usa addEventListener en un <script> (en vez de un atributo onclick en
-    el botón) porque Streamlit reruns re-renderiza este HTML seguido, y
-    algunos navegadores/extensiones bloquean atributos 'onclick' inyectados
-    por innerHTML aunque sí ejecuten <script> normal -- el keep-alive de
-    esta misma app ya usa ese patrón y funciona, así que se sigue el mismo.
+    IMPORTANTE: usa components.html (un iframe real) en vez de st.markdown,
+    porque st.markdown NO ejecuta las etiquetas <script> que inyecta -- los
+    navegadores ignoran por seguridad cualquier <script> insertado como
+    texto/HTML plano, sin importar el framework. Un iframe sí ejecuta
+    JavaScript normalmente porque es un documento aparte, no texto insertado.
 
-    También revisa el permiso ACTUAL al cargar: si el usuario ya lo había
-    concedido (o si el navegador ya lo tiene bloqueado de antes), el botón
-    lo refleja de inmediato en vez de mostrar siempre el texto por defecto."""
-    st.markdown(
+    Además, opera sobre 'window.parent' (la página real de NexusCore) en vez
+    de sobre el propio iframe del componente -- el permiso de notificaciones
+    tiene que quedar asociado al sitio real, no al iframe interno donde vive
+    este botón."""
+    components.html(
         """
         <button id="nx-btn-notif" style="
             background:#0b1d3a; color:white; border:none; border-radius:8px;
-            padding:8px 16px; cursor:pointer; font-size:14px; margin-bottom:8px;
+            padding:8px 16px; cursor:pointer; font-size:14px;
         ">🔔 Activar notificaciones del navegador</button>
         <script>
         (function () {
+            var win = window.parent || window;
             var btn = document.getElementById('nx-btn-notif');
             if (!btn) { return; }
 
             function reflejarEstado() {
-                if (typeof Notification === 'undefined') {
+                if (typeof win.Notification === 'undefined') {
                     btn.innerText = '⚠ Tu navegador no soporta notificaciones';
                     btn.disabled = true;
-                } else if (Notification.permission === 'granted') {
+                } else if (win.Notification.permission === 'granted') {
                     btn.innerText = '🔔 Notificaciones activadas ✔';
-                } else if (Notification.permission === 'denied') {
-                    btn.innerText = '⚠ Bloqueadas — actívalas desde el ícono 🔒/ⓘ junto a la URL';
+                } else if (win.Notification.permission === 'denied') {
+                    btn.innerText = '⚠ Bloqueadas — revisa la configuración de notificaciones del sitio';
                 }
             }
-            reflejarEstado();
+            try { reflejarEstado(); } catch (e) {}
 
             btn.addEventListener('click', function () {
-                if (typeof Notification === 'undefined') { return; }
-                if (Notification.permission === 'denied') {
-                    // El navegador NO vuelve a mostrar el cuadro de permiso una
-                    // vez quedó en 'denied' -- solo se puede cambiar a mano
-                    // desde la configuración del sitio en el navegador.
-                    btn.innerText = '⚠ Bloqueadas — actívalas desde el ícono 🔒/ⓘ junto a la URL, luego recarga';
-                    return;
-                }
-                Notification.requestPermission().then(function (perm) {
-                    reflejarEstado();
-                    if (perm === 'granted') {
-                        new Notification('NexusCore', {body: 'Te voy a avisar aquí cuando termine una extracción larga.'});
+                try {
+                    if (typeof win.Notification === 'undefined') { return; }
+                    if (win.Notification.permission === 'denied') {
+                        btn.innerText = '⚠ Bloqueadas — revisa la configuración de notificaciones del sitio';
+                        return;
                     }
-                });
+                    win.Notification.requestPermission().then(function (perm) {
+                        reflejarEstado();
+                        if (perm === 'granted') {
+                            new win.Notification('NexusCore', {body: 'Te voy a avisar aquí cuando termine una extracción larga.'});
+                        }
+                    });
+                } catch (e) {
+                    btn.innerText = '⚠ No se pudo activar (' + e.message + ')';
+                }
             });
         })();
         </script>
         """,
-        unsafe_allow_html=True
+        height=45,
     )
 
 
@@ -3202,25 +3206,32 @@ def _disparar_notificacion_navegador(titulo, cuerpo):
     """Muestra una notificación de escritorio si el usuario ya dio el
     permiso (con el botón de arriba) -- si no lo dio, no hace nada (los
     navegadores no dejan pedir permiso fuera de un clic real, así que no
-    se puede forzar en este punto). Útil para procesos largos (Eudamed,
-    AccessGudid, búsqueda en documentos): así el usuario puede cambiar de
-    pestaña y se entera cuando termina, en vez de tener que quedarse
-    revisando la pantalla."""
+    se puede forzar en este punto). También cambia el título de la pestaña
+    del navegador como respaldo (eso SÍ es visible de inmediato en la barra
+    de pestañas, incluso sin haber activado el permiso de notificaciones).
+
+    Útil para procesos largos (Eudamed, AccessGudid, búsqueda en
+    documentos): así el usuario puede cambiar de pestaña y se entera cuando
+    termina, en vez de tener que quedarse revisando la pantalla."""
     titulo_seguro = json.dumps(titulo)
     cuerpo_seguro = json.dumps(cuerpo)
-    st.markdown(
+    components.html(
         f"""
         <script>
         (function () {{
+            var win = window.parent || window;
             try {{
-                if (typeof Notification !== 'undefined' && Notification.permission === 'granted') {{
-                    new Notification({titulo_seguro}, {{body: {cuerpo_seguro}}});
+                if (typeof win.Notification !== 'undefined' && win.Notification.permission === 'granted') {{
+                    new win.Notification({titulo_seguro}, {{body: {cuerpo_seguro}}});
                 }}
+            }} catch (e) {{}}
+            try {{
+                win.document.title = '✅ ' + {titulo_seguro};
             }} catch (e) {{}}
         }})();
         </script>
         """,
-        unsafe_allow_html=True
+        height=0,
     )
 
 
