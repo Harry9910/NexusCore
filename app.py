@@ -647,100 +647,256 @@ def _analizar_remision_con_ia(texto_pdf, arbol_referencias, pdf_bytes=None):
     return json.loads(texto_json)
 
 
-def _buscar_codigos_udi_en_documento(texto_pdf, referencias, pdf_bytes=None):
-    """Le pide a Gemini que busque, dentro de un documento (dossier técnico,
-    certificado, ficha de producto, etc.), cada referencia de una lista y
-    extraiga el código UDI-DI y la agencia emisora (GS1, HIBCC, ICCBBA, etc.)
-    si aparecen cerca de esa referencia en el documento.
+def _localizar_referencias_en_texto(texto, referencias, ventana=280):
+    """Busca cada referencia como substring dentro del TEXTO COMPLETO del
+    documento (sin truncar), de forma insensible a mayúsculas y a
+    espacios/guiones/guiones bajos/barras (el texto extraído de un PDF a
+    veces trae la referencia con formato distinto: 'A101 02 221 0004' vs
+    'A101-02-221-0004' vs 'A101022210004').
 
-    Igual que en _analizar_remision_con_ia: si 'pdf_bytes' viene informado
-    (documento escaneado sin texto extraíble), se adjunta el PDF directo
-    para que Gemini lo lea como imagen — no hace falta OCR aparte.
+    Devuelve un dict: referencia -> fragmento de contexto alrededor de la
+    coincidencia (o None si no se encontró ni siquiera de forma flexible)."""
+    if not texto:
+        return {r: None for r in referencias}
 
-    IMPORTANTE: las referencias se procesan en LOTES (no todas en una sola
-    llamada). Con listas largas (100+ referencias), pedirle a Gemini un JSON
-    con una entrada por cada una en una sola respuesta supera fácilmente el
-    límite de tokens de salida y la respuesta llega cortada a la mitad —
-    eso rompe el parseo JSON (el error típico es 'Expecting , delimiter').
-    Dividiendo en lotes pequeños, cada llamada individual es corta y
-    confiable, y si un lote puntual falla, no se pierde el resto.
+    texto_lower = texto.lower()
 
-    Devuelve una lista de dicts: [{"referencia": "", "encontrado": bool,
-    "codigo_udi_di": "", "agencia_emisora": "", "contexto": ""}, ...]"""
-    TAMAÑO_LOTE_REFS = 30
-    resultados_totales = []
+    # Versión "compacta": solo caracteres alfanuméricos, en minúsculas,
+    # guardando el índice ORIGINAL de cada uno -- así se puede encontrar la
+    # referencia sin importar cómo esté espaciada/formateada, y aun así
+    # recuperar el fragmento de contexto con el texto y espaciado originales.
+    indices_originales = []
+    caracteres_compactos = []
+    for i, ch in enumerate(texto_lower):
+        if ch.isalnum():
+            caracteres_compactos.append(ch)
+            indices_originales.append(i)
+    texto_compacto = "".join(caracteres_compactos)
 
-    for i in range(0, len(referencias), TAMAÑO_LOTE_REFS):
-        lote = referencias[i:i + TAMAÑO_LOTE_REFS]
-        lista_refs = "\n".join(f"- {r}" for r in lote)
-        system_prompt = (
-            "Eres un asistente que revisa documentos técnicos de dispositivos médicos "
-            "(dosieres, certificados, fichas de producto, declaraciones de conformidad, "
-            "etiquetas) buscando códigos UDI-DI (Identificador Único de Dispositivo — "
-            "nivel de Dispositivo).\n\n"
-            "El documento puede venir como texto extraído de un PDF (el orden de las "
-            "líneas puede salir desordenado por la extracción automática), o como el "
-            "archivo PDF adjunto directamente (documento escaneado), en cuyo caso debes "
-            "leerlo visualmente como si fuera una imagen.\n\n"
-            "Se te da una lista de referencias/números de catálogo a buscar. Para CADA "
-            "una, revisa si aparece en el documento (puede aparecer como referencia, "
-            "número de catálogo, número de parte, o similar). Si aparece, busca cerca de "
-            "ella un código UDI-DI: normalmente un número o alfanumérico, a veces "
-            "precedido por '(01)', 'UDI-DI', 'GTIN', 'DI', o similar, junto con la "
-            "agencia emisora si se puede determinar (GS1, HIBCC, ICCBBA — a veces junto "
-            "al código, separado por '/', o indicada por el prefijo del código, o el "
-            "formato del symbology del código de barras).\n\n"
-            "NUNCA inventes un código ni una agencia que no estén realmente en el "
-            "documento. Si la referencia no aparece, o aparece pero sin código UDI-DI "
-            "cerca, marca encontrado=false (o encontrado=true con los campos de código/"
-            "agencia vacíos si la referencia sí aparece pero sin código legible).\n\n"
-            f"LISTA DE REFERENCIAS A BUSCAR:\n{lista_refs}\n\n"
-            "Responde ÚNICAMENTE con un JSON con este formato exacto, sin texto "
-            "adicional, sin comentarios y sin marcado markdown (sin ```):\n"
-            '{"resultados": [{"referencia": "", "encontrado": true, "codigo_udi_di": "", '
-            '"agencia_emisora": "", "contexto": ""}]}\n'
-            "El campo 'contexto' debe ser una cita corta (máx. 100 caracteres) del "
-            "fragmento del documento donde encontraste el dato, para que el usuario "
-            "pueda verificarlo rápido. Incluye SIEMPRE una entrada por cada referencia "
-            "de la lista, en el mismo orden."
-        )
-        mensaje_usuario = texto_pdf[:30000] if texto_pdf else (
-            "(Este documento no tiene texto extraíble por métodos normales — "
-            "probablemente está escaneado como imagen. Léelo directamente del "
-            "archivo PDF adjunto.)"
-        )
-        try:
-            respuesta_texto = _llamar_gemini_api(
-                system_prompt=system_prompt,
-                mensajes=[{"role": "user", "content": mensaje_usuario}],
-                modelo=MODELO_IA_CALIDAD,
-                max_tokens=4000,
-                pdf_bytes=pdf_bytes,
-            )
-            texto_json = respuesta_texto.strip()
-            if texto_json.startswith("```"):
-                texto_json = texto_json.strip("`")
-                if texto_json.lower().startswith("json"):
-                    texto_json = texto_json[4:]
-            inicio = texto_json.find("{")
-            fin = texto_json.rfind("}")
-            if inicio != -1 and fin != -1:
-                texto_json = texto_json[inicio:fin + 1]
-            datos = json.loads(texto_json)
-            resultados_totales.extend(datos.get("resultados", []))
-        except Exception:
-            # Si un lote puntual falla (ej. respuesta cortada igual, error de
-            # red), no se pierde todo el documento -- esas referencias
-            # simplemente no traen dato de ESTE documento y quedan
-            # disponibles para buscarse en otro documento o manualmente.
+    resultado = {}
+    for ref in referencias:
+        ref_compacta = "".join(ch for ch in ref.lower() if ch.isalnum())
+        if not ref_compacta:
+            resultado[ref] = None
             continue
+        pos = texto_compacto.find(ref_compacta)
+        if pos == -1:
+            resultado[ref] = None
+            continue
+        pos_ini_original = indices_originales[pos]
+        pos_fin_original = indices_originales[pos + len(ref_compacta) - 1]
+        inicio_ctx = max(0, pos_ini_original - ventana)
+        fin_ctx = min(len(texto), pos_fin_original + ventana)
+        resultado[ref] = " ".join(texto[inicio_ctx:fin_ctx].split())
+    return resultado
 
-        # Pausa corta entre lotes del MISMO documento para no chocar con el
-        # límite de peticiones por minuto de Gemini.
-        if i + TAMAÑO_LOTE_REFS < len(referencias):
-            time.sleep(1.2)
 
-    return resultados_totales
+def _extraer_codigos_de_contextos(pares_ref_contexto):
+    """Segundo paso: dado un lote de (referencia, fragmento de contexto ya
+    localizado), le pide a Gemini SOLO que extraiga el código UDI-DI y la
+    agencia emisora de ese fragmento puntual -- no tiene que buscar nada,
+    solo interpretar un texto corto. Esto es mucho más liviano y confiable
+    que mandarle el documento completo: menos tokens, menos posibilidad de
+    alucinar, y sin riesgo de que la respuesta se corte a la mitad.
+
+    Devuelve una lista de dicts: [{"referencia": "", "codigo_udi_di": "",
+    "agencia_emisora": ""}, ...]. Lanza excepción si la llamada falla (el
+    llamador decide qué hacer con eso)."""
+    bloques = "\n\n".join(
+        f'Referencia: "{ref}"\nContexto: "{ctx}"' for ref, ctx in pares_ref_contexto
+    )
+    system_prompt = (
+        "Eres un asistente que extrae códigos UDI-DI (Identificador Único de "
+        "Dispositivo médico) de fragmentos cortos de texto ya localizados en "
+        "un documento técnico (catálogo, certificado, ficha de producto).\n\n"
+        "Para cada fragmento, ya se confirmó que la referencia SÍ aparece ahí "
+        "-- tu única tarea es identificar, DENTRO de ese mismo fragmento, un "
+        "código UDI-DI (normalmente numérico o alfanumérico, a veces "
+        "precedido por '(01)', 'UDI-DI', 'GTIN', 'DI', o similar) y la "
+        "agencia emisora si se puede determinar (GS1, HIBCC, ICCBBA), "
+        "normalmente junto al código, separada por '/', o inferible por el "
+        "formato del código (los códigos GS1 suelen ser numéricos de 12-14 "
+        "dígitos).\n\n"
+        "MUY IMPORTANTE: el código UDI-DI NUNCA es igual a la referencia/"
+        "número de catálogo que se buscó -- son datos distintos. Si el "
+        "único número que ves en el fragmento es la referencia misma "
+        "repetida, o no hay ningún código UDI-DI real y distinto en el "
+        "fragmento, deja 'codigo_udi_di' vacío en vez de inventar o repetir "
+        "la referencia. Nunca inventes un código ni una agencia que no "
+        "estén literalmente en el texto.\n\n"
+        f"FRAGMENTOS A REVISAR:\n\n{bloques}\n\n"
+        "Responde ÚNICAMENTE con un JSON con este formato exacto, sin texto "
+        "adicional, sin comentarios y sin marcado markdown (sin ```):\n"
+        '{"resultados": [{"referencia": "", "codigo_udi_di": "", '
+        '"agencia_emisora": ""}]}\n'
+        "Incluye SIEMPRE una entrada por cada referencia de la lista, en el "
+        "mismo orden."
+    )
+    respuesta_texto = _llamar_gemini_api(
+        system_prompt=system_prompt,
+        mensajes=[{"role": "user", "content": "Extrae los códigos según las instrucciones."}],
+        modelo=MODELO_IA_CALIDAD,
+        max_tokens=4000,
+    )
+    texto_json = respuesta_texto.strip()
+    if texto_json.startswith("```"):
+        texto_json = texto_json.strip("`")
+        if texto_json.lower().startswith("json"):
+            texto_json = texto_json[4:]
+    inicio = texto_json.find("{")
+    fin = texto_json.rfind("}")
+    if inicio != -1 and fin != -1:
+        texto_json = texto_json[inicio:fin + 1]
+    datos = json.loads(texto_json)
+    return datos.get("resultados", [])
+
+
+def _buscar_codigos_udi_en_documento(texto_pdf, referencias, pdf_bytes=None):
+    """Busca, dentro de un documento (dossier técnico, certificado, ficha de
+    producto, etc.), cada referencia de una lista y extrae el código UDI-DI
+    y la agencia emisora (GS1, HIBCC, ICCBBA, etc.) si aparecen cerca.
+
+    DISEÑO EN DOS PASOS (julio 2026 — reemplaza el enfoque anterior de
+    mandarle todo el documento a Gemini de una sola vez):
+    1. Búsqueda LOCAL en Python sobre el texto COMPLETO del documento (sin
+       truncar) para encontrar dónde aparece cada referencia. Antes, el
+       texto se truncaba a los primeros 30.000 caracteres antes de
+       mandarlo a Gemini -- en documentos largos (catálogos de cientos de
+       líneas) eso dejaba fuera casi todo el contenido, y referencias que
+       sí estaban en el documento salían como "no encontrado" solo porque
+       aparecían más adelante del corte.
+    2. Para las referencias que SÍ se encontraron localmente, se le pide a
+       Gemini (en lotes chicos, con solo el fragmento de contexto de cada
+       una) que identifique el código UDI-DI y la agencia -- una tarea
+       mucho más liviana y confiable que buscar en el documento completo.
+
+    Si el documento no tiene texto extraíble (escaneado sin OCR: 'texto_pdf'
+    viene vacío/muy corto y 'pdf_bytes' viene informado), se usa como
+    respaldo el enfoque anterior -- mandarle el PDF completo a Gemini como
+    imagen, en lotes, para que lo lea visualmente.
+
+    Devuelve (resultados, advertencias):
+      - resultados: lista de dicts [{"referencia": "", "encontrado": bool,
+        "codigo_udi_di": "", "agencia_emisora": "", "contexto": ""}, ...]
+      - advertencias: lista de strings describiendo cualquier lote que haya
+        fallado (para que el usuario lo vea, en vez de que se pierda en
+        silencio como pasaba antes)."""
+    TAMAÑO_LOTE = 30
+    resultados = []
+    advertencias = []
+
+    if texto_pdf and len(texto_pdf) >= 200:
+        # Camino normal: documento con texto extraíble.
+        contextos = _localizar_referencias_en_texto(texto_pdf, referencias)
+        refs_encontradas = [r for r in referencias if contextos.get(r)]
+        refs_no_encontradas = [r for r in referencias if not contextos.get(r)]
+
+        for i in range(0, len(refs_encontradas), TAMAÑO_LOTE):
+            lote = refs_encontradas[i:i + TAMAÑO_LOTE]
+            pares = [(r, contextos[r]) for r in lote]
+            try:
+                extraidos = _extraer_codigos_de_contextos(pares)
+                extraidos_por_ref = {str(e.get("referencia", "")).strip(): e for e in extraidos}
+                for r in lote:
+                    e = extraidos_por_ref.get(r, {})
+                    codigo = str(e.get("codigo_udi_di", "")).strip()
+                    # Filtro anti-alucinación: si Gemini devolvió la
+                    # referencia misma como si fuera el código UDI-DI (visto
+                    # en pruebas reales), se descarta -- es un dato inválido,
+                    # no un código real encontrado en el documento.
+                    ref_compacta = "".join(ch for ch in r.lower() if ch.isalnum())
+                    codigo_compacto = "".join(ch for ch in codigo.lower() if ch.isalnum())
+                    if codigo_compacto and codigo_compacto == ref_compacta:
+                        codigo = ""
+                    resultados.append({
+                        "referencia": r,
+                        "encontrado": True,
+                        "codigo_udi_di": codigo,
+                        "agencia_emisora": str(e.get("agencia_emisora", "")).strip(),
+                        "contexto": contextos[r][:150],
+                    })
+            except Exception as e:
+                advertencias.append(
+                    f"No se pudo extraer códigos de {len(lote)} referencia(s) ya localizadas "
+                    f"en el texto (fallo en lote {i // TAMAÑO_LOTE + 1}): {_mensaje_error_limpio(e)}"
+                )
+                # Aun si Gemini falla, ya sabemos que la referencia SÍ está en
+                # el documento (búsqueda local) -- se reporta como encontrada
+                # con el contexto crudo, para que el usuario lo lea a mano en
+                # vez de perder ese dato por completo.
+                for r in lote:
+                    resultados.append({
+                        "referencia": r, "encontrado": True,
+                        "codigo_udi_di": "", "agencia_emisora": "",
+                        "contexto": contextos[r][:150],
+                    })
+            if i + TAMAÑO_LOTE < len(refs_encontradas):
+                time.sleep(1.2)
+
+        for r in refs_no_encontradas:
+            resultados.append({
+                "referencia": r, "encontrado": False,
+                "codigo_udi_di": "", "agencia_emisora": "", "contexto": "",
+            })
+
+    else:
+        # Respaldo: documento escaneado sin texto extraíble -- Gemini lee el
+        # PDF directamente como imagen (comportamiento anterior, en lotes).
+        for i in range(0, len(referencias), TAMAÑO_LOTE):
+            lote = referencias[i:i + TAMAÑO_LOTE]
+            lista_refs = "\n".join(f"- {r}" for r in lote)
+            system_prompt = (
+                "Eres un asistente que revisa un documento técnico de dispositivos "
+                "médicos (adjunto como imagen/PDF escaneado) buscando códigos UDI-DI "
+                "(Identificador Único de Dispositivo).\n\n"
+                "Se te da una lista de referencias/números de catálogo a buscar. Para "
+                "CADA una, revisa si aparece en el documento. Si aparece, busca cerca "
+                "un código UDI-DI (numérico o alfanumérico, a veces precedido por "
+                "'(01)', 'UDI-DI', 'GTIN', 'DI') junto con la agencia emisora si se "
+                "puede determinar (GS1, HIBCC, ICCBBA).\n\n"
+                "El código UDI-DI NUNCA es igual a la referencia buscada. NUNCA "
+                "inventes un código ni una agencia que no estén realmente en el "
+                "documento.\n\n"
+                f"LISTA DE REFERENCIAS A BUSCAR:\n{lista_refs}\n\n"
+                "Responde ÚNICAMENTE con un JSON con este formato exacto, sin texto "
+                "adicional ni marcado markdown:\n"
+                '{"resultados": [{"referencia": "", "encontrado": true, "codigo_udi_di": "", '
+                '"agencia_emisora": "", "contexto": ""}]}\n'
+                "El campo 'contexto' debe ser una cita corta (máx. 100 caracteres). "
+                "Incluye SIEMPRE una entrada por cada referencia, en el mismo orden."
+            )
+            try:
+                respuesta_texto = _llamar_gemini_api(
+                    system_prompt=system_prompt,
+                    mensajes=[{"role": "user", "content": (
+                        "(Este documento no tiene texto extraíble -- probablemente "
+                        "está escaneado como imagen. Léelo directamente del archivo "
+                        "PDF adjunto.)"
+                    )}],
+                    modelo=MODELO_IA_CALIDAD,
+                    max_tokens=4000,
+                    pdf_bytes=pdf_bytes,
+                )
+                texto_json = respuesta_texto.strip()
+                if texto_json.startswith("```"):
+                    texto_json = texto_json.strip("`")
+                    if texto_json.lower().startswith("json"):
+                        texto_json = texto_json[4:]
+                inicio = texto_json.find("{")
+                fin = texto_json.rfind("}")
+                if inicio != -1 and fin != -1:
+                    texto_json = texto_json[inicio:fin + 1]
+                datos = json.loads(texto_json)
+                resultados.extend(datos.get("resultados", []))
+            except Exception as e:
+                advertencias.append(
+                    f"No se pudo leer el documento escaneado para {len(lote)} "
+                    f"referencia(s) (lote {i // TAMAÑO_LOTE + 1}): {_mensaje_error_limpio(e)}"
+                )
+            if i + TAMAÑO_LOTE < len(referencias):
+                time.sleep(1.2)
+
+    return resultados, advertencias
 
 
 # ==========================================================
@@ -4283,20 +4439,44 @@ else:
                     # a Gemini para que lo lea como imagen, igual que con remisiones.
                     pdf_bytes_para_gemini = bytes_pdf_doc if len(texto_pdf_doc) < 200 else None
 
-                    resultados_doc = _buscar_codigos_udi_en_documento(
+                    resultados_doc, advertencias_doc = _buscar_codigos_udi_en_documento(
                         texto_pdf_doc, referencias_docs, pdf_bytes=pdf_bytes_para_gemini
                     )
+                    for adv in advertencias_doc:
+                        st.warning(f"⚠ '{archivo_pdf.name}': {adv}")
+
                     for r in resultados_doc:
                         ref = str(r.get("referencia", "")).strip()
                         if not ref:
                             continue
                         codigo = str(r.get("codigo_udi_di", "")).strip()
+                        encontrado = bool(r.get("encontrado"))
                         ya_tenia = encontrados_por_ref.get(ref)
-                        if r.get("encontrado") and codigo and (not ya_tenia or not ya_tenia.get("Codigo_UDI_DI")):
+                        # Prioridad al guardar: un resultado con código real >
+                        # uno 'encontrado pero sin código' > nada todavía. Así
+                        # un documento posterior con mejor dato no se pisa por
+                        # uno anterior más pobre, pero tampoco al revés.
+                        tiene_codigo_nuevo = encontrado and codigo
+                        ya_tenia_codigo = ya_tenia and ya_tenia.get("Codigo_UDI_DI")
+                        if tiene_codigo_nuevo and not ya_tenia_codigo:
                             encontrados_por_ref[ref] = {
                                 "Referencia_Original": ref,
                                 "Codigo_UDI_DI":        codigo,
                                 "Agencia_Emisora":      str(r.get("agencia_emisora", "")).strip(),
+                                "Contexto":             str(r.get("contexto", "")).strip(),
+                                "Documento_Fuente":     archivo_pdf.name,
+                            }
+                        elif encontrado and not codigo and not ya_tenia:
+                            # Se encontró la referencia en el documento, pero no
+                            # se pudo identificar un código UDI-DI cerca -- se
+                            # deja constancia con el contexto crudo para que el
+                            # usuario lo revise a mano, en vez de decir "no
+                            # encontrado" (que sería engañoso: sí está, solo
+                            # que sin código legible).
+                            encontrados_por_ref[ref] = {
+                                "Referencia_Original": ref,
+                                "Codigo_UDI_DI":        "",
+                                "Agencia_Emisora":      "",
                                 "Contexto":             str(r.get("contexto", "")).strip(),
                                 "Documento_Fuente":     archivo_pdf.name,
                             }
@@ -4315,7 +4495,10 @@ else:
             filas_consolidado_docs = []
             for ref in referencias_docs:
                 if ref in encontrados_por_ref:
-                    filas_consolidado_docs.append(encontrados_por_ref[ref])
+                    fila = dict(encontrados_por_ref[ref])
+                    if not fila["Codigo_UDI_DI"]:
+                        fila["Codigo_UDI_DI"] = "⚠ Encontrado en documento, sin código legible — revisar contexto"
+                    filas_consolidado_docs.append(fila)
                 else:
                     filas_consolidado_docs.append({
                         "Referencia_Original": ref,
@@ -4325,10 +4508,19 @@ else:
                         "Documento_Fuente":     "",
                     })
 
-            total_encontrados_docs = sum(1 for f in filas_consolidado_docs if f["Codigo_UDI_DI"] != "No encontrado en documentos")
+            total_con_codigo_docs = sum(
+                1 for f in filas_consolidado_docs
+                if f["Codigo_UDI_DI"] not in ("No encontrado en documentos",)
+                and not f["Codigo_UDI_DI"].startswith("⚠")
+            )
+            total_solo_contexto_docs = sum(
+                1 for f in filas_consolidado_docs if f["Codigo_UDI_DI"].startswith("⚠")
+            )
             st.success(
-                f"✨ Listo — {total_encontrados_docs} de {len(referencias_docs)} referencia(s) con código "
-                f"encontrado en los {len(archivos_pdf_docs)} documento(s) subido(s)."
+                f"✨ Listo — {total_con_codigo_docs} de {len(referencias_docs)} referencia(s) con código "
+                f"encontrado" + (f" (+ {total_solo_contexto_docs} encontrada(s) sin código legible, revisar "
+                f"contexto)" if total_solo_contexto_docs else "") +
+                f" en los {len(archivos_pdf_docs)} documento(s) subido(s)."
             )
             df_consolidado_docs = pd.DataFrame(filas_consolidado_docs)
             st.dataframe(df_consolidado_docs, use_container_width=True, height=300)
