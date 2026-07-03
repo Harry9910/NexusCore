@@ -4488,6 +4488,14 @@ else:
             archivo_refs_docs = st.file_uploader(
                 "Excel con las referencias a buscar (.xlsx)", type=["xlsx"], key="uploader_refs_busqueda_docs"
             )
+            archivo_avance_docs = st.file_uploader(
+                "Avance anterior (opcional) — el Excel que ya te dio esta misma herramienta antes",
+                type=["xlsx"], key="uploader_avance_busqueda_docs",
+                help="Si ya corriste esto antes y se cortó a mitad de camino (o quieres agregar más "
+                     "documentos), sube aquí el Excel que descargaste la vez anterior. Las referencias "
+                     "que ya tienen un código real NO se vuelven a buscar -- solo se procesan las que "
+                     "sigan pendientes, y al final se combinan ambos resultados."
+            )
         with col_docs_pdfs:
             archivos_pdf_docs = st.file_uploader(
                 "Documento(s) PDF donde buscar", type=["pdf"], accept_multiple_files=True,
@@ -4549,6 +4557,53 @@ else:
             # 'no encontrado' de un documento posterior — solo se actualiza si el
             # documento nuevo SÍ trae dato y el anterior no lo tenía).
             encontrados_por_ref = {}
+
+            # Si se subió un Excel de "avance anterior", se precargan sus
+            # resultados y se recorta la lista de referencias a buscar: solo
+            # se procesan las que TODAVÍA no tienen un código real (ni
+            # siquiera se gasta tiempo/cuota re-intentando las que ya
+            # quedaron resueltas en una corrida previa).
+            referencias_a_procesar = referencias_docs
+            if archivo_avance_docs is not None:
+                try:
+                    df_avance = pd.read_excel(io.BytesIO(archivo_avance_docs.read()), dtype=str).fillna("")
+                    columnas_esperadas = {"Referencia_Original", "Codigo_UDI_DI", "Agencia_Emisora", "Contexto", "Documento_Fuente"}
+                    if not columnas_esperadas.issubset(set(df_avance.columns)):
+                        st.warning(
+                            "⚠ El archivo de avance no tiene las columnas esperadas de esta herramienta "
+                            "-- se ignora y se busca desde cero."
+                        )
+                    else:
+                        refs_ya_resueltas = 0
+                        for _, fila_avance in df_avance.iterrows():
+                            ref = str(fila_avance.get("Referencia_Original", "")).strip()
+                            codigo_prev = str(fila_avance.get("Codigo_UDI_DI", "")).strip()
+                            if not ref:
+                                continue
+                            tiene_codigo_real = codigo_prev and codigo_prev not in (
+                                "No encontrado en documentos",
+                            ) and not codigo_prev.startswith("⚠")
+                            if tiene_codigo_real:
+                                encontrados_por_ref[ref] = {
+                                    "Referencia_Original": ref,
+                                    "Codigo_UDI_DI":        codigo_prev,
+                                    "Agencia_Emisora":      str(fila_avance.get("Agencia_Emisora", "")).strip(),
+                                    "Contexto":             str(fila_avance.get("Contexto", "")).strip(),
+                                    "Documento_Fuente":     str(fila_avance.get("Documento_Fuente", "")).strip(),
+                                }
+                                refs_ya_resueltas += 1
+                        referencias_a_procesar = [r for r in referencias_docs if r not in encontrados_por_ref]
+                        st.success(
+                            f"📋 Avance cargado: {refs_ya_resueltas} referencia(s) ya tenían código y se "
+                            f"omiten. Quedan {len(referencias_a_procesar)} pendiente(s) por buscar en "
+                            "los documentos de esta corrida."
+                        )
+                        if not referencias_a_procesar:
+                            st.info("🎉 No queda ninguna referencia pendiente — el avance anterior ya estaba completo.")
+                            st.stop()
+                except Exception as e:
+                    st.warning(f"⚠ No se pudo leer el archivo de avance ({e}) -- se busca desde cero.")
+
             texto_estado_docs = st.empty()
             barra_docs = st.empty()
 
@@ -4569,7 +4624,7 @@ else:
                     ) else None
 
                     resultados_doc, advertencias_doc = _buscar_codigos_udi_en_documento(
-                        texto_pdf_doc, referencias_docs, pdf_bytes=pdf_bytes_para_gemini,
+                        texto_pdf_doc, referencias_a_procesar, pdf_bytes=pdf_bytes_para_gemini,
                         avisar_progreso=lambda msg, _n=archivo_pdf.name, _i=idx_doc, _t=len(archivos_pdf_docs): (
                             texto_estado_docs.info(f"⏳ Documento {_i+1}/{_t}: {_n} — {msg}")
                         )
