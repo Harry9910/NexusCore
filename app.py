@@ -3141,27 +3141,58 @@ def _boton_activar_notificaciones():
     activarlo una vez; el navegador recuerda el permiso para las próximas
     visitas. Necesario porque los navegadores exigen un clic real del
     usuario para mostrar el cuadro de 'permitir notificaciones', no se
-    puede pedir automáticamente al cargar la página."""
+    puede pedir automáticamente al cargar la página.
+
+    Usa addEventListener en un <script> (en vez de un atributo onclick en
+    el botón) porque Streamlit reruns re-renderiza este HTML seguido, y
+    algunos navegadores/extensiones bloquean atributos 'onclick' inyectados
+    por innerHTML aunque sí ejecuten <script> normal -- el keep-alive de
+    esta misma app ya usa ese patrón y funciona, así que se sigue el mismo.
+
+    También revisa el permiso ACTUAL al cargar: si el usuario ya lo había
+    concedido (o si el navegador ya lo tiene bloqueado de antes), el botón
+    lo refleja de inmediato en vez de mostrar siempre el texto por defecto."""
     st.markdown(
         """
         <button id="nx-btn-notif" style="
             background:#0b1d3a; color:white; border:none; border-radius:8px;
             padding:8px 16px; cursor:pointer; font-size:14px; margin-bottom:8px;
-        " onclick="
-            if (typeof Notification === 'undefined') {
-                document.getElementById('nx-btn-notif').innerText = '⚠ Tu navegador no soporta notificaciones';
-            } else {
-                Notification.requestPermission().then(function(perm) {
-                    var btn = document.getElementById('nx-btn-notif');
+        ">🔔 Activar notificaciones del navegador</button>
+        <script>
+        (function () {
+            var btn = document.getElementById('nx-btn-notif');
+            if (!btn) { return; }
+
+            function reflejarEstado() {
+                if (typeof Notification === 'undefined') {
+                    btn.innerText = '⚠ Tu navegador no soporta notificaciones';
+                    btn.disabled = true;
+                } else if (Notification.permission === 'granted') {
+                    btn.innerText = '🔔 Notificaciones activadas ✔';
+                } else if (Notification.permission === 'denied') {
+                    btn.innerText = '⚠ Bloqueadas — actívalas desde el ícono 🔒/ⓘ junto a la URL';
+                }
+            }
+            reflejarEstado();
+
+            btn.addEventListener('click', function () {
+                if (typeof Notification === 'undefined') { return; }
+                if (Notification.permission === 'denied') {
+                    // El navegador NO vuelve a mostrar el cuadro de permiso una
+                    // vez quedó en 'denied' -- solo se puede cambiar a mano
+                    // desde la configuración del sitio en el navegador.
+                    btn.innerText = '⚠ Bloqueadas — actívalas desde el ícono 🔒/ⓘ junto a la URL, luego recarga';
+                    return;
+                }
+                Notification.requestPermission().then(function (perm) {
+                    reflejarEstado();
                     if (perm === 'granted') {
-                        btn.innerText = '🔔 Notificaciones activadas ✔';
                         new Notification('NexusCore', {body: 'Te voy a avisar aquí cuando termine una extracción larga.'});
-                    } else {
-                        btn.innerText = '⚠ Permiso denegado — actívalo desde los ajustes del navegador';
                     }
                 });
-            }
-        ">🔔 Activar notificaciones del navegador</button>
+            });
+        })();
+        </script>
         """,
         unsafe_allow_html=True
     )
