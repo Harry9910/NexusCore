@@ -804,7 +804,7 @@ def _extraer_codigos_de_contextos(pares_ref_contexto):
     return datos.get("resultados", [])
 
 
-def _buscar_codigos_udi_en_documento(texto_pdf, referencias, pdf_bytes=None):
+def _buscar_codigos_udi_en_documento(texto_pdf, referencias, pdf_bytes=None, avisar_progreso=None):
     """Busca, dentro de un documento (dossier técnico, certificado, ficha de
     producto, etc.), cada referencia de una lista y extrae el código UDI-DI
     y la agencia emisora (GS1, HIBCC, ICCBBA, etc.) si aparecen cerca.
@@ -826,7 +826,15 @@ def _buscar_codigos_udi_en_documento(texto_pdf, referencias, pdf_bytes=None):
     Si el documento no tiene texto extraíble (escaneado sin OCR: 'texto_pdf'
     viene vacío/muy corto y 'pdf_bytes' viene informado), se usa como
     respaldo el enfoque anterior -- mandarle el PDF completo a Gemini como
-    imagen, en lotes, para que lo lea visualmente.
+    imagen, en lotes. Ese camino usa un lote MÁS GRANDE que el de texto: cada
+    llamada reenvía el PDF completo (puede pesar varios MB) como adjunto, así
+    que menos lotes = menos reenvíos redundantes del mismo archivo pesado.
+
+    'avisar_progreso', si se pasa, es una función que se llama con un texto
+    corto antes de cada lote (ej. para mostrar "lote 2/6" en pantalla) --
+    sin esto, una corrida larga en el camino de PDF escaneado (que puede
+    tardar varios minutos por los reintentos de cuota) se ve como si
+    estuviera congelada, sin ninguna señal de que sigue trabajando.
 
     Devuelve (resultados, advertencias):
       - resultados: lista de dicts [{"referencia": "", "encontrado": bool,
@@ -835,6 +843,7 @@ def _buscar_codigos_udi_en_documento(texto_pdf, referencias, pdf_bytes=None):
         fallado (para que el usuario lo vea, en vez de que se pierda en
         silencio como pasaba antes)."""
     TAMAÑO_LOTE = 30
+    TAMAÑO_LOTE_ESCANEADO = 60  # lotes más grandes: menos reenvíos del PDF pesado
     resultados = []
     advertencias = []
 
@@ -844,7 +853,11 @@ def _buscar_codigos_udi_en_documento(texto_pdf, referencias, pdf_bytes=None):
         refs_encontradas = [r for r in referencias if contextos.get(r)]
         refs_no_encontradas = [r for r in referencias if not contextos.get(r)]
 
+        total_lotes = max(1, -(-len(refs_encontradas) // TAMAÑO_LOTE))  # división hacia arriba
         for i in range(0, len(refs_encontradas), TAMAÑO_LOTE):
+            numero_lote = i // TAMAÑO_LOTE + 1
+            if avisar_progreso:
+                avisar_progreso(f"leyendo texto ya localizado — lote {numero_lote}/{total_lotes}")
             lote = refs_encontradas[i:i + TAMAÑO_LOTE]
             pares = [(r, contextos[r]) for r in lote]
             try:
@@ -871,7 +884,7 @@ def _buscar_codigos_udi_en_documento(texto_pdf, referencias, pdf_bytes=None):
             except Exception as e:
                 advertencias.append(
                     f"No se pudo extraer códigos de {len(lote)} referencia(s) ya localizadas "
-                    f"en el texto (fallo en lote {i // TAMAÑO_LOTE + 1}): {_mensaje_error_limpio(e)}"
+                    f"en el texto (fallo en lote {numero_lote}): {_mensaje_error_limpio(e)}"
                 )
                 # Aun si Gemini falla, ya sabemos que la referencia SÍ está en
                 # el documento (búsqueda local) -- se reporta como encontrada
@@ -894,9 +907,17 @@ def _buscar_codigos_udi_en_documento(texto_pdf, referencias, pdf_bytes=None):
 
     else:
         # Respaldo: documento escaneado sin texto extraíble -- Gemini lee el
-        # PDF directamente como imagen (comportamiento anterior, en lotes).
-        for i in range(0, len(referencias), TAMAÑO_LOTE):
-            lote = referencias[i:i + TAMAÑO_LOTE]
+        # PDF directamente como imagen, en lotes MÁS GRANDES que el camino de
+        # texto (ver nota arriba sobre por qué).
+        total_lotes = max(1, -(-len(referencias) // TAMAÑO_LOTE_ESCANEADO))
+        for i in range(0, len(referencias), TAMAÑO_LOTE_ESCANEADO):
+            numero_lote = i // TAMAÑO_LOTE_ESCANEADO + 1
+            if avisar_progreso:
+                avisar_progreso(
+                    f"leyendo PDF como imagen (más lento) — lote {numero_lote}/{total_lotes}, "
+                    "puede tardar por el límite de cuota gratuita de Gemini"
+                )
+            lote = referencias[i:i + TAMAÑO_LOTE_ESCANEADO]
             lista_refs = "\n".join(f"- {r}" for r in lote)
             system_prompt = (
                 "Eres un asistente que revisa un documento técnico de dispositivos "
@@ -927,7 +948,7 @@ def _buscar_codigos_udi_en_documento(texto_pdf, referencias, pdf_bytes=None):
                         "PDF adjunto.)"
                     )}],
                     modelo=MODELO_IA_CALIDAD,
-                    max_tokens=4000,
+                    max_tokens=7000,
                     pdf_bytes=pdf_bytes,
                 )
                 texto_json = respuesta_texto.strip()
@@ -944,9 +965,9 @@ def _buscar_codigos_udi_en_documento(texto_pdf, referencias, pdf_bytes=None):
             except Exception as e:
                 advertencias.append(
                     f"No se pudo leer el documento escaneado para {len(lote)} "
-                    f"referencia(s) (lote {i // TAMAÑO_LOTE + 1}): {_mensaje_error_limpio(e)}"
+                    f"referencia(s) (lote {numero_lote}): {_mensaje_error_limpio(e)}"
                 )
-            if i + TAMAÑO_LOTE < len(referencias):
+            if i + TAMAÑO_LOTE_ESCANEADO < len(referencias):
                 time.sleep(3.5)  # mismo margen que arriba, respaldo con Gemini Vision
 
     return resultados, advertencias
@@ -4548,7 +4569,10 @@ else:
                     ) else None
 
                     resultados_doc, advertencias_doc = _buscar_codigos_udi_en_documento(
-                        texto_pdf_doc, referencias_docs, pdf_bytes=pdf_bytes_para_gemini
+                        texto_pdf_doc, referencias_docs, pdf_bytes=pdf_bytes_para_gemini,
+                        avisar_progreso=lambda msg, _n=archivo_pdf.name, _i=idx_doc, _t=len(archivos_pdf_docs): (
+                            texto_estado_docs.info(f"⏳ Documento {_i+1}/{_t}: {_n} — {msg}")
+                        )
                     )
                     for adv in advertencias_doc:
                         st.warning(f"⚠ '{archivo_pdf.name}': {adv}")
