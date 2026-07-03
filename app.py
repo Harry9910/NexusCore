@@ -647,6 +647,75 @@ def _analizar_remision_con_ia(texto_pdf, arbol_referencias, pdf_bytes=None):
     return json.loads(texto_json)
 
 
+def _buscar_codigos_udi_en_documento(texto_pdf, referencias, pdf_bytes=None):
+    """Le pide a Gemini que busque, dentro de un documento (dossier técnico,
+    certificado, ficha de producto, etc.), cada referencia de una lista y
+    extraiga el código UDI-DI y la agencia emisora (GS1, HIBCC, ICCBBA, etc.)
+    si aparecen cerca de esa referencia en el documento.
+
+    Igual que en _analizar_remision_con_ia: si 'pdf_bytes' viene informado
+    (documento escaneado sin texto extraíble), se adjunta el PDF directo
+    para que Gemini lo lea como imagen — no hace falta OCR aparte.
+
+    Devuelve una lista de dicts: [{"referencia": "", "encontrado": bool,
+    "codigo_udi_di": "", "agencia_emisora": "", "contexto": ""}, ...]"""
+    lista_refs = "\n".join(f"- {r}" for r in referencias)
+    system_prompt = (
+        "Eres un asistente que revisa documentos técnicos de dispositivos médicos "
+        "(dosieres, certificados, fichas de producto, declaraciones de conformidad, "
+        "etiquetas) buscando códigos UDI-DI (Identificador Único de Dispositivo — "
+        "nivel de Dispositivo).\n\n"
+        "El documento puede venir como texto extraído de un PDF (el orden de las "
+        "líneas puede salir desordenado por la extracción automática), o como el "
+        "archivo PDF adjunto directamente (documento escaneado), en cuyo caso debes "
+        "leerlo visualmente como si fuera una imagen.\n\n"
+        "Se te da una lista de referencias/números de catálogo a buscar. Para CADA "
+        "una, revisa si aparece en el documento (puede aparecer como referencia, "
+        "número de catálogo, número de parte, o similar). Si aparece, busca cerca de "
+        "ella un código UDI-DI: normalmente un número o alfanumérico, a veces "
+        "precedido por '(01)', 'UDI-DI', 'GTIN', 'DI', o similar, junto con la "
+        "agencia emisora si se puede determinar (GS1, HIBCC, ICCBBA — a veces junto "
+        "al código, separado por '/', o indicada por el prefijo del código, o el "
+        "formato del symbology del código de barras).\n\n"
+        "NUNCA inventes un código ni una agencia que no estén realmente en el "
+        "documento. Si la referencia no aparece, o aparece pero sin código UDI-DI "
+        "cerca, marca encontrado=false (o encontrado=true con los campos de código/"
+        "agencia vacíos si la referencia sí aparece pero sin código legible).\n\n"
+        f"LISTA DE REFERENCIAS A BUSCAR:\n{lista_refs}\n\n"
+        "Responde ÚNICAMENTE con un JSON con este formato exacto, sin texto "
+        "adicional, sin comentarios y sin marcado markdown (sin ```):\n"
+        '{"resultados": [{"referencia": "", "encontrado": true, "codigo_udi_di": "", '
+        '"agencia_emisora": "", "contexto": ""}]}\n'
+        "El campo 'contexto' debe ser una cita corta (máx. 100 caracteres) del "
+        "fragmento del documento donde encontraste el dato, para que el usuario "
+        "pueda verificarlo rápido. Incluye SIEMPRE una entrada por cada referencia "
+        "de la lista, en el mismo orden."
+    )
+    mensaje_usuario = texto_pdf[:30000] if texto_pdf else (
+        "(Este documento no tiene texto extraíble por métodos normales — "
+        "probablemente está escaneado como imagen. Léelo directamente del "
+        "archivo PDF adjunto.)"
+    )
+    respuesta_texto = _llamar_gemini_api(
+        system_prompt=system_prompt,
+        mensajes=[{"role": "user", "content": mensaje_usuario}],
+        modelo=MODELO_IA_CALIDAD,
+        max_tokens=4000,
+        pdf_bytes=pdf_bytes,
+    )
+    texto_json = respuesta_texto.strip()
+    if texto_json.startswith("```"):
+        texto_json = texto_json.strip("`")
+        if texto_json.lower().startswith("json"):
+            texto_json = texto_json[4:]
+    inicio = texto_json.find("{")
+    fin = texto_json.rfind("}")
+    if inicio != -1 and fin != -1:
+        texto_json = texto_json[inicio:fin + 1]
+    datos = json.loads(texto_json)
+    return datos.get("resultados", [])
+
+
 # ==========================================================
 # CREACIÓN DE DOSSIER — (DM) DISPOSITIVOS MÉDICOS
 # ==========================================================
@@ -4122,6 +4191,136 @@ else:
                     )
             elif not hay_archivo_eu:
                 st.info("👈 Sube un archivo para activar la monitorización.")
+
+        st.markdown("<br>", unsafe_allow_html=True)
+        st.markdown(
+            '<div class="col-extraccion-titulo">📄 Buscar códigos en tus propios documentos</div>',
+            unsafe_allow_html=True
+        )
+        st.caption(
+            "Para cuando ya tienes un dossier, certificado o ficha técnica (escaneado, con OCR, "
+            "o 100% digital) que probablemente ya trae el código UDI-DI y la agencia emisora. Sube "
+            "el/los documento(s) PDF junto con tu Excel de referencias (mismo formato de siempre — "
+            "una referencia por fila) y se arma un consolidado con lo que sí se encuentre. Lo que no "
+            "aparezca en los documentos, lo completas manualmente o con Extracción Masiva."
+        )
+
+        col_docs_refs, col_docs_pdfs = st.columns(2)
+        with col_docs_refs:
+            archivo_refs_docs = st.file_uploader(
+                "Excel con las referencias a buscar (.xlsx)", type=["xlsx"], key="uploader_refs_busqueda_docs"
+            )
+        with col_docs_pdfs:
+            archivos_pdf_docs = st.file_uploader(
+                "Documento(s) PDF donde buscar", type=["pdf"], accept_multiple_files=True,
+                key="uploader_pdfs_busqueda_docs"
+            )
+
+        if st.button(
+            "🔍 Buscar códigos en documentos",
+            disabled=(archivo_refs_docs is None or not archivos_pdf_docs),
+            use_container_width=True, key="btn_buscar_codigos_docs"
+        ):
+            try:
+                df_refs_docs = pd.read_excel(io.BytesIO(archivo_refs_docs.read()), header=None, dtype=str)
+                df_refs_docs[0] = df_refs_docs[0].astype(str).str.strip()
+                referencias_docs = [r for r in df_refs_docs[0].tolist() if r and r != "nan"]
+            except Exception as e:
+                st.error(f"Error al abrir el archivo de Excel: {e}")
+                st.stop()
+
+            if not referencias_docs:
+                st.warning("El Excel de referencias parece estar vacío.")
+                st.stop()
+
+            # encontrados_por_ref: referencia -> mejor coincidencia encontrada hasta
+            # ahora (se recorre un documento a la vez; si una referencia ya se
+            # encontró en un documento anterior, no se sobreescribe con un
+            # 'no encontrado' de un documento posterior — solo se actualiza si el
+            # documento nuevo SÍ trae dato y el anterior no lo tenía).
+            encontrados_por_ref = {}
+            texto_estado_docs = st.empty()
+            barra_docs = st.empty()
+
+            for idx_doc, archivo_pdf in enumerate(archivos_pdf_docs):
+                texto_estado_docs.info(f"⏳ Leyendo documento {idx_doc+1}/{len(archivos_pdf_docs)}: {archivo_pdf.name}")
+                barra_docs.markdown(
+                    f'<div class="prog-wrap"><div class="prog-bar" style="width:{int(idx_doc/len(archivos_pdf_docs)*100)}%;"></div></div>',
+                    unsafe_allow_html=True
+                )
+                try:
+                    bytes_pdf_doc = archivo_pdf.read()
+                    texto_pdf_doc = _extraer_texto_pdf(bytes_pdf_doc)
+                    # Si salió muy poco texto, es probable que sea un escaneo sin
+                    # capa de texto (o con un OCR pobre) — se manda el PDF directo
+                    # a Gemini para que lo lea como imagen, igual que con remisiones.
+                    pdf_bytes_para_gemini = bytes_pdf_doc if len(texto_pdf_doc) < 200 else None
+
+                    resultados_doc = _buscar_codigos_udi_en_documento(
+                        texto_pdf_doc, referencias_docs, pdf_bytes=pdf_bytes_para_gemini
+                    )
+                    for r in resultados_doc:
+                        ref = str(r.get("referencia", "")).strip()
+                        if not ref:
+                            continue
+                        codigo = str(r.get("codigo_udi_di", "")).strip()
+                        ya_tenia = encontrados_por_ref.get(ref)
+                        if r.get("encontrado") and codigo and (not ya_tenia or not ya_tenia.get("Codigo_UDI_DI")):
+                            encontrados_por_ref[ref] = {
+                                "Referencia_Original": ref,
+                                "Codigo_UDI_DI":        codigo,
+                                "Agencia_Emisora":      str(r.get("agencia_emisora", "")).strip(),
+                                "Contexto":             str(r.get("contexto", "")).strip(),
+                                "Documento_Fuente":     archivo_pdf.name,
+                            }
+                except Exception as e:
+                    st.warning(f"⚠ No se pudo procesar '{archivo_pdf.name}': {e}")
+
+                # Pausa corta entre documentos para no chocar con el límite de
+                # peticiones por minuto de Gemini (mismo criterio que en las
+                # otras funciones de IA de esta app).
+                if idx_doc < len(archivos_pdf_docs) - 1:
+                    time.sleep(2)
+
+            texto_estado_docs.empty()
+            barra_docs.empty()
+
+            filas_consolidado_docs = []
+            for ref in referencias_docs:
+                if ref in encontrados_por_ref:
+                    filas_consolidado_docs.append(encontrados_por_ref[ref])
+                else:
+                    filas_consolidado_docs.append({
+                        "Referencia_Original": ref,
+                        "Codigo_UDI_DI":        "No encontrado en documentos",
+                        "Agencia_Emisora":      "",
+                        "Contexto":             "",
+                        "Documento_Fuente":     "",
+                    })
+
+            total_encontrados_docs = sum(1 for f in filas_consolidado_docs if f["Codigo_UDI_DI"] != "No encontrado en documentos")
+            st.success(
+                f"✨ Listo — {total_encontrados_docs} de {len(referencias_docs)} referencia(s) con código "
+                f"encontrado en los {len(archivos_pdf_docs)} documento(s) subido(s)."
+            )
+            df_consolidado_docs = pd.DataFrame(filas_consolidado_docs)
+            st.dataframe(df_consolidado_docs, use_container_width=True, height=300)
+
+            output_docs = io.BytesIO()
+            with pd.ExcelWriter(output_docs, engine='openpyxl') as writer:
+                df_consolidado_docs.to_excel(writer, index=False)
+            st.download_button(
+                label="📥 Descargar Excel (Códigos encontrados en documentos)",
+                data=output_docs.getvalue(),
+                file_name="codigos_udi_desde_documentos.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                use_container_width=True, key="dl_codigos_docs"
+            )
+            registrar_log(
+                st.session_state["usuario_activo_real"],
+                f"Búsqueda de códigos UDI en {len(archivos_pdf_docs)} documento(s) ({len(referencias_docs)} refs)",
+                total_encontrados_docs
+            )
 
     # ==========================================================
     # VISTA 2-C: DOCUMENTACIÓN POST-VENTA
