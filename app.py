@@ -2037,7 +2037,7 @@ def _buscar_referencia_accessgudid(ref, session, headers, company_names_filtro, 
         coincidencias = []
         hubo_filtrado = False
         hubo_error_tecnico = False
-        with ThreadPoolExecutor(max_workers=min(2, len(enlaces))) as executor_detalle:
+        with ThreadPoolExecutor(max_workers=min(1, len(enlaces))) as executor_detalle:
             futuros_detalle = [
                 executor_detalle.submit(_procesar_detalle_accessgudid, href, ref, session, headers, company_names_filtro)
                 for href in enlaces
@@ -4165,7 +4165,7 @@ else:
                     # referencia con varios dispositivos) para no saturar el
                     # sitio de AccessGUDID con demasiadas conexiones a la vez
                     # — es algo más lento, pero más preciso y confiable.
-                    MAX_HILOS_GUDID = 3
+                    MAX_HILOS_GUDID = 2  # bajado de 3: menos peticiones simultáneas = menos "Error de red" por límite de tasa del servidor
 
                     def actualizar_barra_gudid(pct):
                         barra_custom.markdown(
