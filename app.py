@@ -246,6 +246,7 @@ def _normalizar_registro_invima(r):
         "titular": str(r.get("titular", "") or "").strip(),
         "pais_titular": str(r.get("pais_titular", "") or "").strip(),
         "nombre_rol": str(r.get("nombre_rol") or r.get("nombrerol") or "").strip(),
+        "pais_rol": str(r.get("pais_rol", "") or "").strip(),
         "rol": str(r.get("rol", "") or "").strip(),
     }
 
@@ -262,6 +263,7 @@ def _agrupar_registros_invima(filas_norm, fuente):
                 "grupo", "producto", "marca", "riesgo", "modalidad", "titular", "pais_titular"
             )}
             g["fabricantes"] = set()
+            g["fab_paises"] = {}
             g["importadores"] = set()
             g["otros_roles"] = set()
             g["fuente"] = fuente
@@ -272,6 +274,8 @@ def _agrupar_registros_invima(filas_norm, fuente):
             continue
         if "FABRIC" in rol:
             g["fabricantes"].add(nom)
+            if f.get("pais_rol"):
+                g["fab_paises"][nom] = f["pais_rol"]
         elif "IMPORT" in rol:
             g["importadores"].add(nom)
         elif rol:
@@ -675,6 +679,8 @@ def _encabezado_resolucion(texto_plano):
         "expediente": m_exp.group(1) if m_exp else "",
         "tramite": _norm_espacios(m_tram.group(1)) if m_tram else "",
         "titular": titular,
+        "modalidad": _campo_resolucion(texto_plano, r"TIPO\s+DE\s+REGISTRO"),
+        "fabricantes": _fabricantes_de_resolucion(texto_plano),
         "producto": _campo_resolucion(texto_plano, r"PRODUCTO"),
         "marca": _campo_resolucion(texto_plano, r"MARCA"),
         "riesgo": _campo_resolucion(texto_plano, r"RIESGO"),
@@ -911,7 +917,7 @@ def leer_documento_registro(nombre, pdf_bytes, avisar=None, docs_previos=None):
     doc = {
         "archivo": nombre, "tipo": "No reconocido", "clave": None, "registro_texto": "", "expediente": "",
         "resolucion_no": "", "fecha_resolucion": "", "tramite": "", "titular": "", "producto": "",
-        "marca": "", "riesgo": "", "estado": "", "vencimiento": "",
+        "marca": "", "riesgo": "", "estado": "", "vencimiento": "", "modalidad": "", "fabricantes": [],
         "referencias": [], "formato": "", "advertencias": [], "texto_observaciones": "",
     }
     try:
@@ -1140,6 +1146,237 @@ def construir_consolidado_referencias(registros_df, docs, validacion_df=None):
     columnas = ["Cliente", "Registro_Sanitario", "Expediente", "Titular", "Producto", "Marca", "Estado_Registro",
                 "Fecha_Vencimiento", "Referencia", "Descripcion", "Amparo", "Fuentes", "Formato_Origen", "Notas"]
     return pd.DataFrame(filas, columns=columnas), pd.DataFrame(control), hojas
+
+
+# ==========================================================
+# PLANTILLA DE ESTÁNDAR SEMÁNTICO (libro "DATOS PARA ESTÁNDAR SEMÁNTICO" por cliente)
+# ----------------------------------------------------------
+# Llena la tabla grande de la hoja "DATOS EMPRESA" (desde la fila bajo el encabezado
+# "Expediente | Registro sanitario | Riesgo | ...") con una fila por registro y
+# fabricante. Fuentes: listado abierto del INVIMA (estado actual) y, si falta algo,
+# las resoluciones leídas. Quedan vacías las columnas que se llenan a mano:
+# Estado, Referencias, Reportadas, Plantilla, MODALIDAD y TAX ID.
+# ==========================================================
+COLUMNAS_PLANTILLA_SEMANTICO = [
+    "Expediente", "Registro sanitario", "Riesgo", "Estado", "Referencias", "Reportadas", "Rol",
+    "Plantilla", "Nombre producto", "Razon Social fabricante", "Pais", "MODALIDAD", "TAX ID"
+]
+
+
+def _riesgo_estandar(r):
+    t = str(r or "").strip().upper()
+    return {"IIA": "IIa", "IIB": "IIb"}.get(t, t)
+
+
+def _dividir_marcas(texto):
+    """'AUDITDATA - ENTOMED' -> ['AUDITDATA', 'ENTOMED']. Separa por ' - ', ';', ',' o ' / '."""
+    t = _norm_espacios(texto)
+    if not t:
+        return []
+    partes = re.split(r"\s+[-–—]\s+|\s*;\s*|\s*,\s*|\s+/\s+", t)
+    vistas, salida = set(), []
+    for p in partes:
+        p = p.strip()
+        if p and p.upper() not in vistas:
+            vistas.add(p.upper())
+            salida.append(p)
+    return salida
+
+
+def _fabricantes_de_resolucion(texto):
+    """Lee 'FABRICANTE(S): NOMBRE CON DOMICILIO EN PAÍS' de una resolución. Devuelve [(nombre, pais)]."""
+    m = re.search(
+        r"FABRICANTE\(S\)\s*:?\s*(.*?)(?=\n\s*(?:IMPORTADOR|ACONDICIONADOR|ENVASADOR|EQUIPO|RIESGO|SISTEMAS|USOS|PRESENTACI)[A-ZÁÉÍÓÚ\(\)]*\s*:|$)",
+        texto, re.DOTALL | re.IGNORECASE)
+    if not m:
+        return []
+    bloque = _norm_espacios(m.group(1))
+    entradas = re.split(r"\s*;\s*|\s*,\s*(?=[^,]*?\s+CON\s+DOMICILIO)", bloque)
+    salida = []
+    for e in entradas:
+        mm = re.match(r"(.+?)\s+CON\s+DOMICILIO\s+EN\s+(.+)$", e.strip(), re.IGNORECASE)
+        if mm:
+            salida.append((mm.group(1).strip(), mm.group(2).strip().rstrip(".")))
+        elif e.strip():
+            salida.append((e.strip(), ""))
+    return salida
+
+
+def construir_filas_plantilla(lista_df, docs, cliente_sel="Todos", avisar=None):
+    """Arma las filas de la tabla 'DATOS EMPRESA'. Devuelve (DataFrame, [avisos])."""
+    avisos = []
+    items, vistos = [], set()
+    if lista_df is not None and not lista_df.empty:
+        for _, f in lista_df.iterrows():
+            cli = str(f.get("Cliente", "") or "").strip()
+            if cliente_sel != "Todos" and cli != cliente_sel:
+                continue
+            reg_txt = str(f.get("Registro_Sanitario", "") or "").strip()
+            clave, _r = _parsear_registro_sanitario(reg_txt)
+            exp = _limpiar_expediente(f.get("Expediente", "")) or ("" if clave else _limpiar_expediente(reg_txt))
+            k = clave or ("EXP" + exp)
+            if k in vistos or k == "EXP":
+                continue
+            vistos.add(k)
+            items.append({"cliente": cli, "clave": clave, "exp": exp, "reg_txt": reg_txt if clave else ""})
+    if cliente_sel == "Todos":
+        for d in docs:
+            if d.get("clave") and d["clave"] not in vistos:
+                vistos.add(d["clave"])
+                items.append({"cliente": "", "clave": d["clave"], "exp": d.get("expediente", ""), "reg_txt": ""})
+    if not items:
+        return pd.DataFrame(columns=COLUMNAS_PLANTILLA_SEMANTICO), ["No hay registros para llenar la plantilla."]
+
+    # Datos actuales del INVIMA (listado abierto)
+    grupos = []
+    try:
+        if avisar:
+            avisar("Consultando el listado oficial del INVIMA…")
+        grupos = _agrupar_registros_invima(
+            [_normalizar_registro_invima(r) for r in _consultar_por_claves_y_expedientes(
+                URL_DATOS_INVIMA_PRINCIPAL, "registro_sanitario",
+                [i["clave"] for i in items if i["clave"]], [i["exp"] for i in items if i["exp"]], avisar)],
+            "Listado abierto INVIMA"
+        )
+    except Exception as e:
+        avisos.append(f"No se pudo consultar el listado abierto del INVIMA ({e}). Se usaron solo los documentos subidos.")
+
+    filas = []
+    for it in items:
+        if it["clave"]:
+            cands = [g for g in grupos if g["clave"] == it["clave"]]
+        else:
+            cands = [g for g in grupos if g["expediente"] == it["exp"]]
+        cands.sort(key=lambda g: (g["revision"], g["vencimiento"]), reverse=True)
+        g = cands[0] if cands else None
+        clave = it["clave"] or (g["clave"] if g else None)
+        docs_reg = [d for d in docs if (clave and d.get("clave") == clave) or (it["exp"] and d.get("expediente") == it["exp"])]
+        resols = sorted([d for d in docs_reg if d["tipo"] != "Consulta en línea"],
+                        key=lambda d: (d.get("fecha_resolucion") or "", d.get("resolucion_no") or ""))
+        res = resols[-1] if resols else None
+        consulta = next((d for d in docs_reg if d["tipo"] == "Consulta en línea"), None)
+        etiqueta = (it["reg_txt"] or (("INVIMA " + clave) if clave else it["exp"]))
+
+        if g is None and not docs_reg:
+            avisos.append(f"{etiqueta}: no se halló en el listado del INVIMA ni hay documentos; la fila queda con lo mínimo.")
+
+        def _pref(*vals):
+            return next((v for v in vals if v), "")
+
+        exp = _pref(it["exp"], g["expediente"] if g else "", res["expediente"] if res else "",
+                    consulta["expediente"] if consulta else "")
+        riesgo = _riesgo_estandar(_pref(g["riesgo"] if g else "", consulta["riesgo"] if consulta else "",
+                                        res["riesgo"] if res else ""))
+        rol = _pref(g["modalidad"] if g else "", res.get("modalidad", "") if res else "").upper()
+        producto = _pref(g["producto"] if g else "", consulta["producto"] if consulta else "",
+                         res["producto"] if res else "")
+        marcas = _dividir_marcas(_pref(g["marca"] if g else "", consulta["marca"] if consulta else "",
+                                       res["marca"] if res else ""))
+        if g is not None:
+            fuente = "Listado abierto INVIMA"
+            fabs = [(n, (g["fab_paises"].get(n) or "")) for n in sorted(g["fabricantes"])]
+        else:
+            fuente, fabs = "", []
+        if not fabs and res and res.get("fabricantes"):
+            fabs = list(res["fabricantes"])
+            fuente = "Resolución " + str(res.get("resolucion_no", ""))
+            if any(" - " in p for _, p in fabs):
+                avisos.append(f"{etiqueta}: el domicilio del fabricante trae ciudad - departamento; revisa la columna País.")
+        if not fabs:
+            fabs = [("", "")]
+            avisos.append(f"{etiqueta}: no se encontró el fabricante; complétalo a mano.")
+        if len(fabs) > 1:
+            avisos.append(f"{etiqueta}: tiene {len(fabs)} fabricantes; se creó una fila por cada uno.")
+        if len(marcas) > 6:
+            avisos.append(f"{etiqueta}: tiene {len(marcas)} marcas y la plantilla trae 6 columnas; las demás se omitieron: {', '.join(marcas[6:])}.")
+        if g is not None and g["estado"] and not g["estado"].lower().startswith("vigente"):
+            avisos.append(f"{etiqueta}: en el INVIMA figura como '{g['estado']}'.")
+
+        for nombre_fab, pais in fabs:
+            fila = {c: "" for c in COLUMNAS_PLANTILLA_SEMANTICO}
+            fila.update({
+                "Expediente": exp, "Registro sanitario": etiqueta if it["reg_txt"] else (("INVIMA " + clave) if clave else etiqueta),
+                "Riesgo": riesgo, "Rol": rol, "Nombre producto": producto.upper(),
+                "Razon Social fabricante": nombre_fab.upper(), "Pais": str(pais).upper(),
+            })
+            for n, mk in enumerate(marcas[:6], start=1):
+                fila[f"MARCA {n}"] = mk.upper()
+            fila["_Cliente"] = it["cliente"]
+            fila["_Fuente"] = fuente
+            filas.append(fila)
+    columnas = COLUMNAS_PLANTILLA_SEMANTICO + [f"MARCA {n}" for n in range(1, 7)] + ["_Cliente", "_Fuente"]
+    return pd.DataFrame(filas, columns=columnas), avisos
+
+
+def llenar_plantilla_semantico(bytes_plantilla, df_filas):
+    """Escribe las filas en 'DATOS EMPRESA' conservando el resto del libro. Devuelve (bytes, n_escritas, omitidas)."""
+    from openpyxl import load_workbook
+    from copy import copy
+    wb = load_workbook(io.BytesIO(bytes_plantilla))
+    nombre_hoja = next((n for n in wb.sheetnames if n.strip().upper() == "DATOS EMPRESA"), None)
+    if nombre_hoja is None:
+        raise RuntimeError("El libro no tiene una hoja llamada 'DATOS EMPRESA'.")
+    ws = wb[nombre_hoja]
+
+    # Fila de encabezados: la que tiene 'Expediente' y 'Registro sanitario'
+    fila_enc = None
+    for r in range(1, 80):
+        a = str(ws.cell(r, 1).value or "").strip().lower()
+        b = str(ws.cell(r, 2).value or "").strip().lower()
+        if a == "expediente" and b.startswith("registro"):
+            fila_enc = r
+            break
+    if fila_enc is None:
+        raise RuntimeError("No encontré la fila de encabezados (Expediente | Registro sanitario | …) en 'DATOS EMPRESA'.")
+    columnas = {}
+    for c in range(1, ws.max_column + 1):
+        v = str(ws.cell(fila_enc, c).value or "").strip().upper()
+        if v:
+            columnas[v] = c
+
+    # Registros que ya están en la plantilla (para no duplicar)
+    existentes = set()
+    ultima = fila_enc
+    for r in range(fila_enc + 1, ws.max_row + 1):
+        exp_v = str(ws.cell(r, columnas["EXPEDIENTE"]).value or "").strip()
+        reg_v = str(ws.cell(r, columnas["REGISTRO SANITARIO"]).value or "").strip()
+        if exp_v or reg_v:
+            ultima = r
+            clave, _r = _parsear_registro_sanitario(reg_v)
+            fab_v = str(ws.cell(r, columnas.get("RAZON SOCIAL FABRICANTE", 1)).value or "").strip().upper()
+            existentes.add(((clave or exp_v), fab_v))
+
+    fila_modelo = fila_enc + 1
+    siguiente = ultima + 1
+    escritas, omitidas = 0, []
+    for _, f in df_filas.iterrows():
+        clave, _r = _parsear_registro_sanitario(f.get("Registro sanitario", ""))
+        llave = ((clave or str(f.get("Expediente", "")).strip()), str(f.get("Razon Social fabricante", "")).strip().upper())
+        if llave in existentes:
+            omitidas.append(f"{f.get('Registro sanitario', '')} — {f.get('Razon Social fabricante', '')}")
+            continue
+        existentes.add(llave)
+        # estilo: copiar el de la fila modelo si la fila nueva queda fuera del área ya formateada
+        if siguiente > ws.max_row or ws.cell(siguiente, 1).has_style is False:
+            for c in range(1, max(columnas.values()) + 1):
+                origen, destino = ws.cell(fila_modelo, c), ws.cell(siguiente, c)
+                if origen.has_style:
+                    destino._style = copy(origen._style)
+        for nombre_col, c in columnas.items():
+            clave_df = next((k for k in df_filas.columns if k.upper() == nombre_col), None)
+            if clave_df is None or clave_df.startswith("_"):
+                continue
+            valor = f.get(clave_df, "")
+            if valor in ("", None) or (isinstance(valor, float) and pd.isna(valor)):
+                continue
+            if clave_df == "Expediente" and re.fullmatch(r"\d{5,9}", str(valor).strip()):
+                valor = int(str(valor).strip())
+            ws.cell(siguiente, c).value = valor
+        siguiente += 1
+        escritas += 1
+    salida = io.BytesIO()
+    wb.save(salida)
+    return salida.getvalue(), escritas, omitidas
 
 
 def obtener_usuarios():
@@ -7047,8 +7284,9 @@ else:
         st.session_state.setdefault("rs_docs", [])
         st.session_state.setdefault("rs_docs_firmas", [])
 
-        tab_lista, tab_docs, tab_cons, tab_port = st.tabs([
-            "1️⃣ Registros de clientes", "2️⃣ Documentos", "3️⃣ Consolidado de referencias", "🏢 Buscar por titular"
+        tab_lista, tab_docs, tab_cons, tab_plan, tab_port = st.tabs([
+            "1️⃣ Registros de clientes", "2️⃣ Documentos", "3️⃣ Consolidado de referencias",
+            "4️⃣ Plantilla de estándar semántico", "🏢 Buscar por titular"
         ])
 
         def _agregar_a_lista_rs(nuevas_filas):
@@ -7358,6 +7596,72 @@ else:
                     "pero no en la consulta actual (posible exclusión por una modificación); 📄 solo hay resoluciones y conviene "
                     "verificar modificaciones posteriores. Las referencias marcadas “(revisar)” en *Formato_Origen* fueron separadas "
                     "con IA a partir de texto corrido y vale la pena revisarlas."
+                )
+
+        # ═════════════ MÓDULO 4: PLANTILLA DE ESTÁNDAR SEMÁNTICO ═════════════
+        with tab_plan:
+            st.markdown(
+                "Sube el libro **DATOS PARA ESTÁNDAR SEMÁNTICO** del cliente. Se llena la tabla grande de la hoja **DATOS EMPRESA** "
+                "con una fila por registro: expediente, registro sanitario, riesgo, rol (la modalidad del INVIMA), nombre del producto, "
+                "fabricante, país y las marcas (una por columna). Quedan **vacías** las columnas que llenas tú: Estado, Referencias, "
+                "Reportadas, Plantilla, MODALIDAD y TAX ID. El resto del libro no se toca, y los registros que ya estén en la tabla no se duplican."
+            )
+            st.caption("Toma los registros de la lista del módulo 1 y los datos vigentes del listado abierto del INVIMA; si falta algo (por ejemplo el fabricante), usa las resoluciones del módulo 2.")
+            archivo_plantilla = st.file_uploader("Libro de Excel del cliente (.xlsx)", type=["xlsx"], key="rs_plantilla_xlsx")
+            clientes_lista = sorted({str(c).strip() for c in st.session_state["rs_lista"]["Cliente"].tolist() if str(c).strip()})
+            cliente_sel = st.selectbox("Registros de qué cliente", ["Todos"] + clientes_lista, key="rs_plantilla_cliente")
+
+            if st.button("🧾 Preparar filas", key="rs_btn_preparar_plantilla", type="primary", use_container_width=True):
+                if st.session_state["rs_lista"].empty and not st.session_state["rs_docs"]:
+                    st.warning("Primero agrega registros en el módulo 1.")
+                else:
+                    msg_pl = st.empty()
+                    try:
+                        with st.spinner("Armando las filas…"):
+                            df_pl, avisos_pl = construir_filas_plantilla(
+                                st.session_state["rs_lista"], st.session_state["rs_docs"], cliente_sel,
+                                avisar=lambda m: msg_pl.caption(m)
+                            )
+                        msg_pl.empty()
+                        st.session_state["rs_plantilla_filas"] = df_pl
+                        st.session_state["rs_plantilla_avisos"] = avisos_pl
+                        st.session_state["rs_plantilla_ver"] = st.session_state.get("rs_plantilla_ver", 0) + 1
+                    except Exception as e:
+                        msg_pl.empty()
+                        st.error(f"No se pudieron armar las filas: {e}")
+
+            df_pl = st.session_state.get("rs_plantilla_filas")
+            if df_pl is not None:
+                for av in st.session_state.get("rs_plantilla_avisos", []):
+                    st.warning(av)
+                st.markdown(f"**Filas a escribir ({len(df_pl)})** — puedes corregir cualquier celda antes de llenar la plantilla:")
+                df_pl_edit = st.data_editor(
+                    df_pl, num_rows="dynamic", use_container_width=True,
+                    key=f"rs_editor_plantilla_{st.session_state.get('rs_plantilla_ver', 0)}"
+                )
+                if st.button("📝 Llenar la plantilla", key="rs_btn_llenar_plantilla", use_container_width=True):
+                    if archivo_plantilla is None:
+                        st.warning("Sube primero el libro de Excel del cliente.")
+                    else:
+                        try:
+                            datos_xlsx, n_esc, omit = llenar_plantilla_semantico(archivo_plantilla.getvalue(), df_pl_edit.fillna(""))
+                            st.session_state["rs_plantilla_resultado"] = (datos_xlsx, archivo_plantilla.name, n_esc, omit)
+                            registrar_log(st.session_state["usuario_activo_real"], f"Plantilla de estándar semántico ({n_esc} filas)", n_esc)
+                        except Exception as e:
+                            st.error(f"No se pudo llenar la plantilla: {e}")
+
+            res_pl = st.session_state.get("rs_plantilla_resultado")
+            if res_pl:
+                datos_xlsx, nombre_orig, n_esc, omit = res_pl
+                st.success(f"Se escribieron {n_esc} fila(s) en 'DATOS EMPRESA'." + (f" Se omitieron {len(omit)} que ya estaban." if omit else ""))
+                if omit:
+                    st.caption("Ya estaban en la tabla: " + "; ".join(omit))
+                base_nombre = nombre_orig.rsplit(".", 1)[0]
+                st.download_button(
+                    "📥 Descargar libro con los registros", data=datos_xlsx,
+                    file_name=f"{base_nombre}_con_registros.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    key="rs_dl_plantilla_llena", use_container_width=True
                 )
 
         # ═════════════ BUSCAR POR TITULAR ═════════════
