@@ -762,6 +762,7 @@ def _encabezado_consulta(texto_plano):
     m_prod = re.search(r"Nombre\s*producto\s+(.+)", unido)
     m_marca = re.search(r"Marcas\s+(.+)", unido)
     m_riesgo = re.search(r"Riesgo\s+(I{1,3}[abAB]?|IV)\b", unido)
+    m_modal = re.search(r"Modalidad\s*([A-Za-zÁÉÍÓÚ ,]+?)\s*Estado\s*Registro", unido)
     estado = m_estado.group(1) if m_estado else ""
     estado = re.sub(r"(?i)^(vigente|vencido|cancelado)(.*)$", lambda m: m.group(1).capitalize(), estado)
     return {
@@ -775,7 +776,150 @@ def _encabezado_consulta(texto_plano):
         "riesgo": m_riesgo.group(1).upper() if m_riesgo else "",
         "estado": estado,
         "vencimiento": f"{m_venc.group(1)}-{m_venc.group(2)}-{m_venc.group(3)}" if m_venc else "",
+        "modalidad": _modalidad_desde_texto_pegado(m_modal.group(1)) if m_modal else "",
     }, _bloque_observaciones_consulta(unido)
+
+
+# ----------------------------------------------------------
+# Tabla "Roles por Producto" de la consulta en línea (rol, nombre, dirección, país…)
+# El PDF de la consulta parte las celdas por el ancho de la columna (a veces a mitad de palabra:
+# "AUDITDAT / A A/S", "DINAMARC / A"), así que se leen por columnas (modo layout) y se rearman.
+# ----------------------------------------------------------
+_PAISES_ES = [
+    "ALEMANIA", "ARABIA SAUDITA", "ARGENTINA", "AUSTRALIA", "AUSTRIA", "BELGICA", "BOLIVIA", "BRASIL", "BULGARIA",
+    "CANADA", "CHILE", "CHINA", "CHIPRE", "COLOMBIA", "COREA", "COREA DEL SUR", "REPUBLICA DE COREA", "COSTA RICA",
+    "CROACIA", "CUBA", "DINAMARCA", "ECUADOR", "EGIPTO", "EL SALVADOR", "EMIRATOS ARABES UNIDOS", "ESLOVAQUIA",
+    "ESLOVENIA", "ESPAÑA", "ESTADOS UNIDOS", "ESTADOS UNIDOS DE AMERICA", "ESTONIA", "FILIPINAS", "FINLANDIA", "FRANCIA",
+    "GRECIA", "GUATEMALA", "HOLANDA", "PAISES BAJOS", "HONDURAS", "HONG KONG", "HUNGRIA", "INDIA", "INDONESIA", "IRAN",
+    "IRLANDA", "ISLANDIA", "ISRAEL", "ITALIA", "JAPON", "JORDANIA", "LETONIA", "LITUANIA", "LUXEMBURGO", "MALASIA",
+    "MALTA", "MARRUECOS", "MEXICO", "NICARAGUA", "NORUEGA", "NUEVA ZELANDA", "PAKISTAN", "PANAMA", "PARAGUAY", "PERU",
+    "POLONIA", "PORTUGAL", "PUERTO RICO", "REINO UNIDO", "GRAN BRETAÑA", "REPUBLICA CHECA", "REPUBLICA DOMINICANA",
+    "RUMANIA", "RUSIA", "SERBIA", "SINGAPUR", "SIRIA", "SUDAFRICA", "SUECIA", "SUIZA", "TAILANDIA", "TAIWAN",
+    "TURQUIA", "UCRANIA", "URUGUAY", "VENEZUELA", "VIETNAM",
+]
+_ROLES_PRODUCTO = [
+    "FABRICANTE", "IMPORTADOR", "TITULAR", "ACONDICIONADOR", "ENVASADOR", "COMERCIALIZADOR", "DISTRIBUIDOR",
+    "ENSAMBLADOR", "EXPORTADOR", "REPRESENTANTE LEGAL", "ALMACENADOR", "REEMPACADOR", "MAQUILADOR",
+]
+_SUFIJOS_EMPRESA = {"SAS", "S.A.S", "S.A.S.", "SA", "S.A", "S.A.", "LTDA", "LTDA.", "LTD", "LTD.", "LIMITED", "INC", "INC.",
+                    "GMBH", "CO", "CO.", "CORP", "CORP.", "AG", "BV", "B.V.", "AB", "A/S", "SRL", "S.R.L.", "SPA", "S.P.A.",
+                    "LLC", "PLC", "OY", "KG", "KK", "SL", "S.L.", "SARL", "NV", "PTE", "PVT", "LLP", "CIA", "Y", "E", "&", "DE"}
+_PALABRAS_COMPLETAS = {"COLOMBIA", "MEDICAL", "COMPANY", "SYSTEMS", "DEVICES", "TECHNOLOGY", "INDUSTRIES",
+                       "HEALTHCARE", "INTERNATIONAL", "CORPORATION", "SCIENTIFIC", "PHARMA", "BIOMEDICAL"}
+
+
+def _squash_texto(t):
+    t = unicodedata.normalize("NFKD", str(t or "").upper())
+    return re.sub(r"[^A-Z0-9]", "", "".join(ch for ch in t if not unicodedata.combining(ch)))
+
+
+def _unir_trozos_celda(trozos, ancho):
+    """Une las líneas de una celda partida por el ancho de la columna. Si la línea llena el ancho, se asume que
+    la palabra se cortó (se pega sin espacio), salvo que lo siguiente sea un sufijo de empresa o lo anterior una palabra completa."""
+    trozos = [t.strip() for t in trozos if t and t.strip()]
+    if not trozos:
+        return ""
+    salida = trozos[0]
+    for ant, sig in zip(trozos, trozos[1:]):
+        primero = sig.split()[0].upper()
+        ultima = ant.split()[-1].upper()
+        if len(ant) >= ancho and primero not in _SUFIJOS_EMPRESA and ultima not in _PALABRAS_COMPLETAS:
+            salida += sig
+        else:
+            salida += " " + sig
+    return salida
+
+
+def _roles_desde_consulta(paginas_layout):
+    """Devuelve una lista de dicts {rol, nombre, direccion, pais, depto, ciudad} de la tabla 'Roles por Producto'."""
+    lineas = []
+    for p in paginas_layout:
+        lineas += str(p).split("\n")
+    i0 = next((i for i, l in enumerate(lineas) if re.search(r"Roles\s*por\s*Producto", l)), None)
+    if i0 is None:
+        return []
+    fin = next((i for i in range(i0 + 1, len(lineas)) if re.search(r"Im\s*prim\s*ir", lineas[i])), len(lineas))
+    bloque = [l.rstrip() for l in lineas[i0 + 1:fin]
+              if "://" not in l and not re.search(r"Sistema\s*d\s*e\s*Tramites", l)]
+    h = next((i for i, l in enumerate(bloque) if re.search(r"Direcci", l)), None)
+    if h is None:
+        return []
+    # bloque del encabezado: desde la primera línea con texto antes de 'Direccion' hasta la línea en blanco siguiente
+    ini = h
+    while ini > 0 and bloque[ini - 1].strip():
+        ini -= 1
+    fin_h = h
+    while fin_h + 1 < len(bloque) and bloque[fin_h + 1].strip():
+        fin_h += 1
+    encab = bloque[ini:fin_h + 1]
+    patrones = [("rol", r"\bRol\b"), ("nombre", r"Nom"), ("direccion", r"Direcci"), ("pais", r"Pa[ií]s"),
+                ("depto", r"Depto"), ("ciudad", r"Ciudad"), ("email", r"Em\s*ail")]
+    inicios = {}
+    for nombre_c, pat in patrones:
+        pos = [m.start() for l in encab for m in [re.search(pat, l)] if m]
+        if pos:
+            inicios[nombre_c] = min(pos)
+    if not {"rol", "nombre", "direccion", "pais"} <= set(inicios):
+        return []
+    orden = sorted(inicios.items(), key=lambda kv: kv[1])
+    limites = [(n, max(0, p - 2), (orden[k + 1][1] - 2) if k + 1 < len(orden) else 10 ** 6) for k, (n, p) in enumerate(orden)]
+    datos = bloque[fin_h + 1:]
+    grupos, actual = [], []
+    for l in datos:
+        if l.strip():
+            actual.append(l)
+        elif actual:
+            grupos.append(actual)
+            actual = []
+    if actual:
+        grupos.append(actual)
+    filas = []
+    for g in grupos:
+        celdas = {n: [] for n, _, _ in limites}
+        for l in g:
+            for n, a, b in limites:
+                trozo = l[a:b].strip()
+                if trozo:
+                    celdas[n].append(trozo)
+        if not celdas["rol"] and not celdas["nombre"]:
+            continue
+        filas.append(celdas)
+    if not filas:
+        return []
+    anchos = {n: max([len(t) for f in filas for t in f[n]] or [0]) for n, _, _ in limites}
+    roles = []
+    for f in filas:
+        rol_sq = _squash_texto("".join(f["rol"]))
+        rol = next((r for r in _ROLES_PRODUCTO if _squash_texto(r) == rol_sq), None) \
+            or _unir_trozos_celda(f["rol"], anchos["rol"]).upper()
+        pais_sq = _squash_texto("".join(f["pais"]))
+        pais = next((p for p in _PAISES_ES if _squash_texto(p) == pais_sq), None) \
+            or _unir_trozos_celda(f["pais"], anchos["pais"]).upper()
+        roles.append({
+            "rol": rol,
+            "nombre": _unir_trozos_celda(f["nombre"], anchos["nombre"]).upper(),
+            "direccion": _unir_trozos_celda(f["direccion"], anchos["direccion"]),
+            "pais": pais,
+            "depto": _unir_trozos_celda(f.get("depto", []), anchos.get("depto", 0)).upper(),
+            "ciudad": _unir_trozos_celda(f.get("ciudad", []), anchos.get("ciudad", 0)).upper(),
+        })
+    return roles
+
+
+_MODALIDAD_VERBOS = ["IMPORTAR", "FABRICAR", "ENVASAR", "ENSAMBLAR", "EXPORTAR", "VENDER", "ACONDICIONAR", "ALMACENAR",
+                     "COMERCIALIZAR", "DISTRIBUIR", "REEMPACAR", "MAQUILAR", "ELABORAR"]
+
+
+def _modalidad_desde_texto_pegado(txt):
+    """'IMPORTARYVENDER' -> 'IMPORTAR Y VENDER' (la consulta en línea pierde los espacios de ese campo)."""
+    sq = _squash_texto(txt)
+    verbos = re.findall("|".join(_MODALIDAD_VERBOS), sq)
+    if not verbos:
+        return ""
+    if len(verbos) == 1:
+        return verbos[0]
+    return ", ".join(verbos[:-1]) + " Y " + verbos[-1]
+
 
 
 def _trocear_texto(texto, tam=5000, solape=300):
@@ -918,7 +1062,7 @@ def leer_documento_registro(nombre, pdf_bytes, avisar=None, docs_previos=None):
         "archivo": nombre, "tipo": "No reconocido", "clave": None, "registro_texto": "", "expediente": "",
         "resolucion_no": "", "fecha_resolucion": "", "tramite": "", "titular": "", "producto": "",
         "marca": "", "riesgo": "", "estado": "", "vencimiento": "", "modalidad": "", "fabricantes": [],
-        "referencias": [], "formato": "", "advertencias": [], "texto_observaciones": "",
+        "roles": [], "referencias": [], "formato": "", "advertencias": [], "texto_observaciones": "",
     }
     try:
         lector = PdfReader(io.BytesIO(pdf_bytes))
@@ -960,6 +1104,14 @@ def leer_documento_registro(nombre, pdf_bytes, avisar=None, docs_previos=None):
         enc, bloque = _encabezado_consulta(texto)
         doc.update({k: v for k, v in enc.items()})
         doc["texto_observaciones"] = bloque
+        try:
+            doc["roles"] = _roles_desde_consulta(_extraer_texto_paginas(lector, layout=True))
+        except Exception:
+            doc["roles"] = []
+        doc["fabricantes"] = [(r["nombre"], r["pais"]) for r in doc["roles"] if r["rol"] == "FABRICANTE" and r["nombre"]]
+        doc["titular"] = next((r["nombre"] for r in doc["roles"] if r["rol"] == "TITULAR"), "") or doc.get("titular", "")
+        if not doc["roles"]:
+            doc["advertencias"].append("No pude leer la tabla 'Roles por Producto' (fabricante y país); complétalos a mano.")
         if not bloque:
             doc["advertencias"].append("No se encontró la sección 'Observaciones' con las referencias.")
         else:
@@ -1281,7 +1433,8 @@ def construir_filas_plantilla(lista_df, docs, cliente_sel="Todos", avisar=None, 
                     consulta["expediente"] if consulta else "")
         riesgo = _riesgo_estandar(_pref(g["riesgo"] if g else "", consulta["riesgo"] if consulta else "",
                                         res["riesgo"] if res else ""))
-        rol = _pref(g["modalidad"] if g else "", res.get("modalidad", "") if res else "").upper()
+        rol = _pref(g["modalidad"] if g else "", res.get("modalidad", "") if res else "",
+                    consulta.get("modalidad", "") if consulta else "").upper()
         producto = _pref(g["producto"] if g else "", consulta["producto"] if consulta else "",
                          res["producto"] if res else "")
         marcas = _dividir_marcas(_pref(g["marca"] if g else "", consulta["marca"] if consulta else "",
@@ -1291,14 +1444,27 @@ def construir_filas_plantilla(lista_df, docs, cliente_sel="Todos", avisar=None, 
             fabs = [(n, (g["fab_paises"].get(n) or "")) for n in sorted(g["fabricantes"])]
         else:
             fuente, fabs = "", []
-        if fabs and res and res.get("fabricantes"):
-            pais_res = {_clave_referencia(n): p for n, p in res["fabricantes"]}
-            fabs = [(n, p or pais_res.get(_clave_referencia(n), "")) for n, p in fabs]
-        if not fabs and res and res.get("fabricantes"):
-            fabs = list(res["fabricantes"])
-            fuente = "Resolución " + str(res.get("resolucion_no", ""))
-            if any(" - " in p for _, p in fabs):
-                avisos.append(f"{etiqueta}: el domicilio del fabricante trae ciudad - departamento; revisa la columna País.")
+        fabs_docs = list(res.get("fabricantes", [])) if res else []
+        fabs_docs_consulta = list(consulta.get("fabricantes", [])) if consulta else []
+        if fabs:
+            pais_docs = {}
+            for n_d, p_d in fabs_docs + fabs_docs_consulta:
+                if p_d:
+                    pais_docs.setdefault(_clave_referencia(n_d), p_d)
+            fabs = [(n, p or pais_docs.get(_clave_referencia(n), "")) for n, p in fabs]
+        if not fabs and (fabs_docs or fabs_docs_consulta):
+            if fabs_docs:
+                fabs = fabs_docs
+                fuente = "Resolución " + str(res.get("resolucion_no", ""))
+                if any(" - " in p for _, p in fabs):
+                    avisos.append(f"{etiqueta}: el domicilio del fabricante trae ciudad - departamento; revisa la columna País.")
+            else:
+                fabs = fabs_docs_consulta
+                fuente = "Consulta en línea"
+            # si la otra fuente trae el nombre bien escrito (la consulta parte las palabras), se prefiere ese nombre
+            if fabs_docs and fabs_docs_consulta:
+                paises_c = {_clave_referencia(n): p for n, p in fabs_docs_consulta}
+                fabs = [(n, p or paises_c.get(_clave_referencia(n), "")) for n, p in fabs]
         if not fabs:
             fabs = [("", "")]
             avisos.append(f"{etiqueta}: no se encontró el fabricante; complétalo a mano.")
@@ -1321,9 +1487,11 @@ def construir_filas_plantilla(lista_df, docs, cliente_sel="Todos", avisar=None, 
             for n, mk in enumerate(marcas[:6], start=1):
                 fila[f"MARCA {n}"] = mk.upper()
             fila["_Cliente"] = it["cliente"]
+            fila["_Titular"] = _pref(consulta.get("titular", "") if consulta else "", res.get("titular", "") if res else "",
+                                     g["titular"] if g else "").strip().upper()
             fila["_Fuente"] = fuente
             filas.append(fila)
-    columnas = COLUMNAS_PLANTILLA_SEMANTICO + [f"MARCA {n}" for n in range(1, 7)] + ["_Cliente", "_Fuente"]
+    columnas = COLUMNAS_PLANTILLA_SEMANTICO + [f"MARCA {n}" for n in range(1, 7)] + ["_Cliente", "_Titular", "_Fuente"]
     return pd.DataFrame(filas, columns=columnas), avisos
 
 
@@ -1781,6 +1949,8 @@ def completar_tabla_desde_invima(df, docs, avisar=None):
                     if fuente and str(fuente.get(campo, "")).strip():
                         fila[campo] = str(fuente[campo]).strip()
                         cambio = True
+            if not fila["Cliente"].strip() and str(referencia.get("_Titular", "")).strip():
+                fila["Cliente"] = str(referencia["_Titular"]).strip(); cambio = True
             if not fila["Expediente"] and referencia.get("Expediente"):
                 fila["Expediente"] = str(referencia["Expediente"]); cambio = True
             if not fila["Registro_Sanitario"] and referencia.get("Registro_Sanitario"):
@@ -1926,6 +2096,8 @@ def validar_tabla_contra_documentos(tabla_df, docs, refs_libro_df=None, avisar=N
         fabs_docs = []   # (fuente, nombre, pais)
         if res:
             fabs_docs += [(f"Resolución {res.get('resolucion_no', '')}", n, p) for n, p in res.get("fabricantes", [])]
+        if consulta:
+            fabs_docs += [("Consulta en línea", n, p) for n, p in consulta.get("fabricantes", [])]
         if g is not None:
             fabs_docs += [(g["fuente"], n, g["fab_paises"].get(n, "")) for n in sorted(g["fabricantes"])]
         fab_tabla = r["Razon Social fabricante"]
@@ -1986,6 +2158,10 @@ def validar_tabla_contra_documentos(tabla_df, docs, refs_libro_df=None, avisar=N
             if (clave and g["clave"] == clave) or (exp_k and g["expediente"] == exp_k):
                 for n in g["fabricantes"]:
                     nombres_doc.setdefault(_clave_referencia(n), n)
+        consulta_k = next((d for d in docs_reg if d["tipo"] == "Consulta en línea"), None)
+        if consulta_k:
+            for n, _p in consulta_k.get("fabricantes", []):
+                nombres_doc.setdefault(_clave_referencia(n), n)
         for k, n in nombres_doc.items():
             if not any(_coincide_texto(r["Razon Social fabricante"], n) for r in filas_k):
                 _agregar(filas_k[0], "Fabricante sin fila", "", n, "Documentos", "❌ Falta una fila para este fabricante")
@@ -7956,13 +8132,19 @@ else:
         def _agregar_a_lista_rs(nuevas_filas):
             """Agrega filas (dicts con columnas de la tabla) sin duplicar por registro o expediente."""
             actual = st.session_state["rs_lista"]
-            existentes = {_clave_fila_rs(f["Registro_Sanitario"], f["Expediente"]) for _, f in actual.iterrows()}
+            def _claves_de(reg, exp):
+                c = _parsear_registro_sanitario(reg)[0]
+                e = _limpiar_expediente(exp)
+                return {x for x in (c, ("EXP" + e) if e else None) if x}
+            existentes = set()
+            for _, f in actual.iterrows():
+                existentes |= _claves_de(f["Registro_Sanitario"], f["Expediente"])
             agregadas = []
             for n in nuevas_filas:
-                k = _clave_fila_rs(n.get("Registro_Sanitario", ""), n.get("Expediente", ""))
-                if not k or k in existentes:
+                ks = _claves_de(n.get("Registro_Sanitario", ""), n.get("Expediente", ""))
+                if not ks or (ks & existentes):
                     continue
-                existentes.add(k)
+                existentes |= ks
                 fila = {c: "" for c in COLUMNAS_TABLA_RS}
                 fila.update({c: str(v or "") for c, v in n.items() if c in fila})
                 fila["Expediente"] = _limpiar_expediente(fila["Expediente"]) or fila["Expediente"]
@@ -8088,6 +8270,7 @@ else:
                         try:
                             n_ag = _agregar_a_lista_rs(nuevas) if nuevas else 0
                             n_leidos = 0
+                            n_ya = len(pdfs_opc2 or []) - len(pendientes_o2)
                             if pendientes_o2:
                                 barra_o2 = st.progress(0.0)
                                 n_leidos = _leer_pdfs_rs(pendientes_o2, barra_o2, msg_o2)
@@ -8096,7 +8279,8 @@ else:
                             exps_tabla = {_limpiar_expediente(x) for x in st.session_state["rs_lista"]["Expediente"].tolist()}
                             filas_docs = []
                             for d in st.session_state["rs_docs"]:
-                                if d.get("clave") and d["clave"] not in claves_tabla and _limpiar_expediente(d.get("expediente", "")) not in exps_tabla:
+                                exp_d = _limpiar_expediente(d.get("expediente", ""))
+                                if d.get("clave") and d["clave"] not in claves_tabla and not (exp_d and exp_d in exps_tabla):
                                     filas_docs.append({"Cliente": cliente_def.strip(), "Registro_Sanitario": "INVIMA " + d["clave"],
                                                        "Expediente": d.get("expediente", "")})
                                     claves_tabla.add(d["clave"])
@@ -8122,7 +8306,9 @@ else:
                                 _reemplazar_tabla_rs(df_c)
                                 st.session_state["rs_avisos_completar"] = list(dict.fromkeys(avisos_o2 + avisos_c))
                                 st.session_state["rs_msg_completar"] = (
-                                    f"Listo: {n_ag + n_docs_filas} registro(s) nuevos, {n_leidos} documento(s) leídos y {n_c} fila(s) completadas. "
+                                    f"Listo: {n_ag + n_docs_filas} registro(s) nuevos, {n_leidos} documento(s) leídos"
+                                    + (f" (otros {n_ya} ya estaban cargados y se usaron igual)" if n_ya > 0 else "")
+                                    + f" y {n_c} fila(s) completadas. "
                                     "Solo se llenaron celdas vacías; lo que ya habías escrito no se tocó."
                                 )
                                 registrar_log(st.session_state["usuario_activo_real"], f"Opción 2 de registros: leer documentos y llenar tabla ({n_c} filas)", n_c)
