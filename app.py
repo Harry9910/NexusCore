@@ -12,8 +12,10 @@ import base64
 import shutil
 import re
 import json
-from pypdf import PdfReader
+from pypdf import PdfReader, PdfWriter
 import uuid
+import unicodedata
+import difflib
 import zipfile
 import mimetypes
 import gspread
@@ -113,6 +115,1031 @@ def registrar_log(usuario, busqueda, cantidad_resultados):
         sheet_logs.append_row([timestamp, usuario, busqueda, cantidad_resultados], value_input_option='RAW')
     except Exception as e:
         st.error(f"Error al guardar log: {e}")
+
+
+# ==========================================================
+# VALIDACIÓN DE REGISTROS SANITARIOS (datos abiertos del INVIMA)
+# ----------------------------------------------------------
+# Fuente: datos.gov.co (Socrata), publicados por el INVIMA.
+#   - y4qt-w6tk : Registros sanitarios de dispositivos médicos y otras
+#                 tecnologías (estado, vencimiento, titular, riesgo, roles).
+#   - ui32-p9f2 : RS y NSO vigentes y vencidos (respaldo cuando un registro
+#                 no aparece en el listado principal).
+# Es una API pública y gratuita: no requiere llaves. Si algún día hay
+# bloqueos por exceso de consultas, se puede agregar un "app token" gratuito
+# en los Secrets como  socrata_app_token = "..."  (opcional).
+# ==========================================================
+URL_DATOS_INVIMA_PRINCIPAL = "https://www.datos.gov.co/resource/y4qt-w6tk.json"
+URL_DATOS_INVIMA_ALTERNO = "https://www.datos.gov.co/resource/ui32-p9f2.json"
+URL_META_INVIMA_PRINCIPAL = "https://www.datos.gov.co/api/views/y4qt-w6tk.json"
+
+# Registro sanitario: año + tipo + consecutivo (+ revisión opcional).
+# Ej.: "INVIMA 2020DM-0005644-R1", "2018DM-0017757", "2019EBC-0001234".
+_RE_REGISTRO_SANITARIO = re.compile(
+    r"(\d{4})\s*([A-Z]{2,4})\s*[-–]?\s*(\d{3,8})(?:\s*[-–]?\s*R\s*(\d+))?",
+    re.IGNORECASE
+)
+
+
+def _parsear_registro_sanitario(texto):
+    """Devuelve (clave_base, revision). clave_base = 'AAAATIPO-0000000' o None."""
+    if texto is None:
+        return None, 0
+    t = str(texto).upper().replace("INVIMA", " ")
+    m = _RE_REGISTRO_SANITARIO.search(t)
+    if not m:
+        return None, 0
+    anio, tipo, num, rev = m.groups()
+    return f"{anio}{tipo}-{num.zfill(7)}", (int(rev) if rev else 0)
+
+
+def _limpiar_expediente(valor):
+    """Un expediente es un número de 5 a 9 dígitos. Devuelve '' si no lo es."""
+    if valor is None:
+        return ""
+    t = str(valor).strip()
+    if t.lower() in ("nan", "none", ""):
+        return ""
+    if re.fullmatch(r"\d+\.0", t):
+        t = t[:-2]
+    return t if re.fullmatch(r"\d{5,9}", t) else ""
+
+
+def _sql_literal(texto):
+    return "'" + str(texto).replace("'", "''") + "'"
+
+
+def _token_socrata():
+    try:
+        return str(st.secrets.get("socrata_app_token", "")).strip()
+    except Exception:
+        return ""
+
+
+def _consultar_socrata(url, where, limite=50000):
+    """GET a la API de datos.gov.co con reintentos. Devuelve lista de dicts."""
+    headers = {"Accept": "application/json", "User-Agent": "NexusCore/1.0"}
+    tok = _token_socrata()
+    if tok:
+        headers["X-App-Token"] = tok
+    params = {"$where": where, "$limit": limite}
+    ultimo_error = None
+    for intento in range(3):
+        try:
+            r = requests.get(url, params=params, headers=headers, timeout=60)
+            if r.status_code == 200:
+                return r.json()
+            if r.status_code in (429, 500, 502, 503, 504):
+                ultimo_error = f"HTTP {r.status_code}"
+                time.sleep(2 * (intento + 1))
+                continue
+            raise RuntimeError(f"datos.gov.co respondió {r.status_code}: {r.text[:200]}")
+        except requests.RequestException as e:
+            ultimo_error = str(e)
+            time.sleep(2 * (intento + 1))
+    raise RuntimeError(f"No se pudo consultar datos.gov.co ({ultimo_error}).")
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def _fecha_actualizacion_datos_invima():
+    """Fecha en que el INVIMA actualizó por última vez el listado (texto) o ''."""
+    try:
+        r = requests.get(URL_META_INVIMA_PRINCIPAL, timeout=20,
+                         headers={"User-Agent": "NexusCore/1.0"})
+        if r.status_code == 200:
+            ts = r.json().get("rowsUpdatedAt")
+            if ts:
+                return datetime.datetime.fromtimestamp(int(ts)).strftime("%Y-%m-%d")
+    except Exception:
+        pass
+    return ""
+
+
+def _fecha_iso_corta(valor):
+    if not valor:
+        return ""
+    t = str(valor).strip()[:10]
+    try:
+        datetime.date.fromisoformat(t)
+        return t
+    except Exception:
+        return ""
+
+
+def _normalizar_registro_invima(r):
+    """Unifica los nombres de campo de los dos conjuntos de datos."""
+    rs = r.get("registro_sanitario") or r.get("rsynso") or ""
+    clave, rev = _parsear_registro_sanitario(rs)
+    return {
+        "expediente": str(r.get("expediente", "") or "").strip(),
+        "registro": str(rs).strip(),
+        "clave": clave,
+        "revision": rev,
+        "estado": str(r.get("estado_registro") or r.get("estadoregistro") or "").strip(),
+        "vencimiento": _fecha_iso_corta(r.get("fecha_vencimiento") or r.get("fechavencimiento")),
+        "grupo": str(r.get("grupo", "") or "").strip(),
+        # ojo: en el conjunto principal el campo se llama "prodcuto" (error del INVIMA)
+        "producto": str(r.get("prodcuto") or r.get("producto") or "").strip(),
+        "marca": str(r.get("marca", "") or "").strip(),
+        "riesgo": str(r.get("nivel_riesgo") or r.get("nivelriesgo") or "").strip(),
+        "modalidad": str(r.get("modalidad", "") or "").strip(),
+        "titular": str(r.get("titular", "") or "").strip(),
+        "pais_titular": str(r.get("pais_titular", "") or "").strip(),
+        "nombre_rol": str(r.get("nombre_rol") or r.get("nombrerol") or "").strip(),
+        "rol": str(r.get("rol", "") or "").strip(),
+    }
+
+
+def _agrupar_registros_invima(filas_norm, fuente):
+    """Una fila por (expediente, registro) con los roles agregados."""
+    grupos = {}
+    for f in filas_norm:
+        k = (f["expediente"], f["registro"])
+        g = grupos.get(k)
+        if g is None:
+            g = {c: f[c] for c in (
+                "expediente", "registro", "clave", "revision", "estado", "vencimiento",
+                "grupo", "producto", "marca", "riesgo", "modalidad", "titular", "pais_titular"
+            )}
+            g["fabricantes"] = set()
+            g["importadores"] = set()
+            g["otros_roles"] = set()
+            g["fuente"] = fuente
+            grupos[k] = g
+        rol = (f["rol"] or "").upper()
+        nom = f["nombre_rol"]
+        if not nom:
+            continue
+        if "FABRIC" in rol:
+            g["fabricantes"].add(nom)
+        elif "IMPORT" in rol:
+            g["importadores"].add(nom)
+        elif rol:
+            g["otros_roles"].add(f"{rol.title()}: {nom}")
+    return list(grupos.values())
+
+
+def _consultar_por_claves_y_expedientes(url, campo_registro, claves, expedientes, avisar=None):
+    """Busca por registro (LIKE) y por expediente (IN) en lotes. Devuelve filas crudas."""
+    crudas = []
+    claves = sorted(set(claves))
+    expedientes = sorted(set(expedientes))
+    TAM_CLAVES, TAM_EXPS = 10, 60
+    for i in range(0, len(claves), TAM_CLAVES):
+        lote = claves[i:i + TAM_CLAVES]
+        where = " OR ".join(f"upper({campo_registro}) like {_sql_literal('%' + c + '%')}" for c in lote)
+        crudas.extend(_consultar_socrata(url, where))
+        if avisar:
+            avisar(f"Consultando registros {min(i + TAM_CLAVES, len(claves))}/{len(claves)}…")
+    for i in range(0, len(expedientes), TAM_EXPS):
+        lote = expedientes[i:i + TAM_EXPS]
+        try:
+            where = "expediente in (" + ",".join(_sql_literal(e) for e in lote) + ")"
+            crudas.extend(_consultar_socrata(url, where))
+        except RuntimeError as e:
+            # Si la columna fuera numérica, Socrata rechaza los textos: reintenta sin comillas.
+            if "400" not in str(e):
+                raise
+            where = "expediente in (" + ",".join(lote) + ")"
+            crudas.extend(_consultar_socrata(url, where))
+        if avisar:
+            avisar(f"Consultando expedientes {min(i + TAM_EXPS, len(expedientes))}/{len(expedientes)}…")
+    return crudas
+
+
+def _normalizar_nombre_empresa(texto):
+    t = unicodedata.normalize("NFKD", str(texto or "").upper())
+    t = "".join(c for c in t if not unicodedata.combining(c))
+    t = re.sub(r"[^A-Z0-9 ]", " ", t)
+    palabras = [p for p in t.split() if p not in (
+        "S", "A", "SA", "SAS", "LTDA", "LIMITADA", "CIA", "Y", "DE", "DEL", "LA", "EL", "EN", "C", "I", "E", "U", "SUCURSAL", "COLOMBIA"
+    )]
+    return " ".join(palabras)
+
+
+def _titular_coincide(esperado, encontrado):
+    a = _normalizar_nombre_empresa(esperado)
+    b = _normalizar_nombre_empresa(encontrado)
+    if not a or not b:
+        return ""
+    if a == b or a in b or b in a:
+        return "Coincide"
+    if difflib.SequenceMatcher(None, a, b).ratio() >= 0.85:
+        return "Coincide"
+    return "Distinto"
+
+
+def _clasificar_vigencia(estado, vencimiento_iso, hoy, umbral_urgente=90, umbral_proximo=180):
+    """Devuelve (etiqueta_alerta, dias_para_vencer|None)."""
+    dias = None
+    if vencimiento_iso:
+        try:
+            dias = (datetime.date.fromisoformat(vencimiento_iso) - hoy).days
+        except Exception:
+            dias = None
+    est = (estado or "").strip().lower()
+    if not est and dias is None:
+        return "⚪ Sin datos", None
+    if "cancel" in est:
+        return "🔴 Cancelado", dias
+    if est.startswith("vencido"):
+        return "🔴 Vencido", dias
+    if est.startswith("vigente") or not est:
+        if dias is not None and dias < 0:
+            return "🔴 Vencido (fecha pasada)", dias
+        if dias is not None and dias <= umbral_urgente:
+            return f"🟠 Vence en ≤{umbral_urgente} días", dias
+        if dias is not None and dias <= umbral_proximo:
+            return f"🟡 Vence en ≤{umbral_proximo} días", dias
+        return "🟢 Vigente", dias
+    return f"🔵 {estado}", dias
+
+
+COLUMNAS_VALIDACION_RS = [
+    "Cliente", "Registro_Consultado", "Expediente_Consultado", "Alerta", "Estado_INVIMA",
+    "Fecha_Vencimiento", "Dias_Para_Vencer", "Registro_INVIMA", "Expediente_INVIMA",
+    "Titular_INVIMA", "Titular_Esperado", "Titular_Coincide", "Producto", "Marca",
+    "Nivel_Riesgo", "Grupo", "Modalidad", "Fabricantes", "Importadores", "Fuente", "Observaciones"
+]
+
+
+def validar_registros_invima(entradas, umbral_urgente=90, umbral_proximo=180, avisar=None):
+    """
+    entradas: lista de dicts con claves Cliente, Registro, Expediente, Titular_Esperado.
+    Devuelve una lista de dicts con COLUMNAS_VALIDACION_RS.
+    """
+    hoy = datetime.date.today()
+    prep = []
+    for e in entradas:
+        reg_txt = str(e.get("Registro", "") or "").strip()
+        exp_txt = str(e.get("Expediente", "") or "").strip()
+        clave, rev = _parsear_registro_sanitario(reg_txt)
+        exp = _limpiar_expediente(exp_txt) or ("" if clave else _limpiar_expediente(reg_txt))
+        prep.append({**e, "_clave": clave, "_rev": rev, "_exp": exp,
+                     "_reg_txt": reg_txt, "_exp_txt": exp_txt})
+
+    claves = [p["_clave"] for p in prep if p["_clave"]]
+    exps = [p["_exp"] for p in prep if p["_exp"]]
+
+    if avisar:
+        avisar("Consultando el listado oficial del INVIMA…")
+    grupos = _agrupar_registros_invima(
+        [_normalizar_registro_invima(r) for r in _consultar_por_claves_y_expedientes(
+            URL_DATOS_INVIMA_PRINCIPAL, "registro_sanitario", claves, exps, avisar)],
+        "Listado DM y otras tecnologías"
+    )
+
+    def _buscar(grupos_lista, p):
+        if p["_clave"]:
+            cands = [g for g in grupos_lista if g["clave"] == p["_clave"]]
+            if cands:
+                return cands
+        if p["_exp"]:
+            return [g for g in grupos_lista if g["expediente"] == p["_exp"]]
+        return []
+
+    # Respaldo: lo que no apareció en el listado principal se busca en el alterno.
+    faltantes = [p for p in prep if (p["_clave"] or p["_exp"]) and not _buscar(grupos, p)]
+    grupos_alt = []
+    if faltantes:
+        if avisar:
+            avisar(f"{len(faltantes)} sin resultado en el listado principal; revisando el listado alterno…")
+        try:
+            grupos_alt = _agrupar_registros_invima(
+                [_normalizar_registro_invima(r) for r in _consultar_por_claves_y_expedientes(
+                    URL_DATOS_INVIMA_ALTERNO, "rsynso",
+                    [p["_clave"] for p in faltantes if p["_clave"]],
+                    [p["_exp"] for p in faltantes if p["_exp"]], avisar)],
+                "Listado RS y NSO"
+            )
+        except Exception:
+            grupos_alt = []
+
+    salida = []
+    for p in prep:
+        fila = {c: "" for c in COLUMNAS_VALIDACION_RS}
+        fila["Dias_Para_Vencer"] = None
+        fila["Cliente"] = p.get("Cliente", "")
+        fila["Registro_Consultado"] = p["_reg_txt"]
+        fila["Expediente_Consultado"] = p["_exp_txt"]
+        fila["Titular_Esperado"] = p.get("Titular_Esperado", "") or ""
+
+        if not p["_clave"] and not p["_exp"]:
+            fila["Alerta"] = "⚪ Sin datos"
+            fila["Observaciones"] = "No se pudo interpretar el registro sanitario ni el expediente (formato esperado: INVIMA 2020DM-0005644 o un expediente numérico)."
+            salida.append(fila)
+            continue
+
+        cands = _buscar(grupos, p) or _buscar(grupos_alt, p)
+        if not cands:
+            fila["Alerta"] = "⚪ No encontrado"
+            fila["Observaciones"] = (
+                "No aparece en los listados abiertos del INVIMA. Puede estar mal digitado, "
+                "ser muy reciente (el listado se actualiza periódicamente) o ser de otro grupo "
+                "(p. ej. reactivos in vitro). Verifícalo en la consulta oficial del INVIMA."
+            )
+            salida.append(fila)
+            continue
+
+        # Elige la revisión más reciente; si empatan, la de mayor vencimiento.
+        cands.sort(key=lambda g: (g["revision"], g["vencimiento"]), reverse=True)
+        g = cands[0]
+        obs = []
+        revisiones = sorted({c["registro"] for c in cands})
+        if len(revisiones) > 1:
+            obs.append("Hay varias revisiones/registros con esa clave: " + "; ".join(revisiones) +
+                       ". Se muestra la más reciente.")
+        if p["_clave"] and p["_rev"] > 0 and g["revision"] > p["_rev"]:
+            obs.append(f"Existe una revisión más reciente que la consultada (R{g['revision']}).")
+        if p["_clave"] and p["_exp"] and g["expediente"] and g["expediente"] != p["_exp"]:
+            obs.append(f"El expediente consultado ({p['_exp']}) no coincide con el del registro ({g['expediente']}).")
+
+        alerta, dias = _clasificar_vigencia(g["estado"], g["vencimiento"], hoy, umbral_urgente, umbral_proximo)
+        coincide = _titular_coincide(fila["Titular_Esperado"], g["titular"]) if fila["Titular_Esperado"] else ""
+        if coincide == "Distinto":
+            obs.append("El titular en INVIMA es diferente al esperado: puede haber cesión o error de digitación.")
+
+        fila.update({
+            "Alerta": alerta,
+            "Estado_INVIMA": g["estado"],
+            "Fecha_Vencimiento": g["vencimiento"],
+            "Dias_Para_Vencer": dias,
+            "Registro_INVIMA": g["registro"],
+            "Expediente_INVIMA": g["expediente"],
+            "Titular_INVIMA": g["titular"],
+            "Titular_Coincide": coincide,
+            "Producto": g["producto"],
+            "Marca": g["marca"],
+            "Nivel_Riesgo": g["riesgo"],
+            "Grupo": g["grupo"],
+            "Modalidad": g["modalidad"],
+            "Fabricantes": "; ".join(sorted(g["fabricantes"])),
+            "Importadores": "; ".join(sorted(g["importadores"])),
+            "Fuente": g["fuente"],
+            "Observaciones": " ".join(obs),
+        })
+        salida.append(fila)
+    return salida
+
+
+COLUMNAS_PORTAFOLIO_RS = [
+    "Busqueda", "Titular_INVIMA", "Registro_INVIMA", "Expediente", "Alerta", "Estado_INVIMA",
+    "Fecha_Vencimiento", "Dias_Para_Vencer", "Nivel_Riesgo", "Grupo", "Producto", "Marca",
+    "Modalidad", "Fabricantes", "Importadores"
+]
+
+
+def buscar_portafolio_por_titular(palabras, solo_vigentes=False, umbral_urgente=90, umbral_proximo=180, avisar=None):
+    """
+    Trae todos los registros cuyo titular contiene cada palabra clave.
+    Devuelve (lista_de_dicts_portafolio, lista_de_dicts_titulares_encontrados).
+    """
+    hoy = datetime.date.today()
+    filas, titulares = [], []
+    for idx, palabra in enumerate(palabras, start=1):
+        p = str(palabra).strip().upper()
+        if len(p) < 3:
+            continue
+        if avisar:
+            avisar(f"Buscando titular '{p}' ({idx}/{len(palabras)})…")
+        where = f"upper(titular) like {_sql_literal('%' + p + '%')}"
+        grupos = _agrupar_registros_invima(
+            [_normalizar_registro_invima(r) for r in _consultar_socrata(URL_DATOS_INVIMA_PRINCIPAL, where)],
+            "Listado DM y otras tecnologías"
+        )
+        conteo = {}
+        for g in grupos:
+            alerta, dias = _clasificar_vigencia(g["estado"], g["vencimiento"], hoy, umbral_urgente, umbral_proximo)
+            es_vigente = alerta.startswith(("🟢", "🟠", "🟡"))
+            conteo.setdefault(g["titular"], {"total": 0, "vigentes": 0})
+            conteo[g["titular"]]["total"] += 1
+            conteo[g["titular"]]["vigentes"] += 1 if es_vigente else 0
+            if solo_vigentes and not es_vigente:
+                continue
+            filas.append({
+                "Busqueda": palabra, "Titular_INVIMA": g["titular"], "Registro_INVIMA": g["registro"],
+                "Expediente": g["expediente"], "Alerta": alerta, "Estado_INVIMA": g["estado"],
+                "Fecha_Vencimiento": g["vencimiento"], "Dias_Para_Vencer": dias,
+                "Nivel_Riesgo": g["riesgo"], "Grupo": g["grupo"], "Producto": g["producto"],
+                "Marca": g["marca"], "Modalidad": g["modalidad"],
+                "Fabricantes": "; ".join(sorted(g["fabricantes"])),
+                "Importadores": "; ".join(sorted(g["importadores"])),
+            })
+        if not conteo:
+            titulares.append({"Busqueda": palabra, "Titular_INVIMA": "(sin coincidencias)",
+                              "Registros": 0, "Vigentes": 0})
+        for nombre, c in sorted(conteo.items()):
+            titulares.append({"Busqueda": palabra, "Titular_INVIMA": nombre,
+                              "Registros": c["total"], "Vigentes": c["vigentes"]})
+    return filas, titulares
+
+
+def _excel_validacion_rs(hojas):
+    """hojas: dict nombre -> DataFrame. Devuelve bytes de un .xlsx con colores en 'Alerta'."""
+    from openpyxl.styles import PatternFill, Font, Alignment
+    from openpyxl.utils import get_column_letter
+    colores = {"🟢": "C6EFCE", "🟡": "FFF2CC", "🟠": "FCE4D6", "🔴": "F8CBAD", "⚪": "E7E6E6", "🔵": "DDEBF7"}
+    salida = io.BytesIO()
+    with pd.ExcelWriter(salida, engine="openpyxl") as writer:
+        for nombre, df in hojas.items():
+            df.to_excel(writer, index=False, sheet_name=nombre[:31])
+            ws = writer.sheets[nombre[:31]]
+            ws.freeze_panes = "A2"
+            for celda in ws[1]:
+                celda.font = Font(bold=True, color="FFFFFF")
+                celda.fill = PatternFill("solid", fgColor="0B1D3A")
+                celda.alignment = Alignment(vertical="center", wrap_text=True)
+            for i, col in enumerate(df.columns, start=1):
+                largo = max([len(str(col))] + [len(str(v)) for v in df[col].head(200).tolist()])
+                ws.column_dimensions[get_column_letter(i)].width = min(max(12, largo + 2), 60)
+            if "Alerta" in df.columns:
+                col_alerta = list(df.columns).index("Alerta") + 1
+                for fila in range(2, len(df) + 2):
+                    celda = ws.cell(row=fila, column=col_alerta)
+                    emoji = str(celda.value or "")[:1]
+                    if emoji in colores:
+                        celda.fill = PatternFill("solid", fgColor=colores[emoji])
+    return salida.getvalue()
+
+
+def _detectar_columna_rs(df, claves_substring=(), claves_exactas=()):
+    for c in df.columns:
+        n = unicodedata.normalize("NFKD", str(c).lower())
+        n = "".join(ch for ch in n if not unicodedata.combining(ch)).strip().replace("_", " ")
+        if n in claves_exactas or any(k in n for k in claves_substring):
+            return c
+    return None
+
+
+# ==========================================================
+# LECTURA DE RESOLUCIONES Y CONSULTAS EN LÍNEA DE REGISTROS SANITARIOS
+# ----------------------------------------------------------
+# Dos tipos de documento:
+#   1) Resolución del INVIMA (PDF): trae encabezado en campos fijos y, en
+#      OBSERVACIONES, la tabla "CÓDIGO O MODELO | DESCRIPCIÓN" de lo que ampara.
+#   2) Consulta en línea (PDF impreso de la consulta pública): refleja el
+#      estado ACTUAL del registro (ya con las modificaciones), pero la lista
+#      de referencias sale como texto corrido, sin columnas.
+# Se lee primero de forma local (gratis y rápida) y solo se usa Gemini cuando
+# hace falta: pareo del texto corrido, tablas no estándar o PDFs escaneados.
+# ==========================================================
+_MESES_ES = {
+    "enero": 1, "febrero": 2, "marzo": 3, "abril": 4, "mayo": 5, "junio": 6, "julio": 7,
+    "agosto": 8, "septiembre": 9, "setiembre": 9, "octubre": 10, "noviembre": 11, "diciembre": 12
+}
+
+
+def _unir_caracteres_sueltos(texto):
+    """En la consulta impresa, algunos campos (expediente, registro, fechas) salen un
+    carácter por línea. Esta función une esas rachas en una sola línea."""
+    salida, racha = [], []
+    for linea in texto.split("\n"):
+        if len(linea.strip()) == 1:
+            racha.append(linea.strip())
+        else:
+            if racha:
+                salida.append("".join(racha))
+                racha = []
+            salida.append(linea)
+    if racha:
+        salida.append("".join(racha))
+    return "\n".join(salida)
+
+
+def _norm_espacios(t):
+    return re.sub(r"\s+", " ", str(t or "")).strip()
+
+
+def _clave_referencia(t):
+    """Clave para comparar referencias: mayúsculas, sin tildes y sin espacios/puntuación sobrantes."""
+    t = unicodedata.normalize("NFKD", str(t or "").upper())
+    t = "".join(c for c in t if not unicodedata.combining(c))
+    return re.sub(r"[^A-Z0-9]", "", t)
+
+
+def _extraer_texto_paginas(reader, layout=False):
+    paginas = []
+    for pg in reader.pages:
+        try:
+            if layout:
+                paginas.append(pg.extract_text(extraction_mode="layout") or "")
+            else:
+                paginas.append(pg.extract_text() or "")
+        except Exception:
+            paginas.append("")
+    return paginas
+
+
+def _tipo_documento_registro(texto):
+    t = texto.upper()
+    if "CONSULTAS PUBLICAS" in t.replace("Ú", "U") or "DATOS GENERALES DEL PRODUCTO" in t:
+        return "Consulta en línea"
+    if "RESOLUCI" in t and ("REGISTRO SANITARIO" in t):
+        return "Resolución"
+    return "No reconocido"
+
+
+def _parsear_fecha_resolucion(texto):
+    m = re.search(r"RESOLUCI[ÓO]N\s*(?:No\.?|N[°º]\.?)?\s*(\d{6,12})\s*DE\s*(\d{1,2})\s*de\s*([A-Za-zñÑ]+)\s*de\s*(\d{4})",
+                  texto, re.IGNORECASE)
+    if not m:
+        return "", ""
+    numero, dia, mes, anio = m.groups()
+    mes_n = _MESES_ES.get(mes.lower())
+    if not mes_n:
+        return numero, ""
+    try:
+        return numero, datetime.date(int(anio), mes_n, int(dia)).isoformat()
+    except Exception:
+        return numero, ""
+
+
+def _campo_resolucion(texto, etiqueta_regex):
+    m = re.search(etiqueta_regex + r"\s*:?\s*(.+)", texto, re.IGNORECASE)
+    return _norm_espacios(m.group(1)) if m else ""
+
+
+def _encabezado_resolucion(texto_plano):
+    numero, fecha = _parsear_fecha_resolucion(texto_plano)
+    reg_txt = _campo_resolucion(texto_plano, r"REGISTRO\s+SANITARIO\s+N[O°º]\.?")
+    clave, _ = _parsear_registro_sanitario(reg_txt or texto_plano)
+    m_exp = re.search(r"EXPEDIENTE\s+N[O°º]\.?\s*:?\s*(\d{5,9})", texto_plano, re.IGNORECASE)
+    m_tram = re.search(r"Por\s+la\s+cual\s+(?:se\s+)?(.+)", texto_plano, re.IGNORECASE)
+    titular = _campo_resolucion(texto_plano, r"TITULAR\(ES\)")
+    titular = re.split(r"\s+CON\s+DOMICILIO", titular, flags=re.IGNORECASE)[0]
+    return {
+        "resolucion_no": numero,
+        "fecha_resolucion": fecha,
+        "registro_texto": reg_txt,
+        "clave": clave,
+        "expediente": m_exp.group(1) if m_exp else "",
+        "tramite": _norm_espacios(m_tram.group(1)) if m_tram else "",
+        "titular": titular,
+        "producto": _campo_resolucion(texto_plano, r"PRODUCTO"),
+        "marca": _campo_resolucion(texto_plano, r"MARCA"),
+        "riesgo": _campo_resolucion(texto_plano, r"RIESGO"),
+        "estado": "",
+        "vencimiento": "",
+    }
+
+
+_RE_ENCABEZADO_TABLA_REF = re.compile(
+    r"(C[ÓÒO]DIGO|REFERENCIA|MODELO|CAT[ÁA]LOGO).*(DESCRIP)", re.IGNORECASE)
+_RE_FIN_TABLA = re.compile(
+    r"^\s*(VIDA\s+UTIL|EXPEDIENTE|RADICACI|FECHA\s+DE|ART[IÍ]CULO|PRESENTACI[ÓO]N|USOS|MARCA|RIESGO|"
+    r"TITULAR|FABRICANTE|IMPORTADOR|ACONDICIONADOR|SISTEMAS|SUBSISTEMAS|EQUIPO\s+BIOMEDICO|TIPO\s+DE\s+REGISTRO)\b",
+    re.IGNORECASE)
+
+
+def _extraer_referencias_layout(paginas_layout):
+    """Lee la tabla 'CÓDIGO O MODELO | DESCRIPCIÓN' de una resolución usando el texto en modo
+    'layout' (conserva las columnas). Devuelve lista de (codigo, descripcion). Vacía si no halla tabla."""
+    filas = []
+    en_tabla = False
+    pos_desc = None
+    for idx_pagina, texto_pagina in enumerate(paginas_layout):
+        lineas = texto_pagina.split("\n")
+        inicio = 0
+        if idx_pagina > 0:
+            # saltar el membrete repetido en cada página (termina en 'ley 962 de 2005')
+            for i, l in enumerate(lineas[:20]):
+                if re.search(r"ley\s*962\s*de\s*2005", l, re.IGNORECASE):
+                    inicio = i + 1
+                    break
+        for linea in lineas[inicio:]:
+            if not linea.strip():
+                continue
+            if re.search(r"P[áa]gina\s+\d+\s+de\s+\d+", linea, re.IGNORECASE):
+                continue
+            if _RE_ENCABEZADO_TABLA_REF.search(linea):
+                m = re.search(r"DESCRIP", linea, re.IGNORECASE)
+                pos_desc = m.start()
+                en_tabla = True
+                continue
+            if not en_tabla:
+                continue
+            if _RE_FIN_TABLA.match(linea):
+                en_tabla = False
+                continue
+            corte = max(pos_desc - 4, 0)
+            izq = _norm_espacios(linea[:corte])
+            der = _norm_espacios(linea[corte:])
+            if not izq and not der:
+                continue
+            if izq and der:
+                filas.append([izq, der])
+            elif izq:
+                # línea sin descripción: continuación del código anterior si ese ya tenía descripción
+                if filas and filas[-1][1]:
+                    filas[-1][0] = _norm_espacios(filas[-1][0] + " " + izq)
+                else:
+                    filas.append([izq, ""])
+            else:
+                if filas:
+                    filas[-1][1] = _norm_espacios(filas[-1][1] + " " + der)
+    return [(c, d) for c, d in filas if c]
+
+
+def _bloque_observaciones_consulta(texto_unido):
+    m = re.search(r"Observaciones\s*\n(.*?)\n\s*Marcas\b", texto_unido, re.DOTALL)
+    if not m:
+        m = re.search(r"Observaciones\s*\n(.*?)\n\s*Datos\s+de\s+Inter", texto_unido, re.DOTALL)
+    return _norm_espacios(m.group(1)) if m else ""
+
+
+def _encabezado_consulta(texto_plano):
+    unido = _unir_caracteres_sueltos(texto_plano)
+    clave, _ = _parsear_registro_sanitario(unido)
+    m_exp = re.search(r"Expediente\s*Sanitario\s*\n?\s*(\d{5,9})", unido)
+    m_venc = re.search(r"Vencimiento\s*\n?\s*(\d{4})/(\d{2})/(\d{2})", unido)
+    m_estado = re.search(r"Estado\s*Registro\s*([A-Za-zÁÉÍÓÚáéíóú]+)", unido)
+    m_prod = re.search(r"Nombre\s*producto\s+(.+)", unido)
+    m_marca = re.search(r"Marcas\s+(.+)", unido)
+    m_riesgo = re.search(r"Riesgo\s+(I{1,3}[abAB]?|IV)\b", unido)
+    estado = m_estado.group(1) if m_estado else ""
+    estado = re.sub(r"(?i)^(vigente|vencido|cancelado)(.*)$", lambda m: m.group(1).capitalize(), estado)
+    return {
+        "resolucion_no": "", "fecha_resolucion": "", "tramite": "",
+        "registro_texto": ("INVIMA " + clave) if clave else "",
+        "clave": clave,
+        "expediente": m_exp.group(1) if m_exp else "",
+        "titular": "",
+        "producto": _norm_espacios(m_prod.group(1)) if m_prod else "",
+        "marca": _norm_espacios(m_marca.group(1)) if m_marca else "",
+        "riesgo": m_riesgo.group(1).upper() if m_riesgo else "",
+        "estado": estado,
+        "vencimiento": f"{m_venc.group(1)}-{m_venc.group(2)}-{m_venc.group(3)}" if m_venc else "",
+    }, _bloque_observaciones_consulta(unido)
+
+
+def _trocear_texto(texto, tam=5000, solape=300):
+    texto = texto.strip()
+    if len(texto) <= tam:
+        return [texto] if texto else []
+    trozos, i = [], 0
+    while i < len(texto):
+        fin = min(i + tam, len(texto))
+        if fin < len(texto):
+            corte = texto.rfind(" ", i + tam - 400, fin)
+            fin = corte if corte > i else fin
+        trozos.append(texto[i:fin])
+        if fin >= len(texto):
+            break
+        i = max(fin - solape, i + 1)
+    return trozos
+
+
+def _parsear_jsonl_tolerante(texto):
+    """Cada línea es un objeto JSON. Ignora las líneas rotas (p. ej. la última si se cortó)."""
+    objetos = []
+    for linea in str(texto or "").splitlines():
+        linea = linea.strip().strip(",")
+        if linea.startswith("```") or not linea.startswith("{"):
+            continue
+        try:
+            objetos.append(json.loads(linea))
+        except Exception:
+            continue
+    return objetos
+
+
+_PROMPT_PARES_REFERENCIAS = (
+    "Eres un extractor de datos de registros sanitarios de dispositivos médicos del INVIMA (Colombia). "
+    "Recibirás el texto de la sección OBSERVACIONES, que lista las referencias que ampara el registro. "
+    "Cada elemento es un par: CÓDIGO O MODELO (referencia) y su DESCRIPCIÓN. El texto puede venir corrido, "
+    "sin separadores entre pares; usa el sentido común (la descripción suele repetir o ampliar el nombre del "
+    "código) para decidir dónde termina un par y empieza el siguiente. Reglas: (1) conserva el texto EXACTO, "
+    "sin traducir, corregir ni inventar; (2) ignora la frase introductoria ('EL PRESENTE REGISTRO SANITARIO "
+    "AMPARA...') y el encabezado 'CÓDIGO O MODELO / DESCRIPCIÓN'; (3) si un código no tiene descripción, deja "
+    "d vacío; (4) si el texto empieza o termina cortado a mitad de un par, omite ese par incompleto; "
+    "(5) responde SOLO con líneas JSON, una por par, con este formato exacto: "
+    "{\"c\": \"codigo o modelo\", \"d\": \"descripcion\"} — sin texto adicional, sin ```."
+)
+
+
+def _gemini_pares_desde_texto(texto_bloque, avisar=None, ejemplos=None):
+    """Separa en pares (código, descripción) un texto corrido. Devuelve (pares, advertencia)."""
+    pares, vistos = [], set()
+    trozos = _trocear_texto(texto_bloque)
+    texto_ejemplos = ""
+    if ejemplos:
+        texto_ejemplos = (
+            "Ejemplos de pares de este mismo registro tomados de resoluciones anteriores (SOLO para que veas cómo "
+            "se escriben; el resultado debe salir ÚNICAMENTE del texto dado, que puede traer referencias nuevas, "
+            "cambiadas o menos que las del ejemplo):\n"
+            + "\n".join(f"- c: {c} | d: {d}" for c, d in ejemplos[:15]) + "\n\n"
+        )
+    for n, trozo in enumerate(trozos, start=1):
+        if avisar:
+            avisar(f"Separando referencias con IA ({n}/{len(trozos)})…")
+        respuesta = _llamar_gemini_api(
+            _PROMPT_PARES_REFERENCIAS,
+            [{"role": "user", "content": texto_ejemplos + "Texto:\n" + trozo}],
+            max_tokens=8000, timeout=90
+        )
+        for o in _parsear_jsonl_tolerante(respuesta):
+            c, d = _norm_espacios(o.get("c")), _norm_espacios(o.get("d"))
+            if not c:
+                continue
+            k = (_clave_referencia(c), _clave_referencia(d))
+            if k in vistos:
+                continue
+            vistos.add(k)
+            pares.append((c, d))
+        if n < len(trozos):
+            time.sleep(3.5)
+    return pares
+
+
+_PROMPT_LECTURA_PDF_REGISTRO = (
+    "Eres un extractor de datos de documentos del INVIMA (Colombia) sobre registros sanitarios de dispositivos "
+    "médicos. Recibirás algunas páginas de una resolución escaneada o de difícil lectura. Responde SOLO con líneas "
+    "JSON (una por línea, sin ``` ni texto extra). Si en estas páginas aparece el encabezado, emite UNA línea: "
+    "{\"tipo\":\"encabezado\",\"resolucion_no\":\"\",\"fecha\":\"AAAA-MM-DD\",\"registro\":\"INVIMA 2018DM-0018225\","
+    "\"expediente\":\"\",\"tramite\":\"\",\"titular\":\"\",\"producto\":\"\",\"marca\":\"\",\"riesgo\":\"\"} "
+    "(deja \"\" lo que no aparezca). Luego emite UNA línea por cada referencia de la tabla 'CÓDIGO O MODELO / "
+    "DESCRIPCIÓN' (o lista de referencias/modelos/accesorios que ampara el registro): "
+    "{\"tipo\":\"ref\",\"c\":\"codigo o modelo\",\"d\":\"descripcion\"}. Conserva el texto EXACTO; no inventes; "
+    "si una celda ocupa varias líneas, únelas en una sola; si no hay descripción, d es \"\"."
+)
+
+
+def _gemini_leer_pdf_registro(pdf_bytes, paginas_por_lote=2, avisar=None):
+    """Para PDFs escaneados: manda las páginas por lotes a Gemini. Devuelve (encabezado_dict, pares)."""
+    lector = PdfReader(io.BytesIO(pdf_bytes))
+    total = len(lector.pages)
+    encabezado, pares, vistos = {}, [], set()
+    lotes = list(range(0, total, paginas_por_lote))
+    for n, ini in enumerate(lotes, start=1):
+        if avisar:
+            avisar(f"Leyendo páginas {ini + 1}-{min(ini + paginas_por_lote, total)} de {total} con IA…")
+        escritor = PdfWriter()
+        for i in range(ini, min(ini + paginas_por_lote, total)):
+            escritor.add_page(lector.pages[i])
+        buf = io.BytesIO()
+        escritor.write(buf)
+        respuesta = _llamar_gemini_api(
+            _PROMPT_LECTURA_PDF_REGISTRO,
+            [{"role": "user", "content": "Extrae los datos de estas páginas."}],
+            max_tokens=8000, pdf_bytes=buf.getvalue(), timeout=120
+        )
+        for o in _parsear_jsonl_tolerante(respuesta):
+            if o.get("tipo") == "encabezado" and not encabezado:
+                encabezado = o
+            elif o.get("tipo") == "ref":
+                c, d = _norm_espacios(o.get("c")), _norm_espacios(o.get("d"))
+                k = (_clave_referencia(c), _clave_referencia(d))
+                if c and k not in vistos:
+                    vistos.add(k)
+                    pares.append((c, d))
+        if n < len(lotes):
+            time.sleep(3.5)
+    return encabezado, pares
+
+
+def es_consulta_en_linea(pdf_bytes):
+    """Chequeo rápido (primera página) para leer primero las resoluciones y después las consultas."""
+    try:
+        t = PdfReader(io.BytesIO(pdf_bytes)).pages[0].extract_text() or ""
+        return _tipo_documento_registro(t) == "Consulta en línea"
+    except Exception:
+        return False
+
+
+def leer_documento_registro(nombre, pdf_bytes, avisar=None, docs_previos=None):
+    """Lee UN pdf (resolución o consulta en línea). Devuelve un dict con encabezado + referencias."""
+    doc = {
+        "archivo": nombre, "tipo": "No reconocido", "clave": None, "registro_texto": "", "expediente": "",
+        "resolucion_no": "", "fecha_resolucion": "", "tramite": "", "titular": "", "producto": "",
+        "marca": "", "riesgo": "", "estado": "", "vencimiento": "",
+        "referencias": [], "formato": "", "advertencias": [], "texto_observaciones": "",
+    }
+    try:
+        lector = PdfReader(io.BytesIO(pdf_bytes))
+    except Exception as e:
+        doc["advertencias"].append(f"No se pudo abrir el PDF: {e}")
+        return doc
+
+    paginas = _extraer_texto_paginas(lector, layout=False)
+    texto = "\n".join(paginas)
+    escaneado = len(texto.strip()) < 200 or not _texto_pdf_es_confiable(texto)
+
+    if escaneado:
+        doc["tipo"] = "Resolución (escaneada)"
+        try:
+            enc, pares = _gemini_leer_pdf_registro(pdf_bytes, avisar=avisar)
+        except Exception as e:
+            doc["advertencias"].append(f"PDF escaneado y no se pudo leer con IA: {e}")
+            return doc
+        clave, _ = _parsear_registro_sanitario(enc.get("registro") or "")
+        doc.update({
+            "clave": clave, "registro_texto": enc.get("registro", ""), "expediente": _limpiar_expediente(enc.get("expediente")),
+            "resolucion_no": enc.get("resolucion_no", ""), "fecha_resolucion": enc.get("fecha", ""),
+            "tramite": enc.get("tramite", ""), "titular": enc.get("titular", ""), "producto": enc.get("producto", ""),
+            "marca": enc.get("marca", ""), "riesgo": enc.get("riesgo", ""),
+            "referencias": pares, "formato": "IA sobre PDF escaneado (revisar)",
+        })
+        if not clave:
+            clave2, _ = _parsear_registro_sanitario(nombre)
+            doc["clave"] = clave2
+            if clave2:
+                doc["advertencias"].append("El registro se tomó del nombre del archivo.")
+        if not pares:
+            doc["advertencias"].append("No se encontraron referencias en el documento.")
+        return doc
+
+    tipo = _tipo_documento_registro(texto)
+    doc["tipo"] = tipo
+    if tipo == "Consulta en línea":
+        enc, bloque = _encabezado_consulta(texto)
+        doc.update({k: v for k, v in enc.items()})
+        doc["texto_observaciones"] = bloque
+        if not bloque:
+            doc["advertencias"].append("No se encontró la sección 'Observaciones' con las referencias.")
+        else:
+            try:
+                ejemplos = []
+                for dp in (docs_previos or []):
+                    if dp.get("clave") and dp.get("clave") == doc["clave"] and dp["tipo"] != "Consulta en línea":
+                        ejemplos.extend(dp["referencias"])
+                pares = _gemini_pares_desde_texto(bloque, avisar=avisar, ejemplos=ejemplos)
+                doc["referencias"] = pares
+                doc["formato"] = "Texto corrido separado con IA (revisar)"
+            except Exception as e:
+                doc["referencias"] = [(bloque, "")]
+                doc["formato"] = "Sin separar (IA no disponible)"
+                doc["advertencias"].append(
+                    f"No se pudo separar el texto con IA ({e}). Quedó todo el texto en una sola fila para que lo revises."
+                )
+    elif tipo == "Resolución":
+        doc.update(_encabezado_resolucion(texto))
+        try:
+            paginas_layout = _extraer_texto_paginas(lector, layout=True)
+            pares = _extraer_referencias_layout(paginas_layout)
+        except Exception:
+            pares = []
+        if pares:
+            doc["referencias"] = pares
+            doc["formato"] = "Tabla de la resolución"
+        else:
+            # Tabla no estándar: se manda la sección OBSERVACIONES (o todo el texto) a la IA.
+            m = re.search(r"OBSERVACIONES\s*:?(.*?)(?:VIDA\s+UTIL\s*:|EXPEDIENTE\s+N[O°º]|$)", texto, re.DOTALL | re.IGNORECASE)
+            bloque = _norm_espacios(m.group(1)) if m else ""
+            doc["texto_observaciones"] = bloque
+            if bloque:
+                try:
+                    doc["referencias"] = _gemini_pares_desde_texto(bloque, avisar=avisar)
+                    doc["formato"] = "Texto separado con IA (revisar)"
+                except Exception as e:
+                    doc["advertencias"].append(f"No se pudo leer la lista de referencias con IA: {e}")
+            if not doc["referencias"]:
+                doc["advertencias"].append(
+                    "No se halló una lista de referencias en esta resolución (puede ser una resolución que no las trae, "
+                    "como una renovación o un cambio de titular)."
+                )
+    else:
+        doc["advertencias"].append("No parece una resolución ni una consulta en línea del INVIMA.")
+
+    if not doc["clave"]:
+        clave2, _ = _parsear_registro_sanitario(nombre)
+        if clave2:
+            doc["clave"] = clave2
+            doc["advertencias"].append("El registro se tomó del nombre del archivo.")
+        else:
+            doc["advertencias"].append("No se pudo identificar el número de registro sanitario del documento.")
+    return doc
+
+
+def construir_consolidado_referencias(registros_df, docs, validacion_df=None):
+    """
+    registros_df: DataFrame con Cliente, Registro_Sanitario, Expediente (lista del cliente).
+    docs: lista de dicts devueltos por leer_documento_registro.
+    validacion_df: (opcional) resultado de validar_registros_invima para traer titular/estado.
+    Devuelve (df_consolidado, df_control, dict_hojas_por_archivo).
+    """
+    # Índice de la lista de clientes por clave
+    lista = {}
+    if registros_df is not None and not registros_df.empty:
+        for _, f in registros_df.iterrows():
+            clave, _ = _parsear_registro_sanitario(f.get("Registro_Sanitario", ""))
+            exp = _limpiar_expediente(f.get("Expediente", ""))
+            k = clave or ("EXP" + exp if exp else None)
+            if k:
+                lista[k] = {"Cliente": f.get("Cliente", ""), "Registro": f.get("Registro_Sanitario", ""), "Expediente": exp}
+    val_por_clave = {}
+    if validacion_df is not None and not validacion_df.empty:
+        for _, f in validacion_df.iterrows():
+            clave, _ = _parsear_registro_sanitario(f.get("Registro_INVIMA") or f.get("Registro_Consultado"))
+            if clave:
+                val_por_clave[clave] = f
+
+    # Si un documento no trae clave pero sí expediente que coincide con la lista, se usa ese registro.
+    por_exp = {v["Expediente"]: k for k, v in lista.items() if v["Expediente"] and not k.startswith("EXP")}
+    for d in docs:
+        if not d.get("clave") and d.get("expediente") in por_exp:
+            d["clave"] = por_exp[d["expediente"]]
+
+    claves = list(dict.fromkeys([d["clave"] for d in docs if d.get("clave")] + [k for k in lista if not k.startswith("EXP")]))
+    filas, control, hojas = [], [], {}
+    usados = set()
+
+    for clave in claves:
+        docs_reg = [d for d in docs if d.get("clave") == clave]
+        info = lista.get(clave, {})
+        val = val_por_clave.get(clave)
+        consultas = [d for d in docs_reg if d["tipo"] == "Consulta en línea"]
+        resoluciones = sorted([d for d in docs_reg if d["tipo"] != "Consulta en línea"],
+                              key=lambda d: (d.get("fecha_resolucion") or "", d.get("resolucion_no") or ""))
+        consulta = consultas[-1] if consultas else None
+        cliente = info.get("Cliente", "") or ""
+        exp = info.get("Expediente", "") or next((d["expediente"] for d in docs_reg if d.get("expediente")), "")
+        titular = (val["Titular_INVIMA"] if val is not None else "") or next((d["titular"] for d in docs_reg if d.get("titular")), "")
+        producto = next((d["producto"] for d in ([consulta] if consulta else []) + resoluciones[::-1] if d and d.get("producto")), "")
+        marca = next((d["marca"] for d in ([consulta] if consulta else []) + resoluciones[::-1] if d and d.get("marca")), "")
+        estado = (consulta["estado"] if consulta else "") or (val["Estado_INVIMA"] if val is not None else "")
+        venc = (consulta["vencimiento"] if consulta else "") or (val["Fecha_Vencimiento"] if val is not None else "")
+        reg_txt = "INVIMA " + clave
+
+        if not docs_reg:
+            control.append({"Cliente": cliente, "Registro_Sanitario": reg_txt, "Expediente": exp,
+                            "Documentos": 0, "Consulta_en_linea": "No", "Resoluciones": 0, "Referencias": 0,
+                            "Situacion": "⚠️ Sin documentos: sube las resoluciones o la consulta en línea"})
+            continue
+
+        # Referencias consolidadas (por clave de referencia)
+        consolidado = {}
+        orden = ([("Resolución", r) for r in resoluciones] + ([("Consulta en línea", consulta)] if consulta else []))
+        for _, d in orden:
+            etiqueta = (f"Res. {d['resolucion_no']}" if d["tipo"] != "Consulta en línea" and d.get("resolucion_no")
+                        else ("Consulta en línea" if d["tipo"] == "Consulta en línea" else d["archivo"]))
+            for cod, desc in d["referencias"]:
+                k = _clave_referencia(cod)
+                if not k:
+                    continue
+                e = consolidado.setdefault(k, {"codigo": cod, "descripcion": desc, "fuentes": [], "formatos": set(),
+                                               "en_consulta": False, "en_resoluciones": False, "descs": set()})
+                if desc and not e["descripcion"]:
+                    e["descripcion"] = desc
+                if desc:
+                    e["descs"].add(_clave_referencia(desc))
+                if etiqueta not in e["fuentes"]:
+                    e["fuentes"].append(etiqueta)
+                e["formatos"].add(d["formato"])
+                if d["tipo"] == "Consulta en línea":
+                    e["en_consulta"] = True
+                else:
+                    e["en_resoluciones"] = True
+
+        hay_consulta = consulta is not None and not str(consulta["formato"]).startswith("Sin separar")
+        for k, e in consolidado.items():
+            if hay_consulta and e["en_consulta"]:
+                amparo = "✅ Vigente (consulta en línea)"
+            elif hay_consulta and e["en_resoluciones"]:
+                amparo = "⚠️ Solo en resoluciones: no aparece en la consulta actual (posible exclusión)"
+            else:
+                amparo = "📄 Según resoluciones (verificar modificaciones posteriores)"
+            notas = []
+            if len(e["descs"]) > 1:
+                notas.append("La descripción difiere entre documentos.")
+            if e["en_consulta"] and any("Sin separar" in x for x in e["formatos"]):
+                notas.append("Texto de la consulta sin separar: revisar y dividir a mano.")
+            filas.append({
+                "Cliente": cliente, "Registro_Sanitario": reg_txt, "Expediente": exp, "Titular": titular,
+                "Producto": producto, "Marca": marca, "Estado_Registro": estado, "Fecha_Vencimiento": venc,
+                "Referencia": e["codigo"], "Descripcion": e["descripcion"], "Amparo": amparo,
+                "Fuentes": "; ".join(e["fuentes"]), "Formato_Origen": "; ".join(sorted(x for x in e["formatos"] if x)),
+                "Notas": " ".join(notas),
+            })
+
+        # Hojas por archivo
+        for d in docs_reg:
+            base = (f"{clave.split('-')[-1]} Consulta" if d["tipo"] == "Consulta en línea"
+                    else f"{clave.split('-')[-1]} Res {str(d.get('resolucion_no') or '')[-6:] or 'x'}")
+            nombre_hoja, n = base[:31], 2
+            while nombre_hoja in usados:
+                nombre_hoja = f"{base[:27]} ({n})"
+                n += 1
+            usados.add(nombre_hoja)
+            hojas[nombre_hoja] = pd.DataFrame([{
+                "Registro_Sanitario": reg_txt, "Archivo": d["archivo"], "Tipo_Documento": d["tipo"],
+                "Resolucion": d.get("resolucion_no", ""), "Fecha_Resolucion": d.get("fecha_resolucion", ""),
+                "Referencia": c, "Descripcion": ds, "Formato_Origen": d["formato"],
+            } for c, ds in d["referencias"]], columns=["Registro_Sanitario", "Archivo", "Tipo_Documento", "Resolucion",
+                                                        "Fecha_Resolucion", "Referencia", "Descripcion", "Formato_Origen"])
+
+        control.append({
+            "Cliente": cliente, "Registro_Sanitario": reg_txt, "Expediente": exp,
+            "Documentos": len(docs_reg), "Consulta_en_linea": "Sí" if consulta is not None else "No",
+            "Resoluciones": len(resoluciones), "Referencias": len(consolidado),
+            "Situacion": ("✅ Con consulta en línea (estado actual)" if hay_consulta
+                          else ("⚠️ Consulta cargada pero sin separar (IA no disponible): revisa su hoja y divídela a mano"
+                                if consulta is not None
+                                else "📄 Solo resoluciones: sube la consulta en línea para confirmar el estado actual")),
+        })
+
+    columnas = ["Cliente", "Registro_Sanitario", "Expediente", "Titular", "Producto", "Marca", "Estado_Registro",
+                "Fecha_Vencimiento", "Referencia", "Descripcion", "Amparo", "Fuentes", "Formato_Origen", "Notas"]
+    return pd.DataFrame(filas, columns=columnas), pd.DataFrame(control), hojas
 
 
 def obtener_usuarios():
@@ -275,7 +1302,39 @@ def _obtener_token_drive():
         },
         timeout=30,
     )
-    respuesta.raise_for_status()
+    if respuesta.status_code != 200:
+        # Google normalmente manda el motivo real en el cuerpo de la
+        # respuesta (ej. 'invalid_grant' = el refresh_token ya no sirve,
+        # expiró o fue revocado) -- antes esto se perdía y solo se veía
+        # '400 Bad Request', sin decir POR QUÉ.
+        try:
+            detalle = respuesta.json()
+            motivo = detalle.get("error", "desconocido")
+            descripcion = detalle.get("error_description", "")
+        except Exception:
+            motivo, descripcion = "desconocido", respuesta.text[:200]
+
+        if motivo == "invalid_grant":
+            raise RuntimeError(
+                "El acceso a tu Google Drive personal ya no es válido "
+                f"(Google dice: '{descripcion or 'invalid_grant'}'). Esto pasa normalmente por una de estas "
+                "razones:\n\n"
+                "1. Si el proyecto de Google Cloud donde creaste estas credenciales sigue en modo "
+                "'Testing' (no publicado/verificado), Google expira el refresh_token automáticamente "
+                "a los 7 días, sin importar si lo usas seguido -- esta es la causa más común.\n"
+                "2. Revocaste el acceso manualmente desde tu cuenta de Google (myaccount.google.com → "
+                "Seguridad → Acceso de terceros a tu cuenta).\n"
+                "3. Cambiaste la contraseña de esa cuenta de Google recientemente.\n\n"
+                "La solución es la misma en los tres casos: hay que generar un refresh_token nuevo "
+                "siguiendo la guía de autorización y actualizarlo en Settings → Secrets de Streamlit "
+                "Cloud. Si el proyecto sigue en 'Testing', esto habrá que repetirlo cada ~7 días hasta "
+                "que publiques el proyecto de Google Cloud (o lo dejes en Testing pero sabiendo que "
+                "hay que renovar el token periódicamente)."
+            )
+        raise RuntimeError(
+            f"No se pudo renovar el acceso a Google Drive (Google respondió: '{motivo}' -- "
+            f"{descripcion or respuesta.text[:200]})."
+        )
     return respuesta.json()["access_token"]
 
 
@@ -2684,7 +3743,7 @@ def _obtener_api_key_gemini():
             return None
 
 
-def _llamar_gemini_api(system_prompt, mensajes, modelo=MODELO_IA_CALIDAD, max_tokens=900, pdf_bytes=None):
+def _llamar_gemini_api(system_prompt, mensajes, modelo=MODELO_IA_CALIDAD, max_tokens=900, pdf_bytes=None, timeout=45):
     """Llama a la API de Gemini. Reintenta automáticamente ante:
     - Errores de red/timeout (problemas de conexión transitorios)
     - 503 (modelo saturado) y 429 (límite de tasa)
@@ -2735,7 +3794,7 @@ def _llamar_gemini_api(system_prompt, mensajes, modelo=MODELO_IA_CALIDAD, max_to
     respuesta = None
     for intento in range(intentos):
         try:
-            respuesta = requests.post(url, headers=headers, json=cuerpo, timeout=45)
+            respuesta = requests.post(url, headers=headers, json=cuerpo, timeout=timeout)
         except requests.exceptions.RequestException as e:
             ultimo_error = e
             if intento < intentos - 1:
@@ -3785,6 +4844,7 @@ else:
         nav_items = [
             ("🏠 Menú Principal",       "Inicio"),
             ("🚀 Extracción Masiva",     "ExtraccionMasiva"),
+            ("✅ Registros Sanitarios", "ValidacionRS"),
             ("📄 Documentación Post-Venta", "DocumentacionPostVenta"),
             ("🔢 Codificación",          "Codificacion"),
             ("📁 Creación de Dossier",   "CreacionDossier"),
@@ -3920,6 +4980,14 @@ else:
             </div>""", unsafe_allow_html=True)
         if st.button("🚀 Ingresar al Módulo de Extracción Masiva", key="btn_ext", use_container_width=True):
             st.session_state["seccion_activa"] = "ExtraccionMasiva"; st.rerun()
+
+        st.markdown("""
+            <div class="card-azul" style="border-left-color:#15803d;">
+                <h4>✅ Registros Sanitarios de Clientes</h4>
+                <p>Lista los registros de tus clientes, valida su vigencia, sube resoluciones o la consulta en línea y obtén el consolidado de referencias amparadas por cada registro.</p>
+            </div>""", unsafe_allow_html=True)
+        if st.button("✅ Ingresar a Registros Sanitarios", key="btn_val_rs", use_container_width=True):
+            st.session_state["seccion_activa"] = "ValidacionRS"; st.rerun()
 
         st.markdown("""
             <div class="card-azul" style="border-left-color:#0369a1;">
@@ -5957,6 +7025,412 @@ else:
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 use_container_width=True
             )
+
+    # ==========================================================
+    # VISTA: REGISTROS SANITARIOS DE CLIENTES (por módulos)
+    #   1) Registros de clientes + validación de vigencia
+    #   2) Documentos (resoluciones / consulta en línea)
+    #   3) Consolidado de referencias amparadas
+    #   4) Buscar por titular (para alimentar el módulo 1)
+    # ==========================================================
+    elif st.session_state["seccion_activa"] == "ValidacionRS":
+        st.markdown("<h3 style='color:#0b1d3a;margin-bottom:4px;'>✅ Registros Sanitarios de Clientes</h3>", unsafe_allow_html=True)
+        st.markdown(
+            "<p style='color:#475569;margin-bottom:10px;'>Trabaja por módulos: <b>1)</b> arma la lista de registros de tus clientes, "
+            "<b>2)</b> sube las resoluciones (o la consulta en línea) de cada uno y <b>3)</b> obtén el consolidado de "
+            "referencias amparadas por cada registro sanitario.</p>",
+            unsafe_allow_html=True
+        )
+        st.session_state.setdefault("rs_lista", pd.DataFrame(columns=["Cliente", "Registro_Sanitario", "Expediente"]))
+        st.session_state.setdefault("rs_lista_base", st.session_state["rs_lista"])
+        st.session_state.setdefault("rs_lista_ver", 0)
+        st.session_state.setdefault("rs_docs", [])
+        st.session_state.setdefault("rs_docs_firmas", [])
+
+        tab_lista, tab_docs, tab_cons, tab_port = st.tabs([
+            "1️⃣ Registros de clientes", "2️⃣ Documentos", "3️⃣ Consolidado de referencias", "🏢 Buscar por titular"
+        ])
+
+        def _agregar_a_lista_rs(nuevas_filas):
+            """Agrega filas (dicts Cliente/Registro_Sanitario/Expediente) sin duplicar por registro o expediente."""
+            actual = st.session_state["rs_lista"]
+            existentes = set()
+            for _, f in actual.iterrows():
+                c, _r = _parsear_registro_sanitario(f.get("Registro_Sanitario", ""))
+                existentes.add(c or ("EXP" + _limpiar_expediente(f.get("Expediente", ""))))
+            agregadas = []
+            for n in nuevas_filas:
+                c, _r = _parsear_registro_sanitario(n.get("Registro_Sanitario", ""))
+                k = c or ("EXP" + _limpiar_expediente(n.get("Expediente", "")))
+                if k in existentes or k == "EXP":
+                    continue
+                existentes.add(k)
+                agregadas.append({"Cliente": n.get("Cliente", ""), "Registro_Sanitario": n.get("Registro_Sanitario", ""),
+                                  "Expediente": _limpiar_expediente(n.get("Expediente", "")) or str(n.get("Expediente", "") or "")})
+            if agregadas:
+                nueva = pd.concat([actual, pd.DataFrame(agregadas)], ignore_index=True)
+                st.session_state["rs_lista"] = nueva
+                st.session_state["rs_lista_base"] = nueva
+                st.session_state["rs_lista_ver"] += 1
+            return len(agregadas)
+
+        # ═════════════ MÓDULO 1: REGISTROS DE CLIENTES ═════════════
+        with tab_lista:
+            _fecha_datos = _fecha_actualizacion_datos_invima()
+            st.markdown(
+                "Pon aquí los registros sanitarios de tus clientes (o los que se tendrán en cuenta para el estándar semántico): "
+                "**cliente, número de registro sanitario y expediente**. Puedes subir un Excel, pegarlos o escribirlos en la tabla."
+            )
+            plantilla_df = pd.DataFrame([
+                {"Cliente": "Widex Colombia", "Registro_Sanitario": "INVIMA 2018DM-0018225", "Expediente": "20147066"},
+                {"Cliente": "Tecnitrauma", "Registro_Sanitario": "INVIMA 2020DM-0005644-R1", "Expediente": "20013598"},
+            ])
+            buf_plantilla = io.BytesIO()
+            plantilla_df.to_excel(buf_plantilla, index=False)
+            st.download_button(
+                "📥 Descargar plantilla", data=buf_plantilla.getvalue(),
+                file_name="plantilla_registros_clientes.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                key="rs_dl_plantilla"
+            )
+            col_a, col_b = st.columns(2)
+            with col_a:
+                archivo_rs = st.file_uploader("Excel o CSV con los registros", type=["xlsx", "xls", "csv"], key="rs_archivo")
+            with col_b:
+                texto_rs = st.text_area(
+                    "…o pégalos (uno por línea: Cliente ; Registro ; Expediente)", height=120, key="rs_texto",
+                    placeholder="Widex ; INVIMA 2018DM-0018225 ; 20147066\nINVIMA 2020DM-0005644"
+                )
+            if st.button("➕ Agregar a la lista", key="rs_btn_agregar", use_container_width=True):
+                nuevas = []
+                try:
+                    if archivo_rs is not None:
+                        if archivo_rs.name.lower().endswith(".csv"):
+                            df_in = pd.read_csv(archivo_rs, dtype=str, keep_default_na=False, sep=None, engine="python")
+                        else:
+                            df_in = pd.read_excel(archivo_rs, dtype=str, keep_default_na=False)
+                        col_reg = _detectar_columna_rs(df_in, ("registro", "invima"), ("rs", "r s"))
+                        col_exp = _detectar_columna_rs(df_in, ("expediente",))
+                        col_cli = _detectar_columna_rs(df_in, ("cliente", "empresa", "razon", "titular"))
+                        if col_reg is None and col_exp is None:
+                            st.error("No encontré una columna de registro sanitario ni de expediente. Usa la plantilla.")
+                        else:
+                            for _, f_in in df_in.iterrows():
+                                nuevas.append({
+                                    "Cliente": f_in[col_cli] if col_cli else "",
+                                    "Registro_Sanitario": f_in[col_reg] if col_reg else "",
+                                    "Expediente": f_in[col_exp] if col_exp else "",
+                                })
+                    for linea in texto_rs.splitlines():
+                        partes = [x.strip() for x in linea.split(";")]
+                        if not any(partes):
+                            continue
+                        if len(partes) == 1:
+                            nuevas.append({"Cliente": "", "Registro_Sanitario": partes[0], "Expediente": ""})
+                        elif len(partes) == 2:
+                            nuevas.append({"Cliente": partes[0], "Registro_Sanitario": partes[1], "Expediente": ""})
+                        else:
+                            nuevas.append({"Cliente": partes[0], "Registro_Sanitario": partes[1], "Expediente": partes[2]})
+                except Exception as e:
+                    st.error(f"No pude leer el archivo: {e}")
+                if nuevas:
+                    n_ag = _agregar_a_lista_rs(nuevas)
+                    st.success(f"Se agregaron {n_ag} registro(s) nuevos ({len(nuevas) - n_ag} ya estaban en la lista).")
+                else:
+                    st.warning("No hay nada para agregar: sube un archivo o pega registros.")
+
+            st.markdown(f"**Lista de registros ({len(st.session_state['rs_lista'])})** — puedes editar, agregar o borrar filas aquí mismo:")
+            editado = st.data_editor(
+                st.session_state["rs_lista_base"], num_rows="dynamic", use_container_width=True,
+                key=f"rs_editor_lista_{st.session_state['rs_lista_ver']}",
+                column_config={
+                    "Cliente": st.column_config.TextColumn("Cliente"),
+                    "Registro_Sanitario": st.column_config.TextColumn("Registro sanitario"),
+                    "Expediente": st.column_config.TextColumn("Expediente"),
+                }
+            )
+            st.session_state["rs_lista"] = editado.fillna("").astype(str).reset_index(drop=True)
+            if st.button("🗑️ Vaciar la lista", key="rs_btn_vaciar"):
+                vacia = pd.DataFrame(columns=["Cliente", "Registro_Sanitario", "Expediente"])
+                st.session_state["rs_lista"] = vacia
+                st.session_state["rs_lista_base"] = vacia
+                st.session_state["rs_lista_ver"] += 1
+                st.session_state.pop("rs_resultado", None)
+                st.rerun()
+
+            st.markdown("---")
+            st.markdown("**Validar vigencia contra el INVIMA (opcional)**")
+            st.caption(
+                "📅 Listado abierto del INVIMA actualizado al " + (_fecha_datos or "fecha no disponible") +
+                ". Es una fuente de apoyo: confirma en la consulta oficial antes de radicar o certificar."
+            )
+            c_u1, c_u2 = st.columns(2)
+            with c_u1:
+                umbral_urgente_rs = st.number_input("🟠 Urgente si vence en (días) ≤", min_value=1, max_value=720, value=90, step=15, key="rs_umbral_urgente")
+            with c_u2:
+                umbral_proximo_rs = st.number_input("🟡 Próximo si vence en (días) ≤", min_value=1, max_value=1440, value=180, step=30, key="rs_umbral_proximo")
+
+            if st.button("🔎 Validar vigencia de la lista", key="rs_btn_validar", type="primary", use_container_width=True):
+                lista_rs = st.session_state["rs_lista"]
+                entradas = [
+                    {"Cliente": f.get("Cliente", ""), "Registro": f.get("Registro_Sanitario", ""),
+                     "Expediente": f.get("Expediente", ""), "Titular_Esperado": ""}
+                    for _, f in lista_rs.iterrows()
+                    if str(f.get("Registro_Sanitario", "")).strip() or str(f.get("Expediente", "")).strip()
+                ]
+                if not entradas:
+                    st.warning("La lista está vacía.")
+                else:
+                    barra_msg = st.empty()
+                    try:
+                        with st.spinner(f"Validando {len(entradas)} registro(s)…"):
+                            resultado_rs = validar_registros_invima(
+                                entradas, int(umbral_urgente_rs), int(umbral_proximo_rs),
+                                avisar=lambda m: barra_msg.caption(m)
+                            )
+                        barra_msg.empty()
+                        st.session_state["rs_resultado"] = pd.DataFrame(resultado_rs, columns=COLUMNAS_VALIDACION_RS)
+                        st.session_state["rs_resultado_fecha"] = datetime.datetime.now().strftime("%Y%m%d_%H%M")
+                        registrar_log(st.session_state["usuario_activo_real"], f"Validación de registros sanitarios ({len(entradas)} registros)", len(entradas))
+                    except Exception as e:
+                        barra_msg.empty()
+                        st.error(f"No se pudo completar la validación: {e}")
+
+            df_res = st.session_state.get("rs_resultado")
+            if df_res is not None and not df_res.empty:
+                alerta_col = df_res["Alerta"].astype(str)
+                m1, m2, m3, m4, m5 = st.columns(5)
+                m1.metric("Total", len(df_res))
+                m2.metric("🟢 Vigentes", int(alerta_col.str.startswith("🟢").sum()))
+                m3.metric("🟠🟡 Por vencer", int(alerta_col.str.startswith(("🟠", "🟡")).sum()))
+                m4.metric("🔴 Vencidos", int(alerta_col.str.startswith("🔴").sum()))
+                m5.metric("⚪ No encontrados", int(alerta_col.str.startswith("⚪").sum()))
+                atencion = ~alerta_col.str.startswith("🟢")
+                filtro_rs = st.radio("Mostrar", ["Todos", "Solo los que requieren atención"], horizontal=True, key="rs_filtro")
+                st.dataframe(df_res if filtro_rs == "Todos" else df_res[atencion], use_container_width=True, hide_index=True)
+                st.download_button(
+                    "📥 Descargar validación en Excel",
+                    data=_excel_validacion_rs({"Validacion": df_res, "Requieren atencion": df_res[atencion]}),
+                    file_name=f"validacion_registros_{st.session_state.get('rs_resultado_fecha', '')}.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    key="rs_dl_resultado", use_container_width=True
+                )
+
+        # ═════════════ MÓDULO 2: DOCUMENTOS ═════════════
+        with tab_docs:
+            st.markdown(
+                "Sube los PDF de **cada registro**: pueden ser una o varias **resoluciones** del mismo registro (concesión, "
+                "renovación, modificaciones…) y/o la **consulta en línea** descargada de la consulta pública del INVIMA "
+                "(sirve cuando no tienes las resoluciones, y además muestra el estado actual del registro). "
+                "Puedes subir todo junto; el sistema identifica a qué registro corresponde cada archivo."
+            )
+            archivos_pdf = st.file_uploader(
+                "Resoluciones y/o consultas en línea (PDF)", type=["pdf"], accept_multiple_files=True, key="rs_pdfs"
+            )
+            pendientes = []
+            if archivos_pdf:
+                firmas_hechas = set(tuple(x) for x in st.session_state["rs_docs_firmas"])
+                pendientes = [a for a in archivos_pdf if (a.name, a.size) not in firmas_hechas]
+                st.caption(f"{len(archivos_pdf)} archivo(s) cargados — {len(pendientes)} pendiente(s) por leer.")
+
+            c_l1, c_l2 = st.columns([3, 1])
+            with c_l1:
+                leer_ahora = st.button("📖 Cargar y leer documentos", key="rs_btn_leer", type="primary",
+                                       use_container_width=True, disabled=not pendientes)
+            with c_l2:
+                if st.button("🗑️ Quitar todos", key="rs_btn_quitar_docs", use_container_width=True):
+                    st.session_state["rs_docs"] = []
+                    st.session_state["rs_docs_firmas"] = []
+                    st.rerun()
+
+            if leer_ahora and pendientes:
+                datos_pdf = [(a.name, a.size, a.getvalue()) for a in pendientes]
+                # primero resoluciones, después consultas (así la consulta puede apoyarse en los pares de la resolución)
+                datos_pdf.sort(key=lambda x: es_consulta_en_linea(x[2]))
+                barra = st.progress(0.0)
+                msg = st.empty()
+                for i, (nombre, tam, contenido) in enumerate(datos_pdf, start=1):
+                    msg.caption(f"Leyendo {nombre} ({i}/{len(datos_pdf)})…")
+                    try:
+                        doc = leer_documento_registro(
+                            nombre, contenido, avisar=lambda m, n=nombre: msg.caption(f"{n}: {m}"),
+                            docs_previos=st.session_state["rs_docs"]
+                        )
+                    except Exception as e:
+                        doc = {"archivo": nombre, "tipo": "No reconocido", "clave": None, "registro_texto": "",
+                               "expediente": "", "resolucion_no": "", "fecha_resolucion": "", "tramite": "",
+                               "titular": "", "producto": "", "marca": "", "riesgo": "", "estado": "",
+                               "vencimiento": "", "referencias": [], "formato": "",
+                               "advertencias": [f"Error inesperado al leer: {e}"], "texto_observaciones": ""}
+                    st.session_state["rs_docs"].append(doc)
+                    st.session_state["rs_docs_firmas"].append([nombre, tam])
+                    barra.progress(i / len(datos_pdf))
+                msg.empty()
+                registrar_log(st.session_state["usuario_activo_real"], f"Lectura de documentos de registros sanitarios ({len(datos_pdf)} archivos)", len(datos_pdf))
+                st.rerun()
+
+            docs_rs = st.session_state["rs_docs"]
+            if docs_rs:
+                st.markdown(f"**Documentos leídos ({len(docs_rs)})** — si algún archivo quedó con el registro equivocado o vacío, corrígelo en la columna *Registro*:")
+                tabla_docs = pd.DataFrame([{
+                    "Archivo": d["archivo"], "Tipo": d["tipo"],
+                    "Registro": ("INVIMA " + d["clave"]) if d.get("clave") else "",
+                    "Expediente": d.get("expediente", ""), "Resolución": d.get("resolucion_no", ""),
+                    "Fecha": d.get("fecha_resolucion", ""), "Referencias": len(d["referencias"]),
+                    "Formato": d.get("formato", ""), "Avisos": " | ".join(d.get("advertencias", [])),
+                } for d in docs_rs])
+                editada = st.data_editor(
+                    tabla_docs, use_container_width=True, hide_index=True, key=f"rs_editor_docs_{len(docs_rs)}",
+                    disabled=[c for c in tabla_docs.columns if c != "Registro"],
+                )
+                for d, nuevo in zip(docs_rs, editada["Registro"].tolist()):
+                    c_nuevo, _r = _parsear_registro_sanitario(nuevo)
+                    d["clave"] = c_nuevo
+
+                # Cobertura: registros de la lista sin ningún documento
+                claves_con_doc = {d["clave"] for d in docs_rs if d.get("clave")}
+                faltan = []
+                for _, f in st.session_state["rs_lista"].iterrows():
+                    c, _r = _parsear_registro_sanitario(f.get("Registro_Sanitario", ""))
+                    if c and c not in claves_con_doc:
+                        faltan.append({"Cliente": f.get("Cliente", ""), "Registro": "INVIMA " + c})
+                no_listados = sorted({"INVIMA " + c for c in claves_con_doc} - {
+                    "INVIMA " + _parsear_registro_sanitario(x)[0]
+                    for x in st.session_state["rs_lista"]["Registro_Sanitario"].tolist() if _parsear_registro_sanitario(x)[0]
+                })
+                if faltan:
+                    st.warning(
+                        f"{len(faltan)} registro(s) de tu lista todavía no tienen documentos. Sube sus resoluciones o, si no las tienes, "
+                        "la consulta en línea."
+                    )
+                    st.dataframe(pd.DataFrame(faltan), use_container_width=True, hide_index=True)
+                if no_listados:
+                    st.info("Estos registros tienen documentos pero no están en tu lista del módulo 1 (se incluirán igual en el consolidado): " + ", ".join(no_listados))
+            else:
+                st.info("Aún no has cargado documentos.")
+
+        # ═════════════ MÓDULO 3: CONSOLIDADO ═════════════
+        with tab_cons:
+            st.markdown(
+                "Aquí se arma el **listado de referencias amparadas por cada registro sanitario**: una hoja consolidada con "
+                "todos los registros y una hoja adicional por cada archivo leído. No requiere IA: solo junta lo que ya se leyó en el módulo 2."
+            )
+            if not st.session_state["rs_docs"] and st.session_state["rs_lista"].empty:
+                st.info("Primero agrega registros (módulo 1) y sube documentos (módulo 2).")
+            else:
+                if st.button("🧩 Construir consolidado", key="rs_btn_consolidar", type="primary", use_container_width=True):
+                    df_cons, df_ctl, hojas_arch = construir_consolidado_referencias(
+                        st.session_state["rs_lista"], st.session_state["rs_docs"], st.session_state.get("rs_resultado")
+                    )
+                    st.session_state["rs_consolidado"] = (df_cons, df_ctl, hojas_arch)
+                    st.session_state["rs_consolidado_fecha"] = datetime.datetime.now().strftime("%Y%m%d_%H%M")
+                    registrar_log(st.session_state["usuario_activo_real"], "Consolidado de referencias por registro sanitario", len(df_cons))
+
+            if st.session_state.get("rs_consolidado"):
+                df_cons, df_ctl, hojas_arch = st.session_state["rs_consolidado"]
+                m1, m2, m3, m4 = st.columns(4)
+                m1.metric("Registros", len(df_ctl))
+                m2.metric("Con consulta en línea", int((df_ctl["Consulta_en_linea"] == "Sí").sum()) if not df_ctl.empty else 0)
+                m3.metric("Sin documentos", int((df_ctl["Documentos"] == 0).sum()) if not df_ctl.empty else 0)
+                m4.metric("Referencias", len(df_cons))
+
+                st.markdown("**Control por registro**")
+                st.dataframe(df_ctl, use_container_width=True, hide_index=True)
+
+                st.markdown("**Referencias consolidadas**")
+                opciones_reg = ["Todos"] + sorted(df_cons["Registro_Sanitario"].dropna().unique().tolist())
+                sel_reg = st.selectbox("Ver registro", opciones_reg, key="rs_sel_registro_cons")
+                st.dataframe(df_cons if sel_reg == "Todos" else df_cons[df_cons["Registro_Sanitario"] == sel_reg],
+                             use_container_width=True, hide_index=True)
+
+                hojas_excel = {"Consolidado": df_cons, "Control": df_ctl}
+                for nombre_h, df_h in hojas_arch.items():
+                    hojas_excel[nombre_h] = df_h
+                st.download_button(
+                    "📥 Descargar consolidado en Excel",
+                    data=_excel_validacion_rs(hojas_excel),
+                    file_name=f"consolidado_referencias_{st.session_state.get('rs_consolidado_fecha', '')}.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    key="rs_dl_consolidado", use_container_width=True
+                )
+                st.caption(
+                    "Cómo leer la columna *Amparo*: ✅ aparece en la consulta en línea (estado vigente); ⚠️ está en alguna resolución "
+                    "pero no en la consulta actual (posible exclusión por una modificación); 📄 solo hay resoluciones y conviene "
+                    "verificar modificaciones posteriores. Las referencias marcadas “(revisar)” en *Formato_Origen* fueron separadas "
+                    "con IA a partir de texto corrido y vale la pena revisarlas."
+                )
+
+        # ═════════════ BUSCAR POR TITULAR ═════════════
+        with tab_port:
+            st.markdown(
+                "Escribe una palabra distintiva del nombre de cada cliente tal como aparece como **titular** (una por línea, mínimo "
+                "3 letras; ej. *TECNITRAUMA*). Trae **todos** los registros que ese cliente tiene a su nombre, y puedes pasarlos a la "
+                "lista del módulo 1. Útil para armar el inventario de los clientes (por ejemplo, para la Circular 23 de 2026)."
+            )
+            archivo_tit = st.file_uploader("…o sube un Excel con una columna de clientes/titulares", type=["xlsx", "xls", "csv"], key="rs_archivo_tit")
+            texto_tit = st.text_area("Titulares a buscar (uno por línea):", height=100, key="rs_texto_tit", placeholder="TECNITRAUMA\nOSTEOAMERICA")
+            solo_vig = st.checkbox("Mostrar solo registros vigentes", value=False, key="rs_solo_vigentes")
+
+            if st.button("🏢 Buscar portafolio", key="rs_btn_portafolio", type="primary", use_container_width=True):
+                palabras = [l.strip() for l in texto_tit.splitlines() if l.strip()]
+                if archivo_tit is not None:
+                    try:
+                        if archivo_tit.name.lower().endswith(".csv"):
+                            df_t = pd.read_csv(archivo_tit, dtype=str, keep_default_na=False, sep=None, engine="python")
+                        else:
+                            df_t = pd.read_excel(archivo_tit, dtype=str, keep_default_na=False)
+                        col_t = _detectar_columna_rs(df_t, ("titular", "cliente", "empresa", "razon", "nombre")) or df_t.columns[0]
+                        palabras += [str(v).strip() for v in df_t[col_t].tolist() if str(v).strip()]
+                    except Exception as e:
+                        st.error(f"No pude leer el archivo: {e}")
+                palabras = list(dict.fromkeys(palabras))
+                if not palabras:
+                    st.warning("Escribe o sube al menos un titular.")
+                else:
+                    barra_msg2 = st.empty()
+                    try:
+                        with st.spinner(f"Buscando {len(palabras)} titular(es)…"):
+                            filas_p, titulares_p = buscar_portafolio_por_titular(
+                                palabras, solo_vig, int(st.session_state.get("rs_umbral_urgente", 90)),
+                                int(st.session_state.get("rs_umbral_proximo", 180)),
+                                avisar=lambda m: barra_msg2.caption(m)
+                            )
+                        barra_msg2.empty()
+                        st.session_state["rs_portafolio"] = pd.DataFrame(filas_p, columns=COLUMNAS_PORTAFOLIO_RS)
+                        st.session_state["rs_titulares"] = pd.DataFrame(titulares_p, columns=["Busqueda", "Titular_INVIMA", "Registros", "Vigentes"])
+                        registrar_log(st.session_state["usuario_activo_real"], f"Portafolio por titular ({len(palabras)} búsquedas)", len(filas_p))
+                    except Exception as e:
+                        barra_msg2.empty()
+                        st.error(f"No se pudo completar la búsqueda: {e}")
+
+            df_port = st.session_state.get("rs_portafolio")
+            df_tits = st.session_state.get("rs_titulares")
+            if df_port is not None and df_tits is not None:
+                st.markdown("---")
+                st.markdown("**Titulares encontrados** (confirma que son las empresas correctas; una palabra puede traer razones sociales parecidas):")
+                st.dataframe(df_tits, use_container_width=True, hide_index=True)
+                st.markdown(f"**Registros ({len(df_port)}):**")
+                st.dataframe(df_port, use_container_width=True, hide_index=True)
+                if not df_port.empty:
+                    if st.button("➕ Pasar estos registros a mi lista (módulo 1)", key="rs_btn_pasar_lista", use_container_width=True):
+                        n_ag = _agregar_a_lista_rs([
+                            {"Cliente": r["Busqueda"], "Registro_Sanitario": r["Registro_INVIMA"], "Expediente": r["Expediente"]}
+                            for _, r in df_port.iterrows()
+                        ])
+                        st.success(f"Se agregaron {n_ag} registro(s) a la lista del módulo 1.")
+                    resumen_port = (
+                        df_port.groupby(["Titular_INVIMA", "Nivel_Riesgo"]).size()
+                        .reset_index(name="Registros").sort_values(["Titular_INVIMA", "Nivel_Riesgo"])
+                    )
+                    st.download_button(
+                        "📥 Descargar portafolio en Excel",
+                        data=_excel_validacion_rs({
+                            "Portafolio": df_port, "Titulares encontrados": df_tits, "Resumen por riesgo": resumen_port,
+                        }),
+                        file_name=f"portafolio_titulares_{datetime.datetime.now().strftime('%Y%m%d_%H%M')}.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        key="rs_dl_portafolio", use_container_width=True
+                    )
 
     # ==========================================================
     # VISTA 4: PANEL ADMIN
