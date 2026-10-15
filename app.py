@@ -1262,6 +1262,8 @@ def construir_filas_plantilla(lista_df, docs, cliente_sel="Todos", avisar=None, 
         cands.sort(key=lambda g: (g["revision"], g["vencimiento"]), reverse=True)
         g = cands[0] if cands else None
         clave = it["clave"] or (g["clave"] if g else None)
+        if not clave and it["exp"]:
+            clave = next((d["clave"] for d in docs if d.get("clave") and d.get("expediente") == it["exp"]), None)
         docs_reg = [d for d in docs if (clave and d.get("clave") == clave) or (it["exp"] and d.get("expediente") == it["exp"])]
         resols = sorted([d for d in docs_reg if d["tipo"] != "Consulta en línea"],
                         key=lambda d: (d.get("fecha_resolucion") or "", d.get("resolucion_no") or ""))
@@ -7969,6 +7971,37 @@ else:
                 _reemplazar_tabla_rs(pd.concat([actual, pd.DataFrame(agregadas)], ignore_index=True))
             return len(agregadas)
 
+        def _leer_pdfs_rs(archivos, barra=None, msg=None):
+            """Lee los PDF (resoluciones primero, consultas después) y los guarda en rs_docs. Devuelve cuántos leyó."""
+            datos_pdf = [(a.name, a.size, a.getvalue()) for a in archivos]
+            # primero resoluciones, después consultas (así la consulta puede apoyarse en los pares de la resolución)
+            datos_pdf.sort(key=lambda x: es_consulta_en_linea(x[2]))
+            for i, (nombre, tam, contenido) in enumerate(datos_pdf, start=1):
+                if msg is not None:
+                    msg.caption(f"Leyendo {nombre} ({i}/{len(datos_pdf)})…")
+                try:
+                    doc = leer_documento_registro(
+                        nombre, contenido,
+                        avisar=(lambda m, n=nombre: msg.caption(f"{n}: {m}")) if msg is not None else None,
+                        docs_previos=st.session_state["rs_docs"]
+                    )
+                except Exception as e:
+                    doc = {"archivo": nombre, "tipo": "No reconocido", "clave": None, "registro_texto": "",
+                           "expediente": "", "resolucion_no": "", "fecha_resolucion": "", "tramite": "",
+                           "titular": "", "producto": "", "marca": "", "riesgo": "", "estado": "",
+                           "vencimiento": "", "referencias": [], "formato": "",
+                           "advertencias": [f"Error inesperado al leer: {e}"], "texto_observaciones": ""}
+                st.session_state["rs_docs"].append(doc)
+                st.session_state["rs_docs_firmas"].append([nombre, tam])
+                if barra is not None:
+                    barra.progress(i / len(datos_pdf))
+            registrar_log(st.session_state["usuario_activo_real"], f"Lectura de documentos de registros sanitarios ({len(datos_pdf)} archivos)", len(datos_pdf))
+            return len(datos_pdf)
+
+        def _pdfs_pendientes_rs(archivos):
+            firmas_hechas = set(tuple(x) for x in st.session_state["rs_docs_firmas"])
+            return [a for a in (archivos or []) if (a.name, a.size) not in firmas_hechas]
+
         # ═════════════ MÓDULO 1: REGISTROS DE CLIENTES (= tabla de la plantilla) ═════════════
         with tab_lista:
             _fecha_datos = _fecha_actualizacion_datos_invima()
@@ -8009,14 +8042,21 @@ else:
                         except Exception as e:
                             st.error(f"No pude leer el libro: {e}")
             with col_o2:
-                st.markdown("**Opción 2 · Solo tengo expedientes o registros**")
-                st.caption("Escribe el expediente o el registro (uno por línea, o `Cliente ; Registro ; Expediente`), o sube un Excel simple. Luego pulsa **✨ Completar con datos del INVIMA**.")
+                st.markdown("**Opción 2 · Solo tengo expedientes (y los documentos)**")
+                st.caption(
+                    "Escribe el expediente (uno por línea, o `Cliente ; Registro ; Expediente`) y sube la **resolución o resoluciones** "
+                    "del registro y/o el **PDF de la consulta pública** que descargaste del INVIMA. La app los lee y llena sola los campos de la plantilla."
+                )
                 texto_rs = st.text_area(
-                    "Expedientes / registros", height=110, key="rs_texto",
+                    "Expedientes / registros", height=90, key="rs_texto",
                     placeholder="20147066\nWidex ; INVIMA 2018DM-0018225 ; 20147066"
                 )
-                archivo_rs = st.file_uploader("…o un Excel/CSV simple", type=["xlsx", "xls", "csv"], key="rs_archivo")
-                if st.button("➕ Agregar a la tabla", key="rs_btn_agregar", use_container_width=True):
+                pdfs_opc2 = st.file_uploader(
+                    "Resoluciones y/o consulta pública (PDF, puedes subir varios)", type=["pdf"],
+                    accept_multiple_files=True, key="rs_pdfs_opc2"
+                )
+                archivo_rs = st.file_uploader("…o un Excel/CSV simple con expedientes (opcional)", type=["xlsx", "xls", "csv"], key="rs_archivo")
+                if st.button("✨ Leer documentos y llenar la tabla", key="rs_btn_agregar", type="primary", use_container_width=True):
                     nuevas = []
                     try:
                         if archivo_rs is not None:
@@ -8039,11 +8079,57 @@ else:
                                 nuevas.append({"Cliente": partes[0], "Registro_Sanitario": partes[1], "Expediente": partes[2]})
                     except Exception as e:
                         st.error(f"No pude leer el archivo: {e}")
-                    if nuevas:
-                        n_ag = _agregar_a_lista_rs(nuevas)
-                        st.success(f"Se agregaron {n_ag} registro(s) nuevos ({len(nuevas) - n_ag} ya estaban en la tabla).")
+                    pendientes_o2 = _pdfs_pendientes_rs(pdfs_opc2)
+                    if not nuevas and not pdfs_opc2 and not pendientes_o2:
+                        st.warning("Escribe al menos un expediente o sube los documentos.")
                     else:
-                        st.warning("No hay nada para agregar: escribe registros o sube un archivo.")
+                        msg_o2 = st.empty()
+                        avisos_o2 = []
+                        try:
+                            n_ag = _agregar_a_lista_rs(nuevas) if nuevas else 0
+                            n_leidos = 0
+                            if pendientes_o2:
+                                barra_o2 = st.progress(0.0)
+                                n_leidos = _leer_pdfs_rs(pendientes_o2, barra_o2, msg_o2)
+                            # documentos cuyo registro no está en la tabla: se agregan como fila nueva
+                            claves_tabla = {_parsear_registro_sanitario(x)[0] for x in st.session_state["rs_lista"]["Registro_Sanitario"].tolist()}
+                            exps_tabla = {_limpiar_expediente(x) for x in st.session_state["rs_lista"]["Expediente"].tolist()}
+                            filas_docs = []
+                            for d in st.session_state["rs_docs"]:
+                                if d.get("clave") and d["clave"] not in claves_tabla and _limpiar_expediente(d.get("expediente", "")) not in exps_tabla:
+                                    filas_docs.append({"Cliente": cliente_def.strip(), "Registro_Sanitario": "INVIMA " + d["clave"],
+                                                       "Expediente": d.get("expediente", "")})
+                                    claves_tabla.add(d["clave"])
+                                elif not d.get("clave"):
+                                    avisos_o2.append(f"{d['archivo']}: no pude identificar a qué registro corresponde; corrígelo en el módulo 2.")
+                            n_docs_filas = _agregar_a_lista_rs(filas_docs) if filas_docs else 0
+                            if st.session_state["rs_lista"].empty:
+                                msg_o2.empty()
+                                st.warning("No hay nada para llenar: escribe un expediente o sube documentos que se puedan leer.")
+                            else:
+                                with st.spinner("Consultando el INVIMA y completando la tabla con los documentos…"):
+                                    df_c, avisos_c, n_c = completar_tabla_desde_invima(
+                                        st.session_state["rs_lista"], st.session_state["rs_docs"],
+                                        avisar=lambda m: msg_o2.caption(m)
+                                    )
+                                msg_o2.empty()
+                                # expedientes/registros escritos que quedaron sin ningún documento
+                                for _, f in df_c.iterrows():
+                                    cl = _parsear_registro_sanitario(f["Registro_Sanitario"])[0]
+                                    ex = _limpiar_expediente(f["Expediente"])
+                                    if not any((cl and d.get("clave") == cl) or (ex and d.get("expediente") == ex) for d in st.session_state["rs_docs"]):
+                                        avisos_c.append(f"{f['Registro_Sanitario'] or f['Expediente']}: sin documentos; se llenó solo con el listado abierto del INVIMA.")
+                                _reemplazar_tabla_rs(df_c)
+                                st.session_state["rs_avisos_completar"] = list(dict.fromkeys(avisos_o2 + avisos_c))
+                                st.session_state["rs_msg_completar"] = (
+                                    f"Listo: {n_ag + n_docs_filas} registro(s) nuevos, {n_leidos} documento(s) leídos y {n_c} fila(s) completadas. "
+                                    "Solo se llenaron celdas vacías; lo que ya habías escrito no se tocó."
+                                )
+                                registrar_log(st.session_state["usuario_activo_real"], f"Opción 2 de registros: leer documentos y llenar tabla ({n_c} filas)", n_c)
+                                st.rerun()
+                        except Exception as e:
+                            msg_o2.empty()
+                            st.error(f"No se pudo completar el proceso: {e}")
             if st.session_state.get("rs_refs_libro") is not None:
                 st.caption(f"📚 Referencias cargadas desde tu libro: {len(st.session_state['rs_refs_libro'])}.")
 
@@ -8201,8 +8287,7 @@ else:
             )
             pendientes = []
             if archivos_pdf:
-                firmas_hechas = set(tuple(x) for x in st.session_state["rs_docs_firmas"])
-                pendientes = [a for a in archivos_pdf if (a.name, a.size) not in firmas_hechas]
+                pendientes = _pdfs_pendientes_rs(archivos_pdf)
                 st.caption(f"{len(archivos_pdf)} archivo(s) cargados — {len(pendientes)} pendiente(s) por leer.")
 
             c_l1, c_l2 = st.columns([3, 1])
@@ -8216,29 +8301,10 @@ else:
                     st.rerun()
 
             if leer_ahora and pendientes:
-                datos_pdf = [(a.name, a.size, a.getvalue()) for a in pendientes]
-                # primero resoluciones, después consultas (así la consulta puede apoyarse en los pares de la resolución)
-                datos_pdf.sort(key=lambda x: es_consulta_en_linea(x[2]))
                 barra = st.progress(0.0)
                 msg = st.empty()
-                for i, (nombre, tam, contenido) in enumerate(datos_pdf, start=1):
-                    msg.caption(f"Leyendo {nombre} ({i}/{len(datos_pdf)})…")
-                    try:
-                        doc = leer_documento_registro(
-                            nombre, contenido, avisar=lambda m, n=nombre: msg.caption(f"{n}: {m}"),
-                            docs_previos=st.session_state["rs_docs"]
-                        )
-                    except Exception as e:
-                        doc = {"archivo": nombre, "tipo": "No reconocido", "clave": None, "registro_texto": "",
-                               "expediente": "", "resolucion_no": "", "fecha_resolucion": "", "tramite": "",
-                               "titular": "", "producto": "", "marca": "", "riesgo": "", "estado": "",
-                               "vencimiento": "", "referencias": [], "formato": "",
-                               "advertencias": [f"Error inesperado al leer: {e}"], "texto_observaciones": ""}
-                    st.session_state["rs_docs"].append(doc)
-                    st.session_state["rs_docs_firmas"].append([nombre, tam])
-                    barra.progress(i / len(datos_pdf))
+                _leer_pdfs_rs(pendientes, barra, msg)
                 msg.empty()
-                registrar_log(st.session_state["usuario_activo_real"], f"Lectura de documentos de registros sanitarios ({len(datos_pdf)} archivos)", len(datos_pdf))
                 st.rerun()
 
             docs_rs = st.session_state["rs_docs"]
