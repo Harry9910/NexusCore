@@ -1238,6 +1238,18 @@ def construir_filas_plantilla(lista_df, docs, cliente_sel="Todos", avisar=None, 
                 [i["clave"] for i in items if i["clave"]], [i["exp"] for i in items if i["exp"]], avisar)],
             "Listado abierto INVIMA"
         )
+        # Los que no aparecen en el listado principal se buscan en el alterno (RS y NSO)
+        faltan_alt = [i for i in items if not any(
+            (i["clave"] and g["clave"] == i["clave"]) or ((not i["clave"]) and g["expediente"] == i["exp"]) for g in grupos)]
+        if faltan_alt:
+            if avisar:
+                avisar(f"{len(faltan_alt)} registro(s) no están en el listado principal; revisando el alterno…")
+            grupos += _agrupar_registros_invima(
+                [_normalizar_registro_invima(r) for r in _consultar_por_claves_y_expedientes(
+                    URL_DATOS_INVIMA_ALTERNO, "rsynso",
+                    [i["clave"] for i in faltan_alt if i["clave"]], [i["exp"] for i in faltan_alt if i["exp"]])],
+                "Listado abierto INVIMA (RS y NSO)"
+            )
     except Exception as e:
         avisos.append(f"No se pudo consultar el listado abierto del INVIMA ({e}). Se usaron solo los documentos subidos.")
 
@@ -1277,6 +1289,9 @@ def construir_filas_plantilla(lista_df, docs, cliente_sel="Todos", avisar=None, 
             fabs = [(n, (g["fab_paises"].get(n) or "")) for n in sorted(g["fabricantes"])]
         else:
             fuente, fabs = "", []
+        if fabs and res and res.get("fabricantes"):
+            pais_res = {_clave_referencia(n): p for n, p in res["fabricantes"]}
+            fabs = [(n, p or pais_res.get(_clave_referencia(n), "")) for n, p in fabs]
         if not fabs and res and res.get("fabricantes"):
             fabs = list(res["fabricantes"])
             fuente = "Resolución " + str(res.get("resolucion_no", ""))
@@ -1292,6 +1307,8 @@ def construir_filas_plantilla(lista_df, docs, cliente_sel="Todos", avisar=None, 
         if g is not None and g["estado"] and not g["estado"].lower().startswith("vigente"):
             avisos.append(f"{etiqueta}: en el INVIMA figura como '{g['estado']}'.")
 
+        if any(n and not p for n, p in fabs):
+            avisos.append(f"{etiqueta}: el país del fabricante no está en el listado abierto; sube la resolución o complétalo a mano.")
         for nombre_fab, pais in fabs:
             fila = {c: "" for c in COLUMNAS_PLANTILLA_SEMANTICO}
             fila.update({
@@ -1782,6 +1799,240 @@ def completar_tabla_desde_invima(df, docs, avisar=None):
                     fabs_usados.setdefault(k, set()).add(nombre_fab)
                     tocadas += 1
     return pd.DataFrame(salida, columns=COLUMNAS_TABLA_RS), avisos, tocadas
+
+
+# ==========================================================
+# VALIDAR LA TABLA / LIBRO CONTRA LOS DOCUMENTOS (resoluciones, consulta en línea, listado INVIMA)
+# ==========================================================
+def leer_referencias_libro(archivo):
+    """Lee la hoja 'DATOS DE LAS REFERENCIAS' de un libro de la plantilla. Devuelve DataFrame
+    con Expediente, Registro, Referencia, Descripcion (vacío si la hoja no existe o no tiene filas)."""
+    columnas = ["Expediente", "Registro", "Referencia", "Descripcion"]
+    try:
+        xls = pd.ExcelFile(archivo)
+        hoja = next((h for h in xls.sheet_names if "REFERENCIAS" in h.upper() and "DATOS" in h.upper()), None)
+        if hoja is None:
+            return pd.DataFrame(columns=columnas)
+        df = xls.parse(hoja, dtype=str, keep_default_na=False)
+    except Exception:
+        return pd.DataFrame(columns=columnas)
+
+    def _n(x):
+        t = unicodedata.normalize("NFKD", str(x).upper())
+        return re.sub(r"[^A-Z0-9]", "", "".join(ch for ch in t if not unicodedata.combining(ch)))
+
+    cols = {_n(c): c for c in df.columns}
+    c_exp, c_reg = cols.get("EXPEDIENTE"), cols.get("REGISTROSANITARIO")
+    c_ref, c_desc = cols.get("REFERENCIAS"), cols.get("DESCRIPCIONDELAREFERENCIA")
+    if c_ref is None:
+        return pd.DataFrame(columns=columnas)
+    salida = pd.DataFrame({
+        "Expediente": df[c_exp] if c_exp else "",
+        "Registro": df[c_reg] if c_reg else "",
+        "Referencia": df[c_ref],
+        "Descripcion": df[c_desc] if c_desc else "",
+    })
+    salida = salida.apply(lambda s: s.astype(str).str.strip())
+    return salida[salida["Referencia"] != ""].reset_index(drop=True)
+
+
+def _coincide_texto(a, b):
+    ka, kb = _clave_referencia(a), _clave_referencia(b)
+    return bool(ka and kb and (ka == kb or ka in kb or kb in ka))
+
+
+def validar_tabla_contra_documentos(tabla_df, docs, refs_libro_df=None, avisar=None):
+    """Compara lo que hay en la tabla con lo que dicen los documentos y el listado del INVIMA.
+    Devuelve (df_campos, df_referencias, avisos)."""
+    avisos = []
+    tabla = _normalizar_tabla_rs(tabla_df)
+    filas = [(i, r) for i, r in tabla.iterrows() if _clave_fila_rs(r["Registro_Sanitario"], r["Expediente"])]
+    if not filas:
+        return pd.DataFrame(), pd.DataFrame(), ["La tabla no tiene registros."]
+
+    claves = [_parsear_registro_sanitario(r["Registro_Sanitario"])[0] for _, r in filas]
+    claves = [c for c in claves if c]
+    exps = [_limpiar_expediente(r["Expediente"]) for _, r in filas if _limpiar_expediente(r["Expediente"])]
+    grupos = []
+    try:
+        if avisar:
+            avisar("Consultando el listado oficial del INVIMA…")
+        grupos = _agrupar_registros_invima(
+            [_normalizar_registro_invima(x) for x in _consultar_por_claves_y_expedientes(
+                URL_DATOS_INVIMA_PRINCIPAL, "registro_sanitario", claves, exps)], "Listado DM")
+        grupos += _agrupar_registros_invima(
+            [_normalizar_registro_invima(x) for x in _consultar_por_claves_y_expedientes(
+                URL_DATOS_INVIMA_ALTERNO, "rsynso", claves, exps)], "Listado RS y NSO")
+    except Exception as e:
+        avisos.append(f"No se pudo consultar el listado del INVIMA ({e}); se comparó solo con los documentos.")
+
+    resultados = []
+
+    def _agregar(r, campo, en_tabla, en_docs, fuente, resultado):
+        resultados.append({
+            "Cliente": r["Cliente"], "Registro": r["Registro_Sanitario"], "Expediente": r["Expediente"],
+            "Campo": campo, "En_tabla": en_tabla, "En_documentos": en_docs, "Fuente": fuente, "Resultado": resultado,
+        })
+
+    def _comparar_texto(r, campo, valor_tabla, candidatos):
+        """candidatos: lista de (fuente, valor). Compara contra todos los que traen dato."""
+        con_dato = [(f, v) for f, v in candidatos if str(v or "").strip()]
+        if not con_dato:
+            if str(valor_tabla).strip():
+                _agregar(r, campo, valor_tabla, "", "", "➖ Sin dato en los documentos")
+            return
+        fuentes_ok = [f for f, v in con_dato if _coincide_texto(valor_tabla, v)]
+        todo = " | ".join(f"{v} ({f})" for f, v in con_dato)
+        if not str(valor_tabla).strip():
+            _agregar(r, campo, "", con_dato[0][1], con_dato[0][0], "❌ Falta en la tabla")
+        elif fuentes_ok:
+            _agregar(r, campo, valor_tabla, con_dato[0][1], ", ".join(fuentes_ok), "✅ Coincide")
+        else:
+            _agregar(r, campo, valor_tabla, todo, con_dato[0][0], "⚠️ Difiere")
+
+    for _, r in filas:
+        clave = _clave_fila_rs(r["Registro_Sanitario"], r["Expediente"])
+        exp = _limpiar_expediente(r["Expediente"])
+        g_list = [g for g in grupos if (clave and g["clave"] == clave) or (exp and g["expediente"] == exp)]
+        g_list.sort(key=lambda g: (g["fuente"] != "Listado DM", -g["revision"]))
+        g = g_list[0] if g_list else None
+        docs_reg = [d for d in docs if (clave and d.get("clave") == clave) or (exp and d.get("expediente") == exp)]
+        resols = sorted([d for d in docs_reg if d["tipo"] != "Consulta en línea"],
+                        key=lambda d: (d.get("fecha_resolucion") or "", d.get("resolucion_no") or ""))
+        res = resols[-1] if resols else None
+        consulta = next((d for d in docs_reg if d["tipo"] == "Consulta en línea"), None)
+        if g is None and not docs_reg:
+            _agregar(r, "(registro)", "", "", "", "⚪ Sin documentos ni datos del INVIMA para comparar")
+            continue
+
+        def cands(campo_doc, campo_g=None, transformar=lambda x: x):
+            lista = []
+            if consulta:
+                lista.append(("Consulta en línea", transformar(consulta.get(campo_doc, ""))))
+            if res:
+                lista.append((f"Resolución {res.get('resolucion_no', '')}", transformar(res.get(campo_doc, ""))))
+            if g is not None and campo_g:
+                lista.append((g["fuente"], transformar(g.get(campo_g, ""))))
+            return lista
+
+        _comparar_texto(r, "Expediente", r["Expediente"], cands("expediente", "expediente"))
+        _comparar_texto(r, "Riesgo", _riesgo_estandar(r["Riesgo"]), cands("riesgo", "riesgo", _riesgo_estandar))
+        _comparar_texto(r, "Rol (modalidad)", r["Rol"], cands("modalidad", "modalidad"))
+        _comparar_texto(r, "Nombre producto", r["Nombre producto"], cands("producto", "producto"))
+
+        # Fabricante y país de ESTA fila
+        fabs_docs = []   # (fuente, nombre, pais)
+        if res:
+            fabs_docs += [(f"Resolución {res.get('resolucion_no', '')}", n, p) for n, p in res.get("fabricantes", [])]
+        if g is not None:
+            fabs_docs += [(g["fuente"], n, g["fab_paises"].get(n, "")) for n in sorted(g["fabricantes"])]
+        fab_tabla = r["Razon Social fabricante"]
+        if fabs_docs:
+            if not fab_tabla.strip():
+                _agregar(r, "Fabricante", "", "; ".join(sorted({n for _, n, _ in fabs_docs})), fabs_docs[0][0], "❌ Falta en la tabla")
+            else:
+                hallados = [(f, n, p) for f, n, p in fabs_docs if _coincide_texto(fab_tabla, n)]
+                if hallados:
+                    _agregar(r, "Fabricante", fab_tabla, hallados[0][1], ", ".join(sorted({f for f, _, _ in hallados})), "✅ Coincide")
+                    paises = [(f, p) for f, n, p in hallados if p]
+                    if paises:
+                        _comparar_texto(r, "País del fabricante", r["Pais"], paises)
+                else:
+                    _agregar(r, "Fabricante", fab_tabla, "; ".join(sorted({n for _, n, _ in fabs_docs})), fabs_docs[0][0], "⚠️ Difiere")
+        elif fab_tabla.strip():
+            _agregar(r, "Fabricante", fab_tabla, "", "", "➖ Sin dato en los documentos")
+
+        # Marcas
+        marcas_tabla = [r[f"MARCA {n}"].strip() for n in range(1, 7) if r[f"MARCA {n}"].strip()]
+        marcas_doc, fuente_m = [], ""
+        for f_, texto_m in (("Consulta en línea", consulta.get("marca", "") if consulta else ""),
+                            (f"Resolución {res.get('resolucion_no', '')}" if res else "", res.get("marca", "") if res else ""),
+                            (g["fuente"] if g else "", g.get("marca", "") if g else "")):
+            if texto_m:
+                marcas_doc, fuente_m = _dividir_marcas(texto_m), f_
+                break
+        if marcas_doc:
+            k_t = {_clave_referencia(m): m for m in marcas_tabla}
+            k_d = {_clave_referencia(m): m for m in marcas_doc}
+            faltan = [m for k, m in k_d.items() if k not in k_t]
+            sobran = [m for k, m in k_t.items() if k not in k_d]
+            if not faltan and not sobran:
+                _agregar(r, "Marcas", "; ".join(marcas_tabla), "; ".join(marcas_doc), fuente_m, "✅ Coincide")
+            else:
+                detalle = []
+                if faltan:
+                    detalle.append("faltan en la tabla: " + ", ".join(faltan))
+                if sobran:
+                    detalle.append("en la tabla pero no en el documento: " + ", ".join(sobran))
+                _agregar(r, "Marcas", "; ".join(marcas_tabla), "; ".join(marcas_doc), fuente_m,
+                         ("❌ " if faltan else "⚠️ ") + "; ".join(detalle))
+        elif marcas_tabla:
+            _agregar(r, "Marcas", "; ".join(marcas_tabla), "", "", "➖ Sin dato en los documentos")
+
+    # Fabricantes de los documentos que no tienen fila en la tabla
+    for clave in dict.fromkeys(_clave_fila_rs(r["Registro_Sanitario"], r["Expediente"]) for _, r in filas):
+        filas_k = [r for _, r in filas if _clave_fila_rs(r["Registro_Sanitario"], r["Expediente"]) == clave]
+        exp_k = _limpiar_expediente(filas_k[0]["Expediente"])
+        docs_reg = [d for d in docs if (clave and d.get("clave") == clave) or (exp_k and d.get("expediente") == exp_k)]
+        resols = sorted([d for d in docs_reg if d["tipo"] != "Consulta en línea"],
+                        key=lambda d: (d.get("fecha_resolucion") or ""))
+        nombres_doc = {}
+        if resols:
+            for n, _p in resols[-1].get("fabricantes", []):
+                nombres_doc[_clave_referencia(n)] = n
+        for g in grupos:
+            if (clave and g["clave"] == clave) or (exp_k and g["expediente"] == exp_k):
+                for n in g["fabricantes"]:
+                    nombres_doc.setdefault(_clave_referencia(n), n)
+        for k, n in nombres_doc.items():
+            if not any(_coincide_texto(r["Razon Social fabricante"], n) for r in filas_k):
+                _agregar(filas_k[0], "Fabricante sin fila", "", n, "Documentos", "❌ Falta una fila para este fabricante")
+
+    df_campos = pd.DataFrame(resultados, columns=["Cliente", "Registro", "Expediente", "Campo", "En_tabla", "En_documentos", "Fuente", "Resultado"])
+
+    # Referencias del libro vs amparadas
+    df_refs = pd.DataFrame()
+    if refs_libro_df is not None and not refs_libro_df.empty:
+        df_cons, _ctl, _h = construir_consolidado_referencias(tabla, docs, None)
+        amparadas = {}
+        for _, a in df_cons.iterrows():
+            if "sin separar" in str(a.get("Formato_Origen", "")).lower() or "sin separar" in str(a.get("Notas", "")).lower():
+                continue   # texto corrido de la consulta que no se pudo separar: no sirve para comparar
+            k, _r = _parsear_registro_sanitario(a["Registro_Sanitario"])
+            amparadas.setdefault(k, []).append((a["Referencia"], a["Descripcion"], a["Amparo"]))
+        filas_refs, vistas_por_reg = [], {}
+        for _, rl in refs_libro_df.iterrows():
+            k, _r = _parsear_registro_sanitario(rl["Registro"])
+            if not k:
+                exp_l = _limpiar_expediente(rl["Expediente"])
+                k = next((_parsear_registro_sanitario(t["Registro_Sanitario"])[0] for _, t in tabla.iterrows()
+                          if exp_l and _limpiar_expediente(t["Expediente"]) == exp_l and _parsear_registro_sanitario(t["Registro_Sanitario"])[0]), None)
+            lista_a = amparadas.get(k, [])
+            if not lista_a:
+                filas_refs.append({"Registro": rl["Registro"] or rl["Expediente"], "Referencia_en_libro": rl["Referencia"],
+                                   "Coincide_con_documento": "", "Resultado": "⚪ No hay documentos de este registro para comparar"})
+                continue
+            m = next(((c, d, am) for c, d, am in lista_a
+                      if _coincide_texto(rl["Referencia"], c) or _coincide_texto(rl["Referencia"], f"{c} {d}")), None)
+            vistas_por_reg.setdefault(k, set())
+            if m:
+                vistas_por_reg[k].add(_clave_referencia(m[0]))
+                filas_refs.append({"Registro": rl["Registro"], "Referencia_en_libro": rl["Referencia"],
+                                   "Coincide_con_documento": m[0], "Resultado": ("✅ Amparada" if m[2].startswith("✅") else
+                                                 ("📄 Amparada según resoluciones (verificar modificaciones)" if m[2].startswith("📄")
+                                                  else "⚠️ Solo en resoluciones antiguas: no está en la consulta actual"))})
+            else:
+                filas_refs.append({"Registro": rl["Registro"], "Referencia_en_libro": rl["Referencia"],
+                                   "Coincide_con_documento": "", "Resultado": "⚠️ No aparece en los documentos (posible referencia no amparada)"})
+        for k, lista_a in amparadas.items():
+            if k not in vistas_por_reg:
+                continue
+            for c, d, am in lista_a:
+                if _clave_referencia(c) not in vistas_por_reg[k]:
+                    filas_refs.append({"Registro": "INVIMA " + k, "Referencia_en_libro": "", "Coincide_con_documento": c,
+                                       "Resultado": "❌ Amparada por el documento pero falta en el libro"})
+        df_refs = pd.DataFrame(filas_refs, columns=["Registro", "Referencia_en_libro", "Coincide_con_documento", "Resultado"])
+    return df_campos, df_refs, avisos
 
 
 def obtener_usuarios():
@@ -7722,24 +7973,49 @@ else:
         with tab_lista:
             _fecha_datos = _fecha_actualizacion_datos_invima()
             st.markdown(
-                "Esta tabla es la de la hoja **DATOS EMPRESA** de tu plantilla de estándar semántico. Llénala a mano, "
-                "súbela desde un Excel, o escribe solo el **cliente y el registro sanitario (o el expediente)** y pulsa "
-                "**✨ Completar con datos del INVIMA** para que se llenen sola el riesgo, el rol, el producto, el fabricante, "
-                "el país y las marcas. Al final descargas el libro con lo que tengas en la tabla."
+                "Esta tabla es la de la hoja **DATOS EMPRESA** de tu plantilla de estándar semántico. Tienes dos formas de empezar; "
+                "luego puedes editar la tabla a mano, y al final descargas el libro."
             )
-            with st.expander("➕ Agregar registros (Excel, libro de la plantilla o texto)", expanded=len(st.session_state["rs_lista"]) == 0):
-                col_a, col_b = st.columns(2)
-                with col_a:
-                    archivo_rs = st.file_uploader(
-                        "Excel/CSV con registros, o un libro de la plantilla (hoja DATOS EMPRESA)",
-                        type=["xlsx", "xls", "csv"], key="rs_archivo"
-                    )
-                    cliente_def = st.text_input("Cliente para las filas que no lo traigan", key="rs_cliente_defecto")
-                with col_b:
-                    texto_rs = st.text_area(
-                        "…o pégalos (uno por línea: Cliente ; Registro ; Expediente)", height=120, key="rs_texto",
-                        placeholder="Widex ; INVIMA 2018DM-0018225 ; 20147066\nINVIMA 2020DM-0005644"
-                    )
+            st.download_button(
+                "📥 Descargar la plantilla en blanco", data=_bytes_plantilla_estandar_semantico(),
+                file_name="1._DATOS_PARA_ESTANDAR_SEMANTICO.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                key="rs_dl_plantilla_blanco"
+            )
+            cliente_def = st.text_input("Cliente (para las filas que no lo traigan)", key="rs_cliente_defecto")
+            col_o1, col_o2 = st.columns(2)
+            with col_o1:
+                st.markdown("**Opción 1 · Ya tengo el libro lleno**")
+                st.caption("Súbelo para cargar su tabla (y sus referencias, si las tiene). Luego, en el módulo 3, lo validas contra las resoluciones o la consulta en línea.")
+                libro_lleno = st.file_uploader("Libro de estándar semántico (.xlsx)", type=["xlsx"], key="rs_libro_lleno")
+                if st.button("📂 Cargar mi libro", key="rs_btn_cargar_libro", use_container_width=True):
+                    if libro_lleno is None:
+                        st.warning("Sube primero el libro.")
+                    else:
+                        try:
+                            nuevas = leer_tabla_rs_desde_excel(libro_lleno, cliente_def.strip())
+                            refs_l = leer_referencias_libro(libro_lleno)
+                            n_ag = _agregar_a_lista_rs(nuevas)
+                            if not refs_l.empty:
+                                previo = st.session_state.get("rs_refs_libro")
+                                st.session_state["rs_refs_libro"] = (
+                                    pd.concat([previo, refs_l], ignore_index=True).drop_duplicates()
+                                    if previo is not None else refs_l
+                                )
+                            st.success(
+                                f"Se cargaron {n_ag} registro(s) nuevos ({len(nuevas) - n_ag} ya estaban)"
+                                + (f" y {len(refs_l)} referencia(s) del libro." if not refs_l.empty else ".")
+                            )
+                        except Exception as e:
+                            st.error(f"No pude leer el libro: {e}")
+            with col_o2:
+                st.markdown("**Opción 2 · Solo tengo expedientes o registros**")
+                st.caption("Escribe el expediente o el registro (uno por línea, o `Cliente ; Registro ; Expediente`), o sube un Excel simple. Luego pulsa **✨ Completar con datos del INVIMA**.")
+                texto_rs = st.text_area(
+                    "Expedientes / registros", height=110, key="rs_texto",
+                    placeholder="20147066\nWidex ; INVIMA 2018DM-0018225 ; 20147066"
+                )
+                archivo_rs = st.file_uploader("…o un Excel/CSV simple", type=["xlsx", "xls", "csv"], key="rs_archivo")
                 if st.button("➕ Agregar a la tabla", key="rs_btn_agregar", use_container_width=True):
                     nuevas = []
                     try:
@@ -7750,9 +8026,15 @@ else:
                             if not any(partes):
                                 continue
                             if len(partes) == 1:
-                                nuevas.append({"Cliente": cliente_def.strip(), "Registro_Sanitario": partes[0]})
+                                if _limpiar_expediente(partes[0]):
+                                    nuevas.append({"Cliente": cliente_def.strip(), "Expediente": partes[0]})
+                                else:
+                                    nuevas.append({"Cliente": cliente_def.strip(), "Registro_Sanitario": partes[0]})
                             elif len(partes) == 2:
-                                nuevas.append({"Cliente": partes[0], "Registro_Sanitario": partes[1]})
+                                if _limpiar_expediente(partes[1]) and not _parsear_registro_sanitario(partes[1])[0]:
+                                    nuevas.append({"Cliente": partes[0], "Expediente": partes[1]})
+                                else:
+                                    nuevas.append({"Cliente": partes[0], "Registro_Sanitario": partes[1]})
                             else:
                                 nuevas.append({"Cliente": partes[0], "Registro_Sanitario": partes[1], "Expediente": partes[2]})
                     except Exception as e:
@@ -7761,7 +8043,9 @@ else:
                         n_ag = _agregar_a_lista_rs(nuevas)
                         st.success(f"Se agregaron {n_ag} registro(s) nuevos ({len(nuevas) - n_ag} ya estaban en la tabla).")
                     else:
-                        st.warning("No hay nada para agregar: sube un archivo o pega registros.")
+                        st.warning("No hay nada para agregar: escribe registros o sube un archivo.")
+            if st.session_state.get("rs_refs_libro") is not None:
+                st.caption(f"📚 Referencias cargadas desde tu libro: {len(st.session_state['rs_refs_libro'])}.")
 
             st.markdown(f"**Tabla de registros ({len(st.session_state['rs_lista'])})** — edita, agrega o borra filas directamente:")
             config_cols = {c: st.column_config.TextColumn(c) for c in COLUMNAS_TABLA_RS}
@@ -8047,6 +8331,65 @@ else:
                     "verificar modificaciones posteriores. Las referencias marcadas “(revisar)” en *Formato_Origen* fueron separadas "
                     "con IA a partir de texto corrido y vale la pena revisarlas."
                 )
+
+            # ── Validar la tabla / libro cargado contra los documentos ──
+            if not st.session_state["rs_lista"].empty:
+                st.divider()
+                st.markdown("#### ✔️ Validar la tabla contra los documentos")
+                st.caption(
+                    "Compara lo que está en la tabla del módulo 1 (o en el libro que cargaste) con las resoluciones, la consulta en línea "
+                    "y el listado abierto del INVIMA: expediente, riesgo, rol, producto, fabricante, país y marcas. Si cargaste un libro con la hoja "
+                    "“DATOS DE LAS REFERENCIAS”, también revisa cada referencia contra lo amparado."
+                )
+                refs_libro = st.session_state.get("rs_refs_libro")
+                if refs_libro is not None and not refs_libro.empty:
+                    st.caption(f"📚 Referencias leídas del libro cargado: {len(refs_libro)}")
+                if st.button("✔️ Validar ahora", key="rs_btn_validar_tabla", type="primary", use_container_width=True):
+                    msg_val = st.empty()
+                    try:
+                        with st.spinner("Comparando…"):
+                            df_c, df_r, av = validar_tabla_contra_documentos(
+                                st.session_state["rs_lista"], st.session_state["rs_docs"], refs_libro,
+                                avisar=lambda m: msg_val.caption(m)
+                            )
+                        msg_val.empty()
+                        st.session_state["rs_validacion_tabla"] = (df_c, df_r, av)
+                        st.session_state["rs_validacion_tabla_fecha"] = datetime.datetime.now().strftime("%Y%m%d_%H%M")
+                        registrar_log(st.session_state["usuario_activo_real"], "Validación de tabla contra documentos", len(df_c))
+                    except Exception as e:
+                        msg_val.empty()
+                        st.error(f"No se pudo validar: {e}")
+
+                if st.session_state.get("rs_validacion_tabla"):
+                    df_c, df_r, av = st.session_state["rs_validacion_tabla"]
+                    for a in av:
+                        st.warning(a)
+                    solo_dif = st.checkbox("Mostrar solo diferencias y faltantes", value=True, key="rs_val_solo_dif")
+                    if not df_c.empty:
+                        res_col = df_c["Resultado"].astype(str)
+                        v1, v2, v3, v4 = st.columns(4)
+                        v1.metric("✅ Coinciden", int(res_col.str.startswith("✅").sum()))
+                        v2.metric("⚠️ Difieren", int(res_col.str.startswith("⚠️").sum()))
+                        v3.metric("❌ Faltan", int(res_col.str.startswith("❌").sum()))
+                        v4.metric("➖/⚪ Sin dato", int(res_col.str.startswith(("➖", "⚪")).sum()))
+                        st.dataframe(df_c[~res_col.str.startswith("✅")] if solo_dif else df_c,
+                                     use_container_width=True, hide_index=True)
+                    if not df_r.empty:
+                        st.markdown("**Referencias del libro vs. documentos**")
+                        res_r = df_r["Resultado"].astype(str)
+                        st.dataframe(df_r[~res_r.str.startswith("✅")] if solo_dif else df_r,
+                                     use_container_width=True, hide_index=True)
+                    hojas_val = {"Campos": df_c}
+                    if not df_r.empty:
+                        hojas_val["Referencias"] = df_r
+                    if not df_c.empty:
+                        st.download_button(
+                            "📥 Descargar validación en Excel",
+                            data=_excel_validacion_rs(hojas_val),
+                            file_name=f"validacion_tabla_{st.session_state.get('rs_validacion_tabla_fecha', '')}.xlsx",
+                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                            key="rs_dl_validacion_tabla", use_container_width=True
+                        )
 
         # ═════════════ BUSCAR POR TITULAR ═════════════
         with tab_port:
