@@ -1202,7 +1202,7 @@ def _fabricantes_de_resolucion(texto):
     return salida
 
 
-def construir_filas_plantilla(lista_df, docs, cliente_sel="Todos", avisar=None):
+def construir_filas_plantilla(lista_df, docs, cliente_sel="Todos", avisar=None, incluir_docs_sin_lista=True):
     """Arma las filas de la tabla 'DATOS EMPRESA'. Devuelve (DataFrame, [avisos])."""
     avisos = []
     items, vistos = [], set()
@@ -1219,7 +1219,7 @@ def construir_filas_plantilla(lista_df, docs, cliente_sel="Todos", avisar=None):
                 continue
             vistos.add(k)
             items.append({"cliente": cli, "clave": clave, "exp": exp, "reg_txt": reg_txt if clave else ""})
-    if cliente_sel == "Todos":
+    if cliente_sel == "Todos" and incluir_docs_sin_lista:
         for d in docs:
             if d.get("clave") and d["clave"] not in vistos:
                 vistos.add(d["clave"])
@@ -1312,6 +1312,7 @@ def llenar_plantilla_semantico(bytes_plantilla, df_filas):
     """Escribe las filas en 'DATOS EMPRESA' conservando el resto del libro. Devuelve (bytes, n_escritas, omitidas)."""
     from openpyxl import load_workbook
     from copy import copy
+    df_filas = df_filas.rename(columns={"Registro_Sanitario": "Registro sanitario"})
     wb = load_workbook(io.BytesIO(bytes_plantilla))
     nombre_hoja = next((n for n in wb.sheetnames if n.strip().upper() == "DATOS EMPRESA"), None)
     if nombre_hoja is None:
@@ -1333,6 +1334,16 @@ def llenar_plantilla_semantico(bytes_plantilla, df_filas):
         v = str(ws.cell(fila_enc, c).value or "").strip().upper()
         if v:
             columnas[v] = c
+
+    # Colores de la leyenda (REPORTADO, SIN REPORTAR…): se copian a la celda Estado
+    colores_estado = {}
+    for r in range(1, fila_enc):
+        for c in range(2, ws.max_column + 1):
+            v = str(ws.cell(r, c).value or "").strip().upper()
+            if v in ESTADOS_PLANTILLA_RS:
+                # el color suele estar en la celda de al lado (a la izquierda del texto de la leyenda)
+                if c > 1 and ws.cell(r, c - 1).fill.patternType == "solid":
+                    colores_estado[v] = copy(ws.cell(r, c - 1).fill)
 
     # Registros que ya están en la plantilla (para no duplicar)
     existentes = set()
@@ -1372,11 +1383,405 @@ def llenar_plantilla_semantico(bytes_plantilla, df_filas):
             if clave_df == "Expediente" and re.fullmatch(r"\d{5,9}", str(valor).strip()):
                 valor = int(str(valor).strip())
             ws.cell(siguiente, c).value = valor
+            if clave_df == "Estado" and str(valor).strip().upper() in colores_estado:
+                ws.cell(siguiente, c).fill = copy(colores_estado[str(valor).strip().upper()])
         siguiente += 1
         escritas += 1
     salida = io.BytesIO()
     wb.save(salida)
     return salida.getvalue(), escritas, omitidas
+
+
+# Plantilla en blanco del libro "DATOS PARA ESTÁNDAR SEMÁNTICO" (la que usa Harry para cada cliente),
+# incluida en el código para poder descargarla ya llena sin tener que subirla cada vez.
+_PLANTILLA_ESTANDAR_SEMANTICO_B64 = (
+    "UEsDBBQABgAIAAAAIQC+0BxCsAEAAOEHAAATAAgCW0NvbnRlbnRfVHlwZXNdLnhtbCCiBAIooAACAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+    "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+    "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+    "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+    "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+    "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+    "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAADMVclOwzAQvS"
+    "PxD5GvqHEpEkKoKQeWI1S0fIAbTxuriW15pqX9eybuAkKhpaIILokTe95749m6N4uqTOYQ0DibifO0LRKwudPGTjLxMnxoXYkESVmtSmchE0tA"
+    "cdM7PekOlx4wYWuLmSiI/LWUmBdQKUydB8s7YxcqRfwZJtKrfKomIDvt9qXMnSWw1KIaQ/S6dzBWs5KS+wX/XikZGSuS29W5mioTyvvS5IpYqJ"
+    "xb/Ymk5cZjk4N2+axi6BR9AKWxAKCqTH0wzBgGQMSOoZCNnAFKPIx07VXKllEYFsbjGbv+BUO987VXa7snDkcwGpK+CvSoKvZdLkr56sJ05Nw0"
+    "3Q1y6NXEK0orZexG9w7+eBhlfJ0fWUjtXwQ+UEfnn+i4+CMd3swd3SouPfm+5Ioy1tS1cuwwNXHsiVijwmfIXdD4e/LWBHu0EXcskPH5cykRZg"
+    "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"
+    "AAAUABQArQUAAABHAAAAAA=="
+)
+
+
+def _bytes_plantilla_estandar_semantico():
+    return base64.b64decode(_PLANTILLA_ESTANDAR_SEMANTICO_B64)
+
+
+COLUMNAS_TABLA_RS = (
+    ["Cliente", "Expediente", "Registro_Sanitario", "Riesgo", "Estado", "Referencias", "Reportadas", "Rol",
+     "Plantilla", "Nombre producto", "Razon Social fabricante", "Pais", "MODALIDAD", "TAX ID"]
+    + [f"MARCA {n}" for n in range(1, 7)]
+)
+ESTADOS_PLANTILLA_RS = ["REPORTADO", "CAMBIOS A TENER EN CUENTA", "SIN REPORTAR", "PROBLEMA DE REPORTE"]
+
+
+def _tabla_rs_vacia():
+    return pd.DataFrame(columns=COLUMNAS_TABLA_RS)
+
+
+def _normalizar_tabla_rs(df):
+    """Asegura que la tabla tenga exactamente las columnas esperadas (todas como texto)."""
+    return df.reindex(columns=COLUMNAS_TABLA_RS).fillna("").astype(str).reset_index(drop=True)
+
+
+def _clave_fila_rs(registro, expediente):
+    clave, _r = _parsear_registro_sanitario(registro)
+    if clave:
+        return clave
+    exp = _limpiar_expediente(expediente)
+    return ("EXP" + exp) if exp else ""
+
+
+def leer_tabla_rs_desde_excel(archivo, cliente_por_defecto=""):
+    """Lee un Excel con registros. Acepta (a) el libro de la plantilla (hoja DATOS EMPRESA) o
+    (b) una tabla simple con encabezados. Devuelve una lista de dicts con las columnas de la tabla."""
+    nombre = getattr(archivo, "name", "")
+    if nombre.lower().endswith(".csv"):
+        df_in = pd.read_csv(archivo, dtype=str, keep_default_na=False, sep=None, engine="python")
+    else:
+        xls = pd.ExcelFile(archivo)
+        hoja = next((h for h in xls.sheet_names if h.strip().upper() == "DATOS EMPRESA"), None)
+        if hoja is not None:
+            crudo = xls.parse(hoja, header=None, dtype=str, keep_default_na=False)
+            fila_enc = None
+            for i in range(min(len(crudo), 80)):
+                if str(crudo.iat[i, 0]).strip().lower() == "expediente" and str(crudo.iat[i, 1]).strip().lower().startswith("registro"):
+                    fila_enc = i
+                    break
+            if fila_enc is None:
+                raise RuntimeError("En la hoja 'DATOS EMPRESA' no encontré la fila de encabezados (Expediente | Registro sanitario | …).")
+            df_in = crudo.iloc[fila_enc + 1:].copy()
+            df_in.columns = [str(c).strip() for c in crudo.iloc[fila_enc].tolist()]
+        else:
+            df_in = xls.parse(xls.sheet_names[0], dtype=str, keep_default_na=False)
+
+    def _n(x):
+        t = unicodedata.normalize("NFKD", str(x).lower())
+        return re.sub(r"[^a-z0-9]", "", "".join(ch for ch in t if not unicodedata.combining(ch)))
+
+    destino = {_n(c): c for c in COLUMNAS_TABLA_RS}
+    destino[_n("Registro sanitario")] = "Registro_Sanitario"
+    mapa = {c: destino[_n(c)] for c in df_in.columns if _n(c) in destino}
+    # alias razonables cuando el archivo no usa los nombres de la plantilla
+    if "Registro_Sanitario" not in mapa.values():
+        col = _detectar_columna_rs(df_in, ("registro", "invima"), ("rs", "r s"))
+        if col is not None:
+            mapa[col] = "Registro_Sanitario"
+    if "Cliente" not in mapa.values():
+        col = _detectar_columna_rs(df_in, ("cliente", "empresa", "razon social cliente", "titular"))
+        if col is not None and col not in mapa:
+            mapa[col] = "Cliente"
+    if "Registro_Sanitario" not in mapa.values() and "Expediente" not in mapa.values():
+        raise RuntimeError("No encontré una columna de registro sanitario ni de expediente. Revisa los encabezados.")
+    filas = []
+    for _, f in df_in.iterrows():
+        fila = {c: "" for c in COLUMNAS_TABLA_RS}
+        for col_in, col_dest in mapa.items():
+            fila[col_dest] = str(f[col_in]).strip() if str(f[col_in]).strip().lower() not in ("nan", "none") else ""
+        if not fila["Cliente"]:
+            fila["Cliente"] = cliente_por_defecto
+        if fila["Registro_Sanitario"] or fila["Expediente"]:
+            filas.append(fila)
+    return filas
+
+
+_CAMPOS_AUTOCOMPLETAR_RS = ["Riesgo", "Rol", "Nombre producto", "Razon Social fabricante", "Pais"] + [f"MARCA {n}" for n in range(1, 7)]
+
+
+def completar_tabla_desde_invima(df, docs, avisar=None):
+    """Rellena SOLO las celdas vacías de la tabla con datos del INVIMA (y de las resoluciones leídas).
+    Si un registro tiene varios fabricantes, agrega una fila por cada fabricante que falte.
+    Devuelve (df_nuevo, avisos, n_filas_tocadas)."""
+    base = _normalizar_tabla_rs(df)
+    auto, avisos = construir_filas_plantilla(base, docs, "Todos", avisar=avisar, incluir_docs_sin_lista=False)
+    auto = auto.fillna("")
+    auto_por_clave = {}
+    for _, a in auto.iterrows():
+        a = a.to_dict()
+        a["Registro_Sanitario"] = a.get("Registro sanitario", "")
+        for k in {_clave_fila_rs(a["Registro_Sanitario"], a.get("Expediente", "")), "EXP" + _limpiar_expediente(a.get("Expediente", ""))}:
+            auto_por_clave.setdefault(k, []).append(a)
+
+    claves_filas = [_clave_fila_rs(r["Registro_Sanitario"], r["Expediente"]) for _, r in base.iterrows()]
+    ultima_fila_de = {k: i for i, k in enumerate(claves_filas) if k}
+    fabs_usados = {}
+    salida, tocadas = [], 0
+    for i, (_, r) in enumerate(base.iterrows()):
+        fila = r.to_dict()
+        if fila["Registro_Sanitario"].strip() and _parsear_registro_sanitario(fila["Registro_Sanitario"])[0] \
+                and "INVIMA" not in fila["Registro_Sanitario"].upper():
+            fila["Registro_Sanitario"] = "INVIMA " + fila["Registro_Sanitario"].strip()
+        k = claves_filas[i]
+        autos = auto_por_clave.get(k, []) if k else []
+        if autos:
+            fab_fila = fila["Razon Social fabricante"].strip().upper()
+            if fab_fila:
+                a_match = next((a for a in autos if a["Razon Social fabricante"] == fab_fila), None)
+            else:
+                libres = [a for a in autos if a["Razon Social fabricante"] not in fabs_usados.get(k, set())]
+                a_match = libres[0] if libres else autos[0]
+            referencia = a_match or autos[0]
+            cambio = False
+            for campo in _CAMPOS_AUTOCOMPLETAR_RS:
+                if fila[campo] == "":
+                    fuente = a_match if campo in ("Razon Social fabricante", "Pais") else referencia
+                    if fuente and str(fuente.get(campo, "")).strip():
+                        fila[campo] = str(fuente[campo]).strip()
+                        cambio = True
+            if not fila["Expediente"] and referencia.get("Expediente"):
+                fila["Expediente"] = str(referencia["Expediente"]); cambio = True
+            if not fila["Registro_Sanitario"] and referencia.get("Registro_Sanitario"):
+                fila["Registro_Sanitario"] = referencia["Registro_Sanitario"]; cambio = True
+            tocadas += 1 if cambio else 0
+            if fila["Razon Social fabricante"]:
+                fabs_usados.setdefault(k, set()).add(fila["Razon Social fabricante"].strip().upper())
+        salida.append(fila)
+        if k and ultima_fila_de.get(k) == i:
+            for a in auto_por_clave.get(k, []):
+                nombre_fab = a["Razon Social fabricante"]
+                if nombre_fab and nombre_fab not in fabs_usados.get(k, set()):
+                    nueva = {c: "" for c in COLUMNAS_TABLA_RS}
+                    for campo in ["Expediente", "Registro_Sanitario"] + _CAMPOS_AUTOCOMPLETAR_RS:
+                        nueva[campo] = str(a.get(campo, "") or "")
+                    nueva["Cliente"] = fila["Cliente"]
+                    salida.append(nueva)
+                    fabs_usados.setdefault(k, set()).add(nombre_fab)
+                    tocadas += 1
+    return pd.DataFrame(salida, columns=COLUMNAS_TABLA_RS), avisos, tocadas
 
 
 def obtener_usuarios():
@@ -7273,128 +7678,173 @@ else:
     elif st.session_state["seccion_activa"] == "ValidacionRS":
         st.markdown("<h3 style='color:#0b1d3a;margin-bottom:4px;'>✅ Registros Sanitarios de Clientes</h3>", unsafe_allow_html=True)
         st.markdown(
-            "<p style='color:#475569;margin-bottom:10px;'>Trabaja por módulos: <b>1)</b> arma la lista de registros de tus clientes, "
-            "<b>2)</b> sube las resoluciones (o la consulta en línea) de cada uno y <b>3)</b> obtén el consolidado de "
-            "referencias amparadas por cada registro sanitario.</p>",
+            "<p style='color:#475569;margin-bottom:10px;'>Trabaja por módulos: <b>1)</b> arma la tabla de registros de tus clientes "
+            "(es la de tu plantilla de estándar semántico) y descarga el libro, <b>2)</b> sube las resoluciones (o la consulta en línea) de cada uno y "
+            "<b>3)</b> obtén el consolidado de referencias amparadas por cada registro sanitario.</p>",
             unsafe_allow_html=True
         )
-        st.session_state.setdefault("rs_lista", pd.DataFrame(columns=["Cliente", "Registro_Sanitario", "Expediente"]))
+        st.session_state.setdefault("rs_lista", _tabla_rs_vacia())
+        st.session_state["rs_lista"] = _normalizar_tabla_rs(st.session_state["rs_lista"])
         st.session_state.setdefault("rs_lista_base", st.session_state["rs_lista"])
         st.session_state.setdefault("rs_lista_ver", 0)
         st.session_state.setdefault("rs_docs", [])
         st.session_state.setdefault("rs_docs_firmas", [])
 
-        tab_lista, tab_docs, tab_cons, tab_plan, tab_port = st.tabs([
-            "1️⃣ Registros de clientes", "2️⃣ Documentos", "3️⃣ Consolidado de referencias",
-            "4️⃣ Plantilla de estándar semántico", "🏢 Buscar por titular"
+        tab_lista, tab_docs, tab_cons, tab_port = st.tabs([
+            "1️⃣ Registros de clientes", "2️⃣ Documentos", "3️⃣ Consolidado de referencias", "🏢 Buscar por titular"
         ])
 
+        def _reemplazar_tabla_rs(nueva):
+            nueva = _normalizar_tabla_rs(nueva)
+            st.session_state["rs_lista"] = nueva
+            st.session_state["rs_lista_base"] = nueva
+            st.session_state["rs_lista_ver"] += 1
+
         def _agregar_a_lista_rs(nuevas_filas):
-            """Agrega filas (dicts Cliente/Registro_Sanitario/Expediente) sin duplicar por registro o expediente."""
+            """Agrega filas (dicts con columnas de la tabla) sin duplicar por registro o expediente."""
             actual = st.session_state["rs_lista"]
-            existentes = set()
-            for _, f in actual.iterrows():
-                c, _r = _parsear_registro_sanitario(f.get("Registro_Sanitario", ""))
-                existentes.add(c or ("EXP" + _limpiar_expediente(f.get("Expediente", ""))))
+            existentes = {_clave_fila_rs(f["Registro_Sanitario"], f["Expediente"]) for _, f in actual.iterrows()}
             agregadas = []
             for n in nuevas_filas:
-                c, _r = _parsear_registro_sanitario(n.get("Registro_Sanitario", ""))
-                k = c or ("EXP" + _limpiar_expediente(n.get("Expediente", "")))
-                if k in existentes or k == "EXP":
+                k = _clave_fila_rs(n.get("Registro_Sanitario", ""), n.get("Expediente", ""))
+                if not k or k in existentes:
                     continue
                 existentes.add(k)
-                agregadas.append({"Cliente": n.get("Cliente", ""), "Registro_Sanitario": n.get("Registro_Sanitario", ""),
-                                  "Expediente": _limpiar_expediente(n.get("Expediente", "")) or str(n.get("Expediente", "") or "")})
+                fila = {c: "" for c in COLUMNAS_TABLA_RS}
+                fila.update({c: str(v or "") for c, v in n.items() if c in fila})
+                fila["Expediente"] = _limpiar_expediente(fila["Expediente"]) or fila["Expediente"]
+                agregadas.append(fila)
             if agregadas:
-                nueva = pd.concat([actual, pd.DataFrame(agregadas)], ignore_index=True)
-                st.session_state["rs_lista"] = nueva
-                st.session_state["rs_lista_base"] = nueva
-                st.session_state["rs_lista_ver"] += 1
+                _reemplazar_tabla_rs(pd.concat([actual, pd.DataFrame(agregadas)], ignore_index=True))
             return len(agregadas)
 
-        # ═════════════ MÓDULO 1: REGISTROS DE CLIENTES ═════════════
+        # ═════════════ MÓDULO 1: REGISTROS DE CLIENTES (= tabla de la plantilla) ═════════════
         with tab_lista:
             _fecha_datos = _fecha_actualizacion_datos_invima()
             st.markdown(
-                "Pon aquí los registros sanitarios de tus clientes (o los que se tendrán en cuenta para el estándar semántico): "
-                "**cliente, número de registro sanitario y expediente**. Puedes subir un Excel, pegarlos o escribirlos en la tabla."
+                "Esta tabla es la de la hoja **DATOS EMPRESA** de tu plantilla de estándar semántico. Llénala a mano, "
+                "súbela desde un Excel, o escribe solo el **cliente y el registro sanitario (o el expediente)** y pulsa "
+                "**✨ Completar con datos del INVIMA** para que se llenen sola el riesgo, el rol, el producto, el fabricante, "
+                "el país y las marcas. Al final descargas el libro con lo que tengas en la tabla."
             )
-            plantilla_df = pd.DataFrame([
-                {"Cliente": "Widex Colombia", "Registro_Sanitario": "INVIMA 2018DM-0018225", "Expediente": "20147066"},
-                {"Cliente": "Tecnitrauma", "Registro_Sanitario": "INVIMA 2020DM-0005644-R1", "Expediente": "20013598"},
-            ])
-            buf_plantilla = io.BytesIO()
-            plantilla_df.to_excel(buf_plantilla, index=False)
-            st.download_button(
-                "📥 Descargar plantilla", data=buf_plantilla.getvalue(),
-                file_name="plantilla_registros_clientes.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                key="rs_dl_plantilla"
-            )
-            col_a, col_b = st.columns(2)
-            with col_a:
-                archivo_rs = st.file_uploader("Excel o CSV con los registros", type=["xlsx", "xls", "csv"], key="rs_archivo")
-            with col_b:
-                texto_rs = st.text_area(
-                    "…o pégalos (uno por línea: Cliente ; Registro ; Expediente)", height=120, key="rs_texto",
-                    placeholder="Widex ; INVIMA 2018DM-0018225 ; 20147066\nINVIMA 2020DM-0005644"
-                )
-            if st.button("➕ Agregar a la lista", key="rs_btn_agregar", use_container_width=True):
-                nuevas = []
-                try:
-                    if archivo_rs is not None:
-                        if archivo_rs.name.lower().endswith(".csv"):
-                            df_in = pd.read_csv(archivo_rs, dtype=str, keep_default_na=False, sep=None, engine="python")
-                        else:
-                            df_in = pd.read_excel(archivo_rs, dtype=str, keep_default_na=False)
-                        col_reg = _detectar_columna_rs(df_in, ("registro", "invima"), ("rs", "r s"))
-                        col_exp = _detectar_columna_rs(df_in, ("expediente",))
-                        col_cli = _detectar_columna_rs(df_in, ("cliente", "empresa", "razon", "titular"))
-                        if col_reg is None and col_exp is None:
-                            st.error("No encontré una columna de registro sanitario ni de expediente. Usa la plantilla.")
-                        else:
-                            for _, f_in in df_in.iterrows():
-                                nuevas.append({
-                                    "Cliente": f_in[col_cli] if col_cli else "",
-                                    "Registro_Sanitario": f_in[col_reg] if col_reg else "",
-                                    "Expediente": f_in[col_exp] if col_exp else "",
-                                })
-                    for linea in texto_rs.splitlines():
-                        partes = [x.strip() for x in linea.split(";")]
-                        if not any(partes):
-                            continue
-                        if len(partes) == 1:
-                            nuevas.append({"Cliente": "", "Registro_Sanitario": partes[0], "Expediente": ""})
-                        elif len(partes) == 2:
-                            nuevas.append({"Cliente": partes[0], "Registro_Sanitario": partes[1], "Expediente": ""})
-                        else:
-                            nuevas.append({"Cliente": partes[0], "Registro_Sanitario": partes[1], "Expediente": partes[2]})
-                except Exception as e:
-                    st.error(f"No pude leer el archivo: {e}")
-                if nuevas:
-                    n_ag = _agregar_a_lista_rs(nuevas)
-                    st.success(f"Se agregaron {n_ag} registro(s) nuevos ({len(nuevas) - n_ag} ya estaban en la lista).")
-                else:
-                    st.warning("No hay nada para agregar: sube un archivo o pega registros.")
+            with st.expander("➕ Agregar registros (Excel, libro de la plantilla o texto)", expanded=len(st.session_state["rs_lista"]) == 0):
+                col_a, col_b = st.columns(2)
+                with col_a:
+                    archivo_rs = st.file_uploader(
+                        "Excel/CSV con registros, o un libro de la plantilla (hoja DATOS EMPRESA)",
+                        type=["xlsx", "xls", "csv"], key="rs_archivo"
+                    )
+                    cliente_def = st.text_input("Cliente para las filas que no lo traigan", key="rs_cliente_defecto")
+                with col_b:
+                    texto_rs = st.text_area(
+                        "…o pégalos (uno por línea: Cliente ; Registro ; Expediente)", height=120, key="rs_texto",
+                        placeholder="Widex ; INVIMA 2018DM-0018225 ; 20147066\nINVIMA 2020DM-0005644"
+                    )
+                if st.button("➕ Agregar a la tabla", key="rs_btn_agregar", use_container_width=True):
+                    nuevas = []
+                    try:
+                        if archivo_rs is not None:
+                            nuevas += leer_tabla_rs_desde_excel(archivo_rs, cliente_def.strip())
+                        for linea in texto_rs.splitlines():
+                            partes = [x.strip() for x in linea.split(";")]
+                            if not any(partes):
+                                continue
+                            if len(partes) == 1:
+                                nuevas.append({"Cliente": cliente_def.strip(), "Registro_Sanitario": partes[0]})
+                            elif len(partes) == 2:
+                                nuevas.append({"Cliente": partes[0], "Registro_Sanitario": partes[1]})
+                            else:
+                                nuevas.append({"Cliente": partes[0], "Registro_Sanitario": partes[1], "Expediente": partes[2]})
+                    except Exception as e:
+                        st.error(f"No pude leer el archivo: {e}")
+                    if nuevas:
+                        n_ag = _agregar_a_lista_rs(nuevas)
+                        st.success(f"Se agregaron {n_ag} registro(s) nuevos ({len(nuevas) - n_ag} ya estaban en la tabla).")
+                    else:
+                        st.warning("No hay nada para agregar: sube un archivo o pega registros.")
 
-            st.markdown(f"**Lista de registros ({len(st.session_state['rs_lista'])})** — puedes editar, agregar o borrar filas aquí mismo:")
+            st.markdown(f"**Tabla de registros ({len(st.session_state['rs_lista'])})** — edita, agrega o borra filas directamente:")
+            config_cols = {c: st.column_config.TextColumn(c) for c in COLUMNAS_TABLA_RS}
+            config_cols["Registro_Sanitario"] = st.column_config.TextColumn("Registro sanitario")
+            config_cols["Estado"] = st.column_config.SelectboxColumn("Estado", options=ESTADOS_PLANTILLA_RS)
             editado = st.data_editor(
                 st.session_state["rs_lista_base"], num_rows="dynamic", use_container_width=True,
-                key=f"rs_editor_lista_{st.session_state['rs_lista_ver']}",
-                column_config={
-                    "Cliente": st.column_config.TextColumn("Cliente"),
-                    "Registro_Sanitario": st.column_config.TextColumn("Registro sanitario"),
-                    "Expediente": st.column_config.TextColumn("Expediente"),
-                }
+                key=f"rs_editor_lista_{st.session_state['rs_lista_ver']}", column_config=config_cols
             )
-            st.session_state["rs_lista"] = editado.fillna("").astype(str).reset_index(drop=True)
-            if st.button("🗑️ Vaciar la lista", key="rs_btn_vaciar"):
-                vacia = pd.DataFrame(columns=["Cliente", "Registro_Sanitario", "Expediente"])
-                st.session_state["rs_lista"] = vacia
-                st.session_state["rs_lista_base"] = vacia
-                st.session_state["rs_lista_ver"] += 1
-                st.session_state.pop("rs_resultado", None)
-                st.rerun()
+            st.session_state["rs_lista"] = _normalizar_tabla_rs(editado)
+
+            c_b1, c_b2 = st.columns([3, 1])
+            with c_b1:
+                if st.button("✨ Completar con datos del INVIMA", key="rs_btn_completar", type="primary", use_container_width=True):
+                    if st.session_state["rs_lista"].empty:
+                        st.warning("La tabla está vacía.")
+                    else:
+                        msg_c = st.empty()
+                        try:
+                            with st.spinner("Consultando el INVIMA y completando la tabla…"):
+                                df_c, avisos_c, n_c = completar_tabla_desde_invima(
+                                    st.session_state["rs_lista"], st.session_state["rs_docs"],
+                                    avisar=lambda m: msg_c.caption(m)
+                                )
+                            msg_c.empty()
+                            _reemplazar_tabla_rs(df_c)
+                            st.session_state["rs_avisos_completar"] = avisos_c
+                            st.session_state["rs_msg_completar"] = f"Se completaron {n_c} fila(s). Solo se llenaron celdas vacías; lo que ya habías escrito no se tocó."
+                            registrar_log(st.session_state["usuario_activo_real"], f"Completar tabla de registros con datos del INVIMA ({n_c} filas)", n_c)
+                            st.rerun()
+                        except Exception as e:
+                            msg_c.empty()
+                            st.error(f"No se pudo completar la tabla: {e}")
+            with c_b2:
+                if st.button("🗑️ Vaciar tabla", key="rs_btn_vaciar", use_container_width=True):
+                    _reemplazar_tabla_rs(_tabla_rs_vacia())
+                    st.session_state.pop("rs_resultado", None)
+                    st.rerun()
+            if st.session_state.get("rs_msg_completar"):
+                st.success(st.session_state["rs_msg_completar"])
+            for av in st.session_state.get("rs_avisos_completar", []):
+                st.warning(av)
+
+            st.markdown("---")
+            st.markdown("**📥 Descargar el libro de estándar semántico**")
+            st.caption(
+                "Usa la plantilla incluida en el app (la misma que compartiste). Se escriben las filas de la tabla en la hoja DATOS EMPRESA, "
+                "debajo de las que ya existan; el resto del libro queda igual. También puedes subir el libro de un cliente para continuar sobre él."
+            )
+            clientes_tabla = sorted({c.strip() for c in st.session_state["rs_lista"]["Cliente"].tolist() if c.strip()})
+            c_d1, c_d2 = st.columns(2)
+            with c_d1:
+                cliente_desc = st.selectbox("Filas de qué cliente", ["Todos"] + clientes_tabla, key="rs_cliente_descarga")
+            with c_d2:
+                libro_propio = st.file_uploader("Usar el libro de un cliente (opcional)", type=["xlsx"], key="rs_libro_propio")
+            if st.button("📝 Generar libro", key="rs_btn_generar_libro", use_container_width=True):
+                tabla = st.session_state["rs_lista"]
+                if cliente_desc != "Todos":
+                    tabla = tabla[tabla["Cliente"].str.strip() == cliente_desc]
+                tabla = tabla[(tabla["Registro_Sanitario"].str.strip() != "") | (tabla["Expediente"].str.strip() != "")]
+                if tabla.empty:
+                    st.warning("No hay filas con registro o expediente para escribir.")
+                else:
+                    try:
+                        origen = libro_propio.getvalue() if libro_propio is not None else _bytes_plantilla_estandar_semantico()
+                        datos_xlsx, n_esc, omit = llenar_plantilla_semantico(origen, tabla)
+                        nombre_base = (libro_propio.name.rsplit(".", 1)[0] if libro_propio is not None else "1._DATOS_PARA_ESTANDAR_SEMANTICO")
+                        sufijo = ("_" + re.sub(r"[^A-Za-z0-9]+", "_", cliente_desc).strip("_")) if cliente_desc != "Todos" else ""
+                        st.session_state["rs_libro_generado"] = (datos_xlsx, f"{nombre_base}{sufijo}.xlsx", n_esc, omit)
+                        registrar_log(st.session_state["usuario_activo_real"], f"Libro de estándar semántico ({n_esc} filas)", n_esc)
+                    except Exception as e:
+                        st.error(f"No se pudo generar el libro: {e}")
+            gen = st.session_state.get("rs_libro_generado")
+            if gen:
+                datos_xlsx, nombre_xlsx, n_esc, omit = gen
+                st.success(f"Se escribieron {n_esc} fila(s) en 'DATOS EMPRESA'." + (f" Se omitieron {len(omit)} que ya estaban en el libro." if omit else ""))
+                if omit:
+                    st.caption("Ya estaban: " + "; ".join(omit))
+                st.download_button(
+                    "📥 Descargar libro", data=datos_xlsx, file_name=nombre_xlsx,
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    key="rs_dl_libro", use_container_width=True
+                )
 
             st.markdown("---")
             st.markdown("**Validar vigencia contra el INVIMA (opcional)**")
@@ -7408,7 +7858,7 @@ else:
             with c_u2:
                 umbral_proximo_rs = st.number_input("🟡 Próximo si vence en (días) ≤", min_value=1, max_value=1440, value=180, step=30, key="rs_umbral_proximo")
 
-            if st.button("🔎 Validar vigencia de la lista", key="rs_btn_validar", type="primary", use_container_width=True):
+            if st.button("🔎 Validar vigencia de la tabla", key="rs_btn_validar", use_container_width=True):
                 lista_rs = st.session_state["rs_lista"]
                 entradas = [
                     {"Cliente": f.get("Cliente", ""), "Registro": f.get("Registro_Sanitario", ""),
@@ -7417,7 +7867,7 @@ else:
                     if str(f.get("Registro_Sanitario", "")).strip() or str(f.get("Expediente", "")).strip()
                 ]
                 if not entradas:
-                    st.warning("La lista está vacía.")
+                    st.warning("La tabla está vacía.")
                 else:
                     barra_msg = st.empty()
                     try:
@@ -7596,72 +8046,6 @@ else:
                     "pero no en la consulta actual (posible exclusión por una modificación); 📄 solo hay resoluciones y conviene "
                     "verificar modificaciones posteriores. Las referencias marcadas “(revisar)” en *Formato_Origen* fueron separadas "
                     "con IA a partir de texto corrido y vale la pena revisarlas."
-                )
-
-        # ═════════════ MÓDULO 4: PLANTILLA DE ESTÁNDAR SEMÁNTICO ═════════════
-        with tab_plan:
-            st.markdown(
-                "Sube el libro **DATOS PARA ESTÁNDAR SEMÁNTICO** del cliente. Se llena la tabla grande de la hoja **DATOS EMPRESA** "
-                "con una fila por registro: expediente, registro sanitario, riesgo, rol (la modalidad del INVIMA), nombre del producto, "
-                "fabricante, país y las marcas (una por columna). Quedan **vacías** las columnas que llenas tú: Estado, Referencias, "
-                "Reportadas, Plantilla, MODALIDAD y TAX ID. El resto del libro no se toca, y los registros que ya estén en la tabla no se duplican."
-            )
-            st.caption("Toma los registros de la lista del módulo 1 y los datos vigentes del listado abierto del INVIMA; si falta algo (por ejemplo el fabricante), usa las resoluciones del módulo 2.")
-            archivo_plantilla = st.file_uploader("Libro de Excel del cliente (.xlsx)", type=["xlsx"], key="rs_plantilla_xlsx")
-            clientes_lista = sorted({str(c).strip() for c in st.session_state["rs_lista"]["Cliente"].tolist() if str(c).strip()})
-            cliente_sel = st.selectbox("Registros de qué cliente", ["Todos"] + clientes_lista, key="rs_plantilla_cliente")
-
-            if st.button("🧾 Preparar filas", key="rs_btn_preparar_plantilla", type="primary", use_container_width=True):
-                if st.session_state["rs_lista"].empty and not st.session_state["rs_docs"]:
-                    st.warning("Primero agrega registros en el módulo 1.")
-                else:
-                    msg_pl = st.empty()
-                    try:
-                        with st.spinner("Armando las filas…"):
-                            df_pl, avisos_pl = construir_filas_plantilla(
-                                st.session_state["rs_lista"], st.session_state["rs_docs"], cliente_sel,
-                                avisar=lambda m: msg_pl.caption(m)
-                            )
-                        msg_pl.empty()
-                        st.session_state["rs_plantilla_filas"] = df_pl
-                        st.session_state["rs_plantilla_avisos"] = avisos_pl
-                        st.session_state["rs_plantilla_ver"] = st.session_state.get("rs_plantilla_ver", 0) + 1
-                    except Exception as e:
-                        msg_pl.empty()
-                        st.error(f"No se pudieron armar las filas: {e}")
-
-            df_pl = st.session_state.get("rs_plantilla_filas")
-            if df_pl is not None:
-                for av in st.session_state.get("rs_plantilla_avisos", []):
-                    st.warning(av)
-                st.markdown(f"**Filas a escribir ({len(df_pl)})** — puedes corregir cualquier celda antes de llenar la plantilla:")
-                df_pl_edit = st.data_editor(
-                    df_pl, num_rows="dynamic", use_container_width=True,
-                    key=f"rs_editor_plantilla_{st.session_state.get('rs_plantilla_ver', 0)}"
-                )
-                if st.button("📝 Llenar la plantilla", key="rs_btn_llenar_plantilla", use_container_width=True):
-                    if archivo_plantilla is None:
-                        st.warning("Sube primero el libro de Excel del cliente.")
-                    else:
-                        try:
-                            datos_xlsx, n_esc, omit = llenar_plantilla_semantico(archivo_plantilla.getvalue(), df_pl_edit.fillna(""))
-                            st.session_state["rs_plantilla_resultado"] = (datos_xlsx, archivo_plantilla.name, n_esc, omit)
-                            registrar_log(st.session_state["usuario_activo_real"], f"Plantilla de estándar semántico ({n_esc} filas)", n_esc)
-                        except Exception as e:
-                            st.error(f"No se pudo llenar la plantilla: {e}")
-
-            res_pl = st.session_state.get("rs_plantilla_resultado")
-            if res_pl:
-                datos_xlsx, nombre_orig, n_esc, omit = res_pl
-                st.success(f"Se escribieron {n_esc} fila(s) en 'DATOS EMPRESA'." + (f" Se omitieron {len(omit)} que ya estaban." if omit else ""))
-                if omit:
-                    st.caption("Ya estaban en la tabla: " + "; ".join(omit))
-                base_nombre = nombre_orig.rsplit(".", 1)[0]
-                st.download_button(
-                    "📥 Descargar libro con los registros", data=datos_xlsx,
-                    file_name=f"{base_nombre}_con_registros.xlsx",
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                    key="rs_dl_plantilla_llena", use_container_width=True
                 )
 
         # ═════════════ BUSCAR POR TITULAR ═════════════
